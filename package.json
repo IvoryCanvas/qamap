@@ -1,0 +1,51 @@
+{
+  "name": "@ivorycanvas/codeward",
+  "version": "0.1.0",
+  "description": "Guardrails for AI coding agents and the code they change.",
+  "type": "module",
+  "bin": {
+    "codeward": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "scan": "npm run build && node dist/cli.js scan .",
+    "report": "npm run build && node dist/cli.js report . --output CODEWARD_REPORT.md"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "coding-agents",
+    "mcp",
+    "security",
+    "developer-tools",
+    "guardrails"
+  ],
+  "author": "IvoryCanvas",
+  "license": "MIT",
+  "homepage": "https://github.com/IvoryCanvas/codeward#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IvoryCanvas/codeward.git"
+  },
+  "bugs": {
+    "url": "https://github.com/IvoryCanvas/codeward/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}

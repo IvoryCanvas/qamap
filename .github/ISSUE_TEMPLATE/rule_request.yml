@@ -1,0 +1,17 @@
+name: Rule request
+description: Suggest a new CodeWard scanner rule.
+title: "[Rule]: "
+labels: ["enhancement", "rule"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What repo-level AI agent risk should CodeWard catch?
+    validations:
+      required: true
+  - type: textarea
+    id: examples
+    attributes:
+      label: Examples
+      description: Share safe, minimal examples of risky config or behavior.
