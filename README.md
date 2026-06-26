@@ -109,8 +109,8 @@ node dist/cli.js scan /path/to/repo
 | `codeward scan . --json` | Print machine-readable JSON for custom automation. |
 | `codeward scan . --format sarif --output codeward.sarif` | Generate SARIF for code scanning integrations. |
 | `codeward report . --output CODEWARD_REPORT.md` | Generate a Markdown report for PRs or audits. |
-| `codeward doctor .` | Summarize whether the repo is ready for AI-assisted work. |
-| `codeward review . --base origin/main --head HEAD` | Show new CodeWard findings introduced by a branch. |
+| `codeward doctor . --format markdown` | Summarize whether the repo is ready for AI-assisted work. |
+| `codeward review . --base origin/main --head HEAD --format markdown` | Show new CodeWard findings introduced by a branch. |
 | `codeward context . --write AGENTS.md` | Generate starter agent instructions for the repo. |
 | `codeward init .` | Create a starter `codeward.config.json`. |
 

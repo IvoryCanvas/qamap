@@ -10,6 +10,8 @@ import {
   buildDoctorResult,
   formatMarkdownReport,
   formatDoctorReport,
+  formatMarkdownDoctorReport,
+  formatMarkdownReviewReport,
   formatReviewReport,
   formatSarifReport,
   generateAgentContext,
@@ -228,6 +230,7 @@ test("doctor summarizes a complex risky repository by guardrail area", async () 
   const result = await scanProject(root);
   const doctor = buildDoctorResult(result);
   const formatted = formatDoctorReport(result);
+  const markdown = formatMarkdownDoctorReport(result);
 
   assert.equal(doctor.status, "high-risk");
   assert.equal(doctor.areas.find((area) => area.name === "Agent instructions")?.status, "review");
@@ -238,6 +241,8 @@ test("doctor summarizes a complex risky repository by guardrail area", async () 
   assert.match(formatted, /Agent readiness: High risk/);
   assert.match(formatted, /\[review\] MCP configuration/);
   assert.match(formatted, /Top priorities:/);
+  assert.match(markdown, /# CodeWard Doctor/);
+  assert.match(markdown, /## Guardrail Areas/);
 });
 
 test("reviewProject reports findings introduced by a branch", async () => {
@@ -292,6 +297,7 @@ test("reviewProject reports findings introduced by a branch", async () => {
 
   const review = await reviewProject(root, { base: "main", head: "HEAD" });
   const formatted = formatReviewReport(review);
+  const markdown = formatMarkdownReviewReport(review);
   const ids = review.newFindings.map((finding) => finding.id);
 
   assert.ok(ids.includes("CW004"));
@@ -301,6 +307,9 @@ test("reviewProject reports findings introduced by a branch", async () => {
   assert.match(formatted, /CodeWard Review/);
   assert.match(formatted, /New findings: 4/);
   assert.match(formatted, /package.json/);
+  assert.match(markdown, /# CodeWard Review/);
+  assert.match(markdown, /## Findings/);
+  assert.match(markdown, /`CW009`/);
 });
 
 test("generateAgentContext reflects npm scripts and repository boundaries", async () => {

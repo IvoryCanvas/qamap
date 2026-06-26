@@ -137,6 +137,51 @@ export function formatDoctorReport(result: ScanResult): string {
   return lines.join("\n");
 }
 
+export function formatMarkdownDoctorReport(result: ScanResult): string {
+  const doctor = buildDoctorResult(result);
+  const lines: string[] = [];
+
+  lines.push("# CodeWard Doctor");
+  lines.push("");
+  lines.push(`- Root: \`${escapeMarkdownInline(doctor.root)}\``);
+  lines.push(`- Agent readiness: **${doctor.statusLabel}**`);
+  lines.push(`- Files inspected: ${doctor.filesInspected}`);
+  lines.push("");
+  lines.push("## Summary");
+  lines.push("");
+  lines.push("| Severity | Count |");
+  lines.push("| --- | ---: |");
+  for (const severity of severityOrder) {
+    lines.push(`| ${severity} | ${doctor.counts[severity]} |`);
+  }
+  lines.push("");
+  lines.push("## Guardrail Areas");
+  lines.push("");
+  lines.push("| Status | Area | Details |");
+  lines.push("| --- | --- | --- |");
+  for (const area of doctor.areas) {
+    const ruleSuffix = area.ruleIds.length > 0 ? ` (${area.ruleIds.map((id) => `\`${id}\``).join(", ")})` : "";
+    lines.push(`| ${area.status} | ${escapeMarkdownTableCell(area.name)} | ${escapeMarkdownTableCell(area.message)}${ruleSuffix} |`);
+  }
+  lines.push("");
+  lines.push("## Top Priorities");
+  lines.push("");
+
+  if (doctor.topPriorities.length === 0) {
+    lines.push("No immediate action. Your repository looks ready for a first-pass AI agent workflow.");
+    lines.push("");
+    return lines.join("\n");
+  }
+
+  for (const priority of doctor.topPriorities) {
+    const fileSuffix = priority.file ? ` in \`${escapeMarkdownInline(priority.file)}\`` : "";
+    lines.push(`- \`${priority.id}\` **${priority.severity}**${fileSuffix}: ${priority.recommendation}`);
+  }
+  lines.push("");
+
+  return lines.join("\n");
+}
+
 function buildArea(area: AreaDefinition, findings: Finding[]): DoctorArea {
   const matchedRuleIds = [
     ...new Set(findings.filter((finding) => area.ruleIds.includes(finding.id)).map((finding) => finding.id)),
@@ -194,4 +239,12 @@ function sortFindings(findings: Finding[]): Finding[] {
 
 function sumCounts(counts: ScanCounts): number {
   return severityOrder.reduce((sum, severity) => sum + counts[severity], 0);
+}
+
+function escapeMarkdownInline(value: string): string {
+  return value.replaceAll("`", "'");
+}
+
+function escapeMarkdownTableCell(value: string): string {
+  return escapeMarkdownInline(value).replaceAll("|", "\\|");
 }

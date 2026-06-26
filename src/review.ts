@@ -123,6 +123,68 @@ export function formatReviewReport(result: ReviewResult): string {
   return lines.join("\n");
 }
 
+export function formatMarkdownReviewReport(result: ReviewResult): string {
+  const lines: string[] = [];
+  lines.push("# CodeWard Review");
+  lines.push("");
+  lines.push(`- Root: \`${escapeMarkdownInline(result.root)}\``);
+  lines.push(`- Base: \`${escapeMarkdownInline(result.base)}\``);
+  lines.push(`- Head: \`${escapeMarkdownInline(result.head)}\``);
+  lines.push(`- Changed files: ${result.changedFiles.length}`);
+  lines.push("");
+  lines.push("## New Findings");
+  lines.push("");
+  lines.push("| Severity | Count |");
+  lines.push("| --- | ---: |");
+  for (const severity of severityOrder) {
+    lines.push(`| ${severity} | ${result.counts[severity]} |`);
+  }
+
+  if (result.changedFiles.length > 0) {
+    lines.push("");
+    lines.push("## Changed Files");
+    lines.push("");
+    for (const file of result.changedFiles.slice(0, 20)) {
+      const renameSuffix = file.previousPath ? ` from \`${escapeMarkdownInline(file.previousPath)}\`` : "";
+      lines.push(`- \`${file.status}\` \`${escapeMarkdownInline(file.path)}\`${renameSuffix}`);
+    }
+    if (result.changedFiles.length > 20) {
+      lines.push(`- ... ${result.changedFiles.length - 20} more`);
+    }
+  }
+
+  lines.push("");
+  if (result.newFindings.length === 0) {
+    lines.push("No new CodeWard findings were introduced by this branch.");
+    lines.push("");
+    return lines.join("\n");
+  }
+
+  lines.push("## Findings");
+  lines.push("");
+  for (const severity of severityOrder) {
+    const findings = result.newFindings.filter((finding) => finding.severity === severity);
+    if (findings.length === 0) {
+      continue;
+    }
+
+    lines.push(`### ${severity.toUpperCase()}`);
+    lines.push("");
+    for (const finding of findings) {
+      const fileSuffix = finding.file ? ` (${escapeMarkdownInline(finding.file)})` : "";
+      lines.push(`- \`${finding.id}\` **${escapeMarkdownInline(finding.title)}**${fileSuffix}`);
+      lines.push(`  - Message: ${escapeMarkdownInline(finding.message)}`);
+      lines.push(`  - Fix: ${escapeMarkdownInline(finding.recommendation)}`);
+      if (finding.evidence) {
+        lines.push(`  - Evidence: \`${escapeMarkdownInline(finding.evidence)}\``);
+      }
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 async function defaultBaseRef(root: string): Promise<string> {
   for (const candidate of ["origin/main", "main", "origin/master", "master"]) {
     try {
@@ -209,4 +271,8 @@ function countFindings(findings: Finding[]): ScanResult["counts"] {
     },
     { info: 0, low: 0, medium: 0, high: 0 },
   );
+}
+
+function escapeMarkdownInline(value: string): string {
+  return value.replaceAll("`", "'");
 }

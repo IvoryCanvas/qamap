@@ -3,9 +3,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { loadConfig, writeDefaultConfig } from "./config.js";
 import { generateAgentContext } from "./context.js";
-import { buildDoctorResult, formatDoctorReport } from "./doctor.js";
+import { buildDoctorResult, formatDoctorReport, formatMarkdownDoctorReport } from "./doctor.js";
 import { formatMarkdownReport, formatSarifReport, formatTextReport, hasFindingsAtOrAbove } from "./report.js";
-import { formatReviewReport, reviewProject } from "./review.js";
+import { formatMarkdownReviewReport, formatReviewReport, reviewProject } from "./review.js";
 import { scanProject } from "./scanner.js";
 import { isAtLeastSeverity, isSeverity } from "./severity.js";
 import type { CodeWardConfig } from "./types.js";
@@ -252,8 +252,11 @@ function formatDoctorOutput(result: Awaited<ReturnType<typeof scanProject>>, for
   if (format === "json") {
     return `${JSON.stringify(buildDoctorResult(result), null, 2)}\n`;
   }
+  if (format === "markdown") {
+    return formatMarkdownDoctorReport(result);
+  }
   if (format !== "text") {
-    throw new Error(`Doctor supports text or json output, not ${format}`);
+    throw new Error(`Doctor supports text, json, or markdown output, not ${format}`);
   }
   return formatDoctorReport(result);
 }
@@ -262,8 +265,11 @@ function formatReviewOutput(result: Awaited<ReturnType<typeof reviewProject>>, f
   if (format === "json") {
     return `${JSON.stringify(result, null, 2)}\n`;
   }
+  if (format === "markdown") {
+    return formatMarkdownReviewReport(result);
+  }
   if (format !== "text") {
-    throw new Error(`Review supports text or json output, not ${format}`);
+    throw new Error(`Review supports text, json, or markdown output, not ${format}`);
   }
   return formatReviewReport(result);
 }
@@ -298,8 +304,8 @@ Guardrails for AI coding agents and the code they change.
 Usage:
   codeward scan [path] [--format <format>] [--fail-on <severity>] [--max-files <n>]
   codeward report [path] [--format <format>] [--output <file>] [--fail-on <severity>]
-  codeward doctor [path] [--json] [--output <file>] [--fail-on <severity>]
-  codeward review [path] [--base <ref>] [--head <ref>] [--json] [--fail-on <severity>]
+  codeward doctor [path] [--format <format>] [--output <file>] [--fail-on <severity>]
+  codeward review [path] [--base <ref>] [--head <ref>] [--format <format>] [--fail-on <severity>]
   codeward context [path] [--write [file]] [--force]
   codeward init [path] [--write <file>] [--force]
 
