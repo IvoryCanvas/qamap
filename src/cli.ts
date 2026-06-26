@@ -83,7 +83,8 @@ async function main(argv: string[]): Promise<number> {
     const output = formatReviewOutput(result, options.format ?? (options.json ? "json" : "text"));
     await printOrWrite(output, options.output);
     const failOn = options.failOn ?? loadedConfig.config.failOn;
-    return failOn && result.newFindings.some((finding) => isAtLeastSeverity(finding.severity, failOn)) ? 1 : 0;
+    const reviewFindings = [...result.newFindings, ...result.changedRiskyFindings];
+    return failOn && reviewFindings.some((finding) => isAtLeastSeverity(finding.severity, failOn)) ? 1 : 0;
   }
 
   if (command === "context") {

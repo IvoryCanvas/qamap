@@ -21,6 +21,12 @@ export interface ChangedFile {
   previousPath?: string;
 }
 
+export interface ChangedRiskyFinding extends Finding {
+  file: string;
+  status: string;
+  previousPath?: string;
+}
+
 export interface ReviewResult {
   tool: ScanResult["tool"];
   root: string;
@@ -29,7 +35,9 @@ export interface ReviewResult {
   head: string;
   changedFiles: ChangedFile[];
   newFindings: Finding[];
+  changedRiskyFindings: ChangedRiskyFinding[];
   counts: ScanResult["counts"];
+  changedRiskyCounts: ScanResult["counts"];
 }
 
 export async function reviewProject(rootInput: string, options: ReviewOptions = {}): Promise<ReviewResult> {
@@ -63,10 +71,25 @@ export async function reviewProject(rootInput: string, options: ReviewOptions = 
     const baseResult = await scanProject(baseScanRoot, baseScanOptions);
     const headResult = await scanProject(headScanRoot, headScanOptions);
     const baseFingerprints = new Set(baseResult.findings.map(fingerprintFinding));
+    const baseStableKeys = new Set(baseResult.findings.map(stableFindingKey));
     const changedPathSet = buildChangedPathSet(changedFiles, relativeScanRoot);
+    const changedFileMap = buildChangedFileMap(changedFiles, relativeScanRoot);
     const newFindings = headResult.findings
       .filter((finding) => !baseFingerprints.has(fingerprintFinding(finding)))
       .filter((finding) => shouldIncludeFinding(finding, changedPathSet))
+      .sort(compareFindings);
+    const newFingerprints = new Set(newFindings.map(fingerprintFinding));
+    const changedRiskyFindings = headResult.findings
+      .filter((finding): finding is Finding & { file: string } => Boolean(finding.file))
+      .filter((finding) => baseStableKeys.has(stableFindingKey(finding)))
+      .filter((finding) => !newFingerprints.has(fingerprintFinding(finding)))
+      .flatMap((finding) => {
+        const changedFile = changedFileMap.get(finding.file);
+        if (!changedFile) {
+          return [];
+        }
+        return [toChangedRiskyFinding(finding, changedFile)];
+      })
       .sort(compareFindings);
 
     return {
@@ -77,7 +100,9 @@ export async function reviewProject(rootInput: string, options: ReviewOptions = 
       head,
       changedFiles,
       newFindings,
+      changedRiskyFindings,
       counts: countFindings(newFindings),
+      changedRiskyCounts: countFindings(changedRiskyFindings),
     };
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
@@ -96,6 +121,11 @@ export function formatReviewReport(result: ReviewResult): string {
       .map((severity) => `${severity}: ${result.counts[severity]}`)
       .join(", ")})`,
   );
+  lines.push(
+    `Changed risky files: ${result.changedRiskyFindings.length} (${severityOrder
+      .map((severity) => `${severity}: ${result.changedRiskyCounts[severity]}`)
+      .join(", ")})`,
+  );
 
   if (result.changedFiles.length > 0) {
     lines.push("");
@@ -109,23 +139,42 @@ export function formatReviewReport(result: ReviewResult): string {
     }
   }
 
-  if (result.newFindings.length === 0) {
+  if (result.newFindings.length === 0 && result.changedRiskyFindings.length === 0) {
     lines.push("");
-    lines.push("No new CodeWard findings were introduced by this branch.");
+    lines.push("No new CodeWard findings or changed risky files were introduced by this branch.");
     return lines.join("\n");
   }
 
-  for (const severity of severityOrder) {
-    const findings = result.newFindings.filter((finding) => finding.severity === severity);
-    if (findings.length === 0) {
-      continue;
-    }
-
+  if (result.newFindings.length === 0) {
     lines.push("");
-    lines.push(severity.toUpperCase());
-    for (const finding of findings) {
-      lines.push(`- ${finding.id} ${finding.title}${finding.file ? ` (${finding.file})` : ""}`);
-      lines.push(`  ${finding.message}`);
+    lines.push("No new CodeWard findings were introduced by this branch.");
+  } else {
+    for (const severity of severityOrder) {
+      const findings = result.newFindings.filter((finding) => finding.severity === severity);
+      if (findings.length === 0) {
+        continue;
+      }
+
+      lines.push("");
+      lines.push(severity.toUpperCase());
+      for (const finding of findings) {
+        lines.push(`- ${finding.id} ${finding.title}${finding.file ? ` (${finding.file})` : ""}`);
+        lines.push(`  ${finding.message}`);
+        lines.push(`  Fix: ${finding.recommendation}`);
+        if (finding.evidence) {
+          lines.push(`  Evidence: ${finding.evidence}`);
+        }
+      }
+    }
+  }
+
+  if (result.changedRiskyFindings.length > 0) {
+    lines.push("");
+    lines.push("Changed risky files:");
+    for (const finding of result.changedRiskyFindings) {
+      const renameSuffix = finding.previousPath ? ` from ${finding.previousPath}` : "";
+      lines.push(`- ${finding.id} ${finding.title} (${finding.file}, ${finding.status}${renameSuffix})`);
+      lines.push("  Existing finding on base; this file changed in the branch.");
       lines.push(`  Fix: ${finding.recommendation}`);
       if (finding.evidence) {
         lines.push(`  Evidence: ${finding.evidence}`);
@@ -144,6 +193,7 @@ export function formatMarkdownReviewReport(result: ReviewResult): string {
   lines.push(`- Base: \`${escapeMarkdownInline(result.base)}\``);
   lines.push(`- Head: \`${escapeMarkdownInline(result.head)}\``);
   lines.push(`- Changed files: ${result.changedFiles.length}`);
+  lines.push(`- Changed risky files: ${result.changedRiskyFindings.length}`);
   lines.push("");
   lines.push("## New Findings");
   lines.push("");
@@ -167,30 +217,51 @@ export function formatMarkdownReviewReport(result: ReviewResult): string {
   }
 
   lines.push("");
-  if (result.newFindings.length === 0) {
-    lines.push("No new CodeWard findings were introduced by this branch.");
+  if (result.newFindings.length === 0 && result.changedRiskyFindings.length === 0) {
+    lines.push("No new CodeWard findings or changed risky files were introduced by this branch.");
     lines.push("");
     return lines.join("\n");
   }
 
-  lines.push("## Findings");
-  lines.push("");
-  for (const severity of severityOrder) {
-    const findings = result.newFindings.filter((finding) => finding.severity === severity);
-    if (findings.length === 0) {
-      continue;
-    }
-
-    lines.push(`### ${severity.toUpperCase()}`);
+  if (result.newFindings.length === 0) {
+    lines.push("No new CodeWard findings were introduced by this branch.");
     lines.push("");
-    for (const finding of findings) {
-      const fileSuffix = finding.file ? ` (${escapeMarkdownInline(finding.file)})` : "";
-      lines.push(`- \`${finding.id}\` **${escapeMarkdownInline(finding.title)}**${fileSuffix}`);
-      lines.push(`  - Message: ${escapeMarkdownInline(finding.message)}`);
-      lines.push(`  - Fix: ${escapeMarkdownInline(finding.recommendation)}`);
-      if (finding.evidence) {
-        lines.push(`  - Evidence: \`${escapeMarkdownInline(finding.evidence)}\``);
+  } else {
+    lines.push("## Findings");
+    lines.push("");
+    for (const severity of severityOrder) {
+      const findings = result.newFindings.filter((finding) => finding.severity === severity);
+      if (findings.length === 0) {
+        continue;
       }
+
+      lines.push(`### ${severity.toUpperCase()}`);
+      lines.push("");
+      for (const finding of findings) {
+        const fileSuffix = finding.file ? ` (${escapeMarkdownInline(finding.file)})` : "";
+        lines.push(`- \`${finding.id}\` **${escapeMarkdownInline(finding.title)}**${fileSuffix}`);
+        lines.push(`  - Message: ${escapeMarkdownInline(finding.message)}`);
+        lines.push(`  - Fix: ${escapeMarkdownInline(finding.recommendation)}`);
+        if (finding.evidence) {
+          lines.push(`  - Evidence: \`${escapeMarkdownInline(finding.evidence)}\``);
+        }
+      }
+      lines.push("");
+    }
+  }
+
+  if (result.changedRiskyFindings.length > 0) {
+    lines.push("## Changed Risky Files");
+    lines.push("");
+    lines.push("| Rule | Severity | File | Status | Recommendation |");
+    lines.push("| --- | --- | --- | --- | --- |");
+    for (const finding of result.changedRiskyFindings) {
+      const renameSuffix = finding.previousPath ? ` from ${finding.previousPath}` : "";
+      lines.push(
+        `| \`${finding.id}\` | ${finding.severity} | \`${escapeMarkdownCell(finding.file)}\` | \`${escapeMarkdownCell(
+          `${finding.status}${renameSuffix}`,
+        )}\` | ${escapeMarkdownCell(finding.recommendation)} |`,
+      );
     }
     lines.push("");
   }
@@ -260,6 +331,14 @@ function shouldIncludeFinding(finding: Finding, changedPathSet: Set<string | und
   return changedPathSet.has(finding.file);
 }
 
+function toChangedRiskyFinding(finding: Finding & { file: string }, changedFile: ChangedFile): ChangedRiskyFinding {
+  return {
+    ...finding,
+    status: changedFile.status,
+    previousPath: changedFile.previousPath,
+  };
+}
+
 function buildChangedPathSet(changedFiles: ChangedFile[], relativeScanRoot: string): Set<string | undefined> {
   const paths = new Set<string | undefined>();
   for (const file of changedFiles) {
@@ -285,8 +364,42 @@ function addChangedPath(paths: Set<string | undefined>, filePath: string | undef
   }
 }
 
+function buildChangedFileMap(changedFiles: ChangedFile[], relativeScanRoot: string): Map<string, ChangedFile> {
+  const paths = new Map<string, ChangedFile>();
+  for (const file of changedFiles) {
+    addChangedFile(paths, file.path, file, relativeScanRoot);
+    addChangedFile(paths, file.previousPath, file, relativeScanRoot);
+  }
+  return paths;
+}
+
+function addChangedFile(
+  paths: Map<string, ChangedFile>,
+  filePath: string | undefined,
+  changedFile: ChangedFile,
+  relativeScanRoot: string,
+): void {
+  if (!filePath) {
+    return;
+  }
+  paths.set(filePath, changedFile);
+
+  if (!relativeScanRoot) {
+    return;
+  }
+
+  const prefix = `${relativeScanRoot.split(path.sep).join("/")}/`;
+  if (filePath.startsWith(prefix)) {
+    paths.set(filePath.slice(prefix.length), changedFile);
+  }
+}
+
 function fingerprintFinding(finding: Finding): string {
   return [finding.id, finding.file ?? "", finding.title, finding.message, finding.evidence ?? ""].join("\0");
+}
+
+function stableFindingKey(finding: Finding): string {
+  return [finding.id, finding.file ?? "", finding.title].join("\0");
 }
 
 function compareFindings(left: Finding, right: Finding): number {
@@ -313,4 +426,8 @@ function countFindings(findings: Finding[]): ScanResult["counts"] {
 
 function escapeMarkdownInline(value: string): string {
   return value.replaceAll("`", "'");
+}
+
+function escapeMarkdownCell(value: string): string {
+  return escapeMarkdownInline(value).replaceAll("|", "\\|");
 }
