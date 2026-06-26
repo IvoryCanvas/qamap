@@ -66,6 +66,22 @@ HIGH
   Fix: Remove committed environment files, rotate any exposed secrets, and keep only safe examples such as .env.example.
 ```
 
+For a readiness view, use `doctor`:
+
+```sh
+codeward doctor .
+```
+
+```txt
+CodeWard Doctor
+Agent readiness: High risk
+
+Guardrail areas:
+- [review] Agent instructions: Agent guidance needs attention before broad agent use. (CW003)
+- [review] Validation: Agents do not have a clear default validation command. (CW006)
+- [review] Repository automation: Local environment files or risky scripts need maintainer review. (CW008, CW009)
+```
+
 ## Install
 
 The package metadata is ready for the first npm release:
@@ -93,6 +109,7 @@ node dist/cli.js scan /path/to/repo
 | `codeward scan . --json` | Print machine-readable JSON for custom automation. |
 | `codeward scan . --format sarif --output codeward.sarif` | Generate SARIF for code scanning integrations. |
 | `codeward report . --output CODEWARD_REPORT.md` | Generate a Markdown report for PRs or audits. |
+| `codeward doctor .` | Summarize whether the repo is ready for AI-assisted work. |
 | `codeward context . --write AGENTS.md` | Generate starter agent instructions for the repo. |
 | `codeward init .` | Create a starter `codeward.config.json`. |
 
@@ -185,7 +202,7 @@ Near-term priorities:
 
 - publish the first npm package
 - add a GitHub Action wrapper with PR annotations
-- add `review`/`doctor` style workflows for PR risk and repo readiness
+- add branch-aware `review` output for PR risk
 - expand agent instruction detection across Codex, Claude Code, Cursor, Copilot, Gemini, and related surfaces
 - generate rule documentation from scanner metadata
 

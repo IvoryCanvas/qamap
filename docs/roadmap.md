@@ -11,7 +11,7 @@ CodeWard starts as a local CLI for repo-level AI agent readiness. The project ca
 ## Next
 
 - Add a GitHub Action wrapper with PR annotations.
-- Add `doctor` output that summarizes whether a repo is ready for AI-assisted work.
+- Improve `doctor` output with clearer scoring and remediation grouping.
 - Add `review` output that focuses on risk introduced by a branch or pull request.
 - Expand agent instruction detection across Codex, Claude Code, Cursor, GitHub Copilot, Gemini, and related surfaces.
 - Generate rule documentation from scanner metadata.
