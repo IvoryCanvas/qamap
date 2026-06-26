@@ -110,12 +110,14 @@ node dist/cli.js scan /path/to/repo
 | `codeward scan . --format sarif --output codeward.sarif` | Generate SARIF for code scanning integrations. |
 | `codeward report . --output CODEWARD_REPORT.md` | Generate a Markdown report for PRs or audits. |
 | `codeward doctor . --format markdown` | Summarize whether the repo is ready for AI-assisted work. |
-| `codeward review . --base origin/main --head HEAD --format markdown` | Show new CodeWard findings introduced by a branch. |
+| `codeward review . --base origin/main --head HEAD --format markdown` | Show new findings and changed risky files introduced by a branch. |
 | `codeward doctor services/offer --workspace-root .` | Scan a monorepo package while using root guardrails. |
 | `codeward context . --write AGENTS.md` | Generate starter agent instructions for the repo. |
 | `codeward init .` | Create a starter `codeward.config.json`. |
 
 For monorepos, pass `--workspace-root` when scanning a package. Package-local checks still use the package directory, while repo-level guardrails such as `AGENTS.md`, `.github/workflows`, `LICENSE`, `SECURITY.md`, and `CONTRIBUTING.md` are read from the workspace root.
+
+`codeward review` compares a branch against a base ref for PR-style workflows. It separates newly introduced findings from risky files that already had findings on the base branch but were modified again, which helps reviewers notice when a PR touches known-dangerous surfaces such as committed `.env` files, MCP configs, or release scripts.
 
 ## What It Checks
 
@@ -206,7 +208,7 @@ Near-term priorities:
 
 - publish the first npm package
 - add a GitHub Action wrapper with PR annotations
-- improve branch-aware `review` output for PR comments and annotations
+- improve branch-aware `review` annotations for GitHub PR comments
 - expand agent instruction detection across Codex, Claude Code, Cursor, Copilot, Gemini, and related surfaces
 - generate rule documentation from scanner metadata
 

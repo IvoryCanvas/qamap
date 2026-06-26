@@ -21,7 +21,7 @@ import {
   writeDefaultConfig,
 } from "../dist/index.js";
 
-const fixtureRoot = fileURLToPath(new URL(".", import.meta.url));
+const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 const execFileAsync = promisify(execFile);
 
 test("scanProject reports common AI agent repository risks", async () => {
@@ -346,6 +346,67 @@ test("reviewProject reports findings introduced by a branch", async () => {
   assert.match(markdown, /`CW009`/);
 });
 
+test("reviewProject reports risky files changed by a branch", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, ".github/workflows"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        test: "node --test",
+      },
+    }),
+  );
+  await writeFile(path.join(root, "AGENTS.md"), "# Agent Instructions\n\n- Run npm test before merge.\n");
+  await writeFile(path.join(root, "LICENSE"), "MIT");
+  await writeFile(path.join(root, "SECURITY.md"), "# Security\n");
+  await writeFile(path.join(root, "CONTRIBUTING.md"), "# Contributing\n");
+  await writeFile(
+    path.join(root, ".github/workflows/ci.yml"),
+    "name: CI\non: [pull_request]\npermissions:\n  contents: read\n",
+  );
+  await writeFile(path.join(root, ".env"), "TOKEN=base-value");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/change-env"]);
+  await writeFile(path.join(root, ".env"), "TOKEN=changed-value");
+  await git(root, ["add", ".env"]);
+  await git(root, ["commit", "-m", "change env"]);
+
+  const review = await reviewProject(root, { base: "main", head: "HEAD" });
+  const formatted = formatReviewReport(review);
+  const markdown = formatMarkdownReviewReport(review);
+
+  assert.equal(review.newFindings.length, 0);
+  assert.equal(review.changedRiskyFindings.length, 1);
+  assert.equal(review.changedRiskyCounts.high, 1);
+  assert.equal(review.changedRiskyFindings[0].id, "CW008");
+  assert.equal(review.changedRiskyFindings[0].file, ".env");
+  assert.equal(review.changedRiskyFindings[0].status, "M");
+  assert.match(formatted, /Changed risky files: 1/);
+  assert.match(formatted, /Existing finding on base/);
+  assert.match(markdown, /## Changed Risky Files/);
+  assert.match(markdown, /`CW008`/);
+  await assert.rejects(
+    () =>
+      execFileAsync(process.execPath, [
+        cliPath,
+        "review",
+        root,
+        "--base",
+        "main",
+        "--head",
+        "HEAD",
+        "--fail-on",
+        "high",
+      ]),
+    /Command failed/,
+  );
+});
+
 test("reviewProject uses workspace root guardrails for package branches", async () => {
   const workspaceRoot = await makeTempRepo();
   const packageRoot = path.join(workspaceRoot, "services/offer");
@@ -438,5 +499,3 @@ async function writeWorkspaceGuardrails(root) {
 async function git(root, args) {
   return execFileAsync("git", args, { cwd: root, maxBuffer: 10 * 1024 * 1024 });
 }
-
-void fixtureRoot;
