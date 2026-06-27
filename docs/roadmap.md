@@ -7,6 +7,7 @@ CodeWard starts as a local CLI for repo-level AI agent readiness. The project ca
 - Keep the scanner fast, static, and easy to understand.
 - Make the first public npm release.
 - Improve README, adoption docs, and sample output so new maintainers can try CodeWard quickly.
+- Make `verify` the best first-run experience for AI-assisted PRs.
 - Keep `eval` explainable enough that maintainers trust the score and know what to fix.
 
 ## Next

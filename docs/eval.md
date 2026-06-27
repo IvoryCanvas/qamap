@@ -4,9 +4,12 @@
 
 It does not try to prove that the code is correct. Instead, it checks whether reviewers have enough evidence to trust, challenge, and verify the change without absorbing unnecessary cognitive load.
 
+For a complete PR-facing report that also includes CodeWard review findings and suggested domain tests, use `codeward verify`.
+
 ## Usage
 
 ```sh
+codeward verify . --base origin/main --head HEAD --pr-body-file pr-body.md
 codeward eval . --base origin/main --head HEAD --format markdown
 codeward eval . --base origin/main --head HEAD --pr-body-file pr-body.md
 codeward eval services/offer --workspace-root . --base origin/main --head HEAD --include-working-tree

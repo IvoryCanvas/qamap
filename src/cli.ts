@@ -11,6 +11,7 @@ import { formatMarkdownReviewReport, formatReviewReport, reviewProject } from ".
 import { scanProject } from "./scanner.js";
 import { isAtLeastSeverity, isSeverity } from "./severity.js";
 import { formatMarkdownTestPlan, generateTestPlan } from "./test-plan.js";
+import { formatMarkdownVerifyReport, formatVerifyReport, verifyChange } from "./verify.js";
 import type { CodeWardConfig } from "./types.js";
 import type { Severity } from "./types.js";
 import { VERSION } from "./version.js";
@@ -99,6 +100,23 @@ async function main(argv: string[]): Promise<number> {
     await printOrWrite(output, options.output);
     const failOn = options.failOn ?? loadedConfig.config.failOn;
     const reviewFindings = [...result.newFindings, ...result.changedRiskyFindings];
+    return failOn && reviewFindings.some((finding) => isAtLeastSeverity(finding.severity, failOn)) ? 1 : 0;
+  }
+
+  if (command === "verify") {
+    const options = parseOptions(rest);
+    const loadedConfig = await loadOptionsConfig(options);
+    const result = await verifyChange(options.path, {
+      base: options.base,
+      head: options.head,
+      scanOptions: buildScanOptions(options, loadedConfig),
+      includeWorkingTree: options.includeWorkingTree,
+      prBodyFile: options.prBodyFile,
+    });
+    const output = formatVerifyOutput(result, options.format ?? (options.json ? "json" : "markdown"));
+    await printOrWrite(output, options.output);
+    const failOn = options.failOn ?? loadedConfig.config.failOn;
+    const reviewFindings = [...result.review.newFindings, ...result.review.changedRiskyFindings];
     return failOn && reviewFindings.some((finding) => isAtLeastSeverity(finding.severity, failOn)) ? 1 : 0;
   }
 
@@ -444,6 +462,19 @@ function formatEvalOutput(result: Awaited<ReturnType<typeof evaluateChangeReadin
   return formatEvalReport(result);
 }
 
+function formatVerifyOutput(result: Awaited<ReturnType<typeof verifyChange>>, format: OutputFormat): string {
+  if (format === "json") {
+    return `${JSON.stringify(result, null, 2)}\n`;
+  }
+  if (format === "markdown") {
+    return formatMarkdownVerifyReport(result);
+  }
+  if (format !== "text") {
+    throw new Error(`Verify supports text, json, or markdown output, not ${format}`);
+  }
+  return formatVerifyReport(result);
+}
+
 async function printOrWrite(output: string, outputPath?: string): Promise<void> {
   if (outputPath) {
     const resolvedOutputPath = path.resolve(outputPath);
@@ -480,6 +511,7 @@ Usage:
   codeward report [path] [--format <format>] [--output <file>] [--fail-on <severity>]
   codeward doctor [path] [--format <format>] [--output <file>] [--fail-on <severity>]
   codeward review [path] [--base <ref>] [--head <ref>] [--format <format>] [--fail-on <severity>]
+  codeward verify [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--pr-body-file <file>] [--fail-on <severity>]
   codeward eval [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--pr-body-file <file>] [--format <format>]
   codeward github-action [path] [--mode auto|scan|review] [--base <ref>] [--head <ref>] [--fail-on <severity>]
   codeward test-plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--format <format>] [--output <file>]
@@ -500,6 +532,7 @@ Examples:
   codeward report . --output CODEWARD_REPORT.md
   codeward doctor .
   codeward review . --base origin/main --head HEAD
+  codeward verify . --base origin/main --head HEAD --pr-body-file pr-body.md
   codeward eval . --base origin/main --head HEAD --pr-body-file pr-body.md
   codeward github-action . --mode review --base origin/main --head HEAD --fail-on high
   codeward test-plan . --base origin/main --head HEAD

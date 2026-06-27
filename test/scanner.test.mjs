@@ -15,6 +15,7 @@ import {
   formatMarkdownDoctorReport,
   formatMarkdownReviewReport,
   formatMarkdownTestPlan,
+  formatMarkdownVerifyReport,
   formatReviewReport,
   formatSarifReport,
   generateAgentContext,
@@ -22,6 +23,7 @@ import {
   loadConfig,
   reviewProject,
   scanProject,
+  verifyChange,
   writeDefaultConfig,
 } from "../dist/index.js";
 
@@ -476,6 +478,54 @@ test("evaluateChangeReadiness flags missing intent and risk context", async () =
   assert.equal(result.checks.find((check) => check.id === "validation-commands")?.status, "fail");
   assert.equal(result.checks.find((check) => check.id === "intent-capture")?.status, "fail");
   assert.equal(result.checks.find((check) => check.id === "risk-explanation")?.status, "fail");
+});
+
+test("verifyChange combines review findings, readiness, and domain tests", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/features/campaign/api"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      packageManager: "pnpm@10.32.1",
+      scripts: {
+        test: "node --test",
+        typecheck: "tsc --noEmit",
+      },
+    }),
+  );
+  await writeFile(path.join(root, "AGENTS.md"), "# Agent Instructions\n\n- Run pnpm test before merge.\n");
+  await writeFile(path.join(root, "LICENSE"), "MIT");
+  await writeFile(path.join(root, "SECURITY.md"), "# Security\n");
+  await writeFile(path.join(root, "CONTRIBUTING.md"), "# Contributing\n");
+  await writeFile(path.join(root, "src/features/campaign/api/client.ts"), "export const endpoint = '/campaigns';\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/campaign-api"]);
+  await writeFile(path.join(root, "src/features/campaign/api/client.ts"), "export const endpoint = '/campaigns/v2';\n");
+  await writeFile(path.join(root, "src/features/campaign/api/client.test.ts"), "import './client.js';\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update campaign api"]);
+
+  const result = await verifyChange(root, {
+    base: "main",
+    head: "HEAD",
+    prBody: [
+      "문제: campaign API path changed for the new flow.",
+      "이유: the old path cannot represent the v2 campaign state.",
+      "Risk: API compatibility is maintained by keeping callers typed.",
+      "Rollback: switch endpoint back to /campaigns.",
+    ].join("\n"),
+  });
+  const markdown = formatMarkdownVerifyReport(result);
+
+  assert.equal(result.evaluation.rating, "strong");
+  assert.equal(result.review.newFindings.length, 0);
+  assert.match(markdown, /# CodeWard Verify/);
+  assert.match(markdown, /Campaign workflow regression/);
+  assert.match(markdown, /Verification Gates/);
 });
 
 test("formatMarkdownReport includes a useful summary", async () => {

@@ -3,16 +3,17 @@
 [![CI](https://github.com/IvoryCanvas/codeward/actions/workflows/ci.yml/badge.svg)](https://github.com/IvoryCanvas/codeward/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Repo-level preflight checks before AI coding agents touch your code.**
+**A no-token verification layer for AI-assisted pull requests.**
 
-CodeWard scans the repository surface that AI coding agents rely on: agent instructions, MCP configuration, agent settings and hooks, API contract source-of-truth signals, local environment files, package scripts, GitHub Actions permissions, community health files, and validation signals.
+CodeWard checks whether an AI-assisted change is safe and reviewable before merge. It combines repo guardrail scanning, branch review, domain test planning, and verification-readiness scoring into one CLI and GitHub Action.
 
 It is built for teams using Codex, Claude Code, Cursor, GitHub Copilot coding agent, MCP-powered tools, or any workflow where an agent can read, edit, test, commit, or open pull requests.
 
 CodeWard is intentionally small:
 
 - static by default: it does not execute scanned project code
-- repo-focused: it checks the guardrails around the code, not general style
+- no-token by default: it does not call an LLM API
+- verification-focused: it tells reviewers what evidence is missing, not how to style code
 - CI-friendly: text, JSON, Markdown, and SARIF output are supported
 - explainable: every finding includes a concrete fix
 
@@ -46,10 +47,40 @@ CodeWard gives maintainers a quick first line of defense:
 ## Quick Demo
 
 ```sh
-codeward scan .
+codeward verify . --base origin/main --head HEAD --pr-body-file pr-body.md
 ```
 
-Example output from a risky repository:
+Example output from an AI-assisted PR:
+
+```txt
+CodeWard Verify
+Readiness: 6/12 (needs-work)
+Changed files: 5
+New findings: 0
+Changed risky files: 0
+
+Verification gates:
+- WARN Validation commands: package has typecheck/lint/build, but no test command
+- FAIL Changed test coverage: source changed without changed tests
+- WARN Intent capture: PR template exists, but no intent-rich PR body was detected
+- FAIL Risk explanation: domain config changed without risk or rollback context
+
+Suggested domain tests:
+- Campaign workflow regression
+- User-facing UI states
+- Domain configuration and variants
+
+Suggested commands:
+- pnpm run typecheck
+- pnpm run lint
+- pnpm run build
+```
+
+For a repository baseline before broad agent use, run:
+
+```sh
+codeward scan .
+```
 
 ```txt
 CodeWard 0.1.0
@@ -57,32 +88,7 @@ Findings: 6 (high: 3, medium: 2, low: 1, info: 0)
 
 HIGH
 - CW003 Suspicious agent instruction text (AGENTS.md)
-  Instruction file contains text that matches a suspicious instruction override pattern.
-  Fix: Remove untrusted instruction text or move examples into clearly fenced documentation that agents should not follow.
-
-- CW009 Risky package script (package.json)
-  The "release" script can publish, push, or merge changes.
-  Fix: Keep publish, push, merge, and destructive scripts outside default agent workflows or gate them with maintainer-only release processes.
-
-- CW008 Committed environment file (.env)
-  A local environment file appears to be present in the repository.
-  Fix: Remove committed environment files, rotate any exposed secrets, and keep only safe examples such as .env.example.
-```
-
-For a readiness view, use `doctor`:
-
-```sh
-codeward doctor .
-```
-
-```txt
-CodeWard Doctor
-Agent readiness: High risk
-
-Guardrail areas:
-- [review] Agent instructions: Agent guidance needs attention before broad agent use. (CW003)
-- [review] Validation: Agents do not have a clear default validation command. (CW006)
-- [review] Repository automation: Local environment files or risky scripts need maintainer review. (CW008, CW009)
+  Fix: Remove untrusted instruction text or move examples into clearly fenced documentation.
 ```
 
 ## Install
@@ -114,6 +120,7 @@ node dist/cli.js scan /path/to/repo
 | `codeward report . --output CODEWARD_REPORT.md` | Generate a Markdown report for PRs or audits. |
 | `codeward doctor . --format markdown` | Summarize whether the repo is ready for AI-assisted work. |
 | `codeward review . --base origin/main --head HEAD --format markdown` | Show new findings and changed risky files introduced by a branch. |
+| `codeward verify . --base origin/main --head HEAD --pr-body-file pr-body.md` | Combine review findings, readiness scoring, domain tests, and next actions. |
 | `codeward eval . --base origin/main --head HEAD --pr-body-file pr-body.md` | Score change readiness across intent, risk, tests, and review size. |
 | `codeward github-action . --mode review --base origin/main --head HEAD` | Generate GitHub Action annotations, step summary, and PR comment body. |
 | `codeward test-plan . --base origin/main --head HEAD --include-working-tree` | Suggest domain test scenarios for changed files. |
@@ -124,6 +131,8 @@ node dist/cli.js scan /path/to/repo
 For monorepos, pass `--workspace-root` when scanning a package. Package-local checks still use the package directory, while repo-level guardrails such as `AGENTS.md`, `.github/workflows`, `LICENSE`, `SECURITY.md`, and `CONTRIBUTING.md` are read from the workspace root.
 
 `codeward review` compares a branch against a base ref for PR-style workflows. It separates newly introduced findings from risky files that already had findings on the base branch but were modified again, which helps reviewers notice when a PR touches known-dangerous surfaces such as committed `.env` files, MCP configs, or release scripts.
+
+`codeward verify` is the easiest PR-facing command. It combines `review`, `test-plan`, and `eval` into one report with review findings, readiness gates, suggested domain tests, suggested commands, and next actions.
 
 `codeward test-plan` turns changed file paths into a review-ready domain test checklist. Add `--include-working-tree` for local, uncommitted changes while iterating.
 
@@ -152,6 +161,7 @@ The first release focuses on high-signal checks that are useful across many repo
 See [docs/rules.md](docs/rules.md) for the rule catalog.
 See [docs/ecosystem.md](docs/ecosystem.md) for the agent ecosystem surfaces CodeWard tracks.
 See [docs/api-contracts.md](docs/api-contracts.md) for the API contract source-of-truth check.
+See [docs/verify.md](docs/verify.md) for the combined PR verification report.
 See [docs/eval.md](docs/eval.md) for the change readiness evaluation.
 
 ## Configuration

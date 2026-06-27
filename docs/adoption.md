@@ -28,13 +28,14 @@ Start advisory, then tighten the gate once the findings are understood.
 | --- | --- | --- |
 | 1. Baseline | `codeward scan .` | See current repo-level AI agent risks without blocking work. |
 | 2. Doctor | `codeward doctor . --format markdown` | Get an agent-readiness summary by guardrail area. |
-| 3. Review | `codeward review . --base origin/main --head HEAD --format markdown` | See new findings introduced by the branch. |
-| 4. Test plan | `codeward test-plan . --base origin/main --head HEAD --include-working-tree` | Suggest domain test scenarios for changed and local files. |
-| 5. Eval | `codeward eval . --base origin/main --head HEAD --pr-body-file pr-body.md` | Score intent capture, risk explanation, test evidence, and review size. |
-| 6. PR Action | `uses: IvoryCanvas/codeward@main` | Add annotations, a step summary, a test plan, eval, and a sticky PR comment. |
-| 7. Report | `codeward report . --output CODEWARD_REPORT.md` | Share a readable audit artifact in a PR or maintainer discussion. |
-| 8. High-risk gate | `codeward scan . --fail-on high` | Block obvious risks such as committed env files or unsafe scripts. |
-| 9. Medium-risk gate | `codeward scan . --fail-on medium` | Require stronger agent guidance, tests, and workflow permissions. |
+| 3. Verify | `codeward verify . --base origin/main --head HEAD --pr-body-file pr-body.md` | Combine review findings, readiness score, suggested domain tests, and next actions. |
+| 4. Review | `codeward review . --base origin/main --head HEAD --format markdown` | See new findings introduced by the branch. |
+| 5. Test plan | `codeward test-plan . --base origin/main --head HEAD --include-working-tree` | Suggest domain test scenarios for changed and local files. |
+| 6. Eval | `codeward eval . --base origin/main --head HEAD --pr-body-file pr-body.md` | Score intent capture, risk explanation, test evidence, and review size. |
+| 7. PR Action | `uses: IvoryCanvas/codeward@main` | Add annotations, a step summary, a test plan, eval, and a sticky PR comment. |
+| 8. Report | `codeward report . --output CODEWARD_REPORT.md` | Share a readable audit artifact in a PR or maintainer discussion. |
+| 9. High-risk gate | `codeward scan . --fail-on high` | Block obvious risks such as committed env files or unsafe scripts. |
+| 10. Medium-risk gate | `codeward scan . --fail-on medium` | Require stronger agent guidance, tests, and workflow permissions. |
 
 ## Monorepos
 
@@ -92,6 +93,12 @@ When the repository is stable, consider `--fail-on medium`.
 For all inputs, see [github-action.md](github-action.md).
 
 ## Change Readiness Eval
+
+For the most useful PR-facing report, start with `verify`:
+
+```sh
+codeward verify . --base origin/main --head HEAD --pr-body-file pr-body.md --format markdown
+```
 
 Use `codeward eval` when an AI-assisted branch looks plausible but reviewers need a faster way to decide what still needs human attention:
 
