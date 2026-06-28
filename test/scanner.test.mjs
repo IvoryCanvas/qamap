@@ -13,6 +13,7 @@ import {
   formatMarkdownReport,
   formatDoctorReport,
   formatMarkdownDoctorReport,
+  formatMarkdownE2eDraft,
   formatMarkdownE2ePlan,
   formatMarkdownReviewReport,
   formatMarkdownTestPlan,
@@ -20,6 +21,7 @@ import {
   formatReviewReport,
   formatSarifReport,
   generateAgentContext,
+  generateE2eDraft,
   generateE2ePlan,
   generateTestPlan,
   loadConfig,
@@ -466,6 +468,10 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
 
   const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
   const markdown = formatMarkdownE2ePlan(plan);
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".maestro" });
+  const draftMarkdown = formatMarkdownE2eDraft(draft);
+  const inkDraft = await readFile(path.join(root, ".maestro/ink-drawing-capture-flow.yaml"), "utf8");
+  const skippedDraft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".maestro" });
   const cliOutput = await execFileAsync(process.execPath, [
     cliPath,
     "e2e",
@@ -478,6 +484,20 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
     "--json",
   ]);
   const cliPlan = JSON.parse(cliOutput.stdout);
+  const cliDraftOutput = await execFileAsync(process.execPath, [
+    cliPath,
+    "e2e",
+    "draft",
+    root,
+    "--base",
+    "main",
+    "--head",
+    "HEAD",
+    "--output",
+    ".maestro-cli",
+    "--json",
+  ]);
+  const cliDraft = JSON.parse(cliDraftOutput.stdout);
 
   assert.equal(plan.project.type, "expo-react-native");
   assert.equal(plan.recommendedRunner.name, "maestro");
@@ -487,7 +507,17 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
   assert.deepEqual(plan.suggestedCommands, ["pnpm run lint"]);
   assert.match(markdown, /# CodeWard E2E Plan/);
   assert.match(markdown, /Recommended runner: Maestro/);
+  assert.equal(draft.runner, "maestro");
+  assert.ok(draft.files.some((file) => file.path === ".maestro/ink-drawing-capture-flow.yaml"));
+  assert.ok(draft.files.every((file) => file.status === "created"));
+  assert.ok(skippedDraft.files.some((file) => file.status === "skipped"));
+  assert.match(draftMarkdown, /# CodeWard E2E Draft/);
+  assert.match(inkDraft, /appId: \$\{APP_ID\}/);
+  assert.match(inkDraft, /Flow: Ink drawing capture flow/);
+  assert.match(inkDraft, /TODO:/);
   assert.equal(cliPlan.recommendedRunner.name, "maestro");
+  assert.equal(cliDraft.runner, "maestro");
+  assert.ok(cliDraft.files.some((file) => file.path === ".maestro-cli/ink-drawing-capture-flow.yaml"));
 });
 
 test("generateTestPlan suggests validation commands for common non-JavaScript projects", async () => {

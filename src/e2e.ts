@@ -7,7 +7,14 @@ import { TOOL_NAME, VERSION } from "./version.js";
 export type E2eProjectType = "expo-react-native" | "react-native" | "web" | "unknown";
 export type E2eRunnerName = "maestro" | "playwright" | "manual";
 
-export interface E2ePlanOptions extends TestPlanOptions {}
+export interface E2ePlanOptions extends TestPlanOptions {
+  runner?: E2eRunnerName;
+}
+
+export interface E2eDraftOptions extends E2ePlanOptions {
+  output?: string;
+  force?: boolean;
+}
 
 export interface E2eProjectProfile {
   type: E2eProjectType;
@@ -47,6 +54,28 @@ export interface E2ePlanResult {
   setupNotes: string[];
 }
 
+export interface E2eDraftFile {
+  path: string;
+  flowTitle: string;
+  runner: E2eRunnerName;
+  status: "created" | "skipped";
+  reason?: string;
+}
+
+export interface E2eDraftResult {
+  tool: {
+    name: string;
+    version: string;
+  };
+  root: string;
+  generatedAt: string;
+  runner: E2eRunnerName;
+  outputDirectory: string;
+  plan: E2ePlanResult;
+  files: E2eDraftFile[];
+  nextSteps: string[];
+}
+
 interface PackageJson {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
@@ -59,7 +88,7 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
   const root = path.resolve(rootInput);
   const testPlan = await generateTestPlan(root, options);
   const project = await detectProjectProfile(root);
-  const recommendedRunner = recommendRunner(project);
+  const recommendedRunner = options.runner ? overrideRunner(project, options.runner) : recommendRunner(project);
   const flows = await buildFlows(root, testPlan.changedFiles, recommendedRunner.name);
   const missingTestability = uniqueStrings([
     ...flows.flatMap((flow) => flow.missingTestability),
@@ -84,6 +113,53 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
     flows,
     missingTestability,
     setupNotes: await buildSetupNotes(root, recommendedRunner.name, project),
+  };
+}
+
+export async function generateE2eDraft(rootInput: string, options: E2eDraftOptions = {}): Promise<E2eDraftResult> {
+  const root = path.resolve(rootInput);
+  const plan = await generateE2ePlan(root, options);
+  const runner = plan.recommendedRunner.name;
+  const outputDirectory = path.resolve(root, options.output ?? defaultDraftOutputDirectory(runner));
+  const flows = plan.flows.length > 0 ? plan.flows : [buildFallbackFlow(plan)];
+
+  await fs.mkdir(outputDirectory, { recursive: true });
+
+  const files: E2eDraftFile[] = [];
+  for (const flow of flows) {
+    const filePath = path.join(outputDirectory, `${slugify(flow.title)}${draftExtension(runner)}`);
+    const displayPath = toDisplayPath(root, filePath);
+    if ((await exists(filePath)) && !options.force) {
+      files.push({
+        path: displayPath,
+        flowTitle: flow.title,
+        runner,
+        status: "skipped",
+        reason: "File already exists. Pass --force to overwrite it.",
+      });
+      continue;
+    }
+    await fs.writeFile(filePath, draftContentForFlow(plan, flow, runner), "utf8");
+    files.push({
+      path: displayPath,
+      flowTitle: flow.title,
+      runner,
+      status: "created",
+    });
+  }
+
+  return {
+    tool: {
+      name: TOOL_NAME,
+      version: VERSION,
+    },
+    root,
+    generatedAt: new Date().toISOString(),
+    runner,
+    outputDirectory: toDisplayPath(root, outputDirectory),
+    plan,
+    files,
+    nextSteps: buildDraftNextSteps(plan, runner),
   };
 }
 
@@ -181,6 +257,45 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
   return lines.join("\n");
 }
 
+export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
+  const lines: string[] = [];
+  lines.push("# CodeWard E2E Draft");
+  lines.push("");
+  lines.push(`- Root: \`${escapeMarkdownInline(result.root)}\``);
+  lines.push(`- Runner: ${formatRunnerName(result.runner)}`);
+  lines.push(`- Output directory: \`${escapeMarkdownInline(result.outputDirectory)}\``);
+  lines.push(`- Files: ${result.files.filter((file) => file.status === "created").length} created, ${result.files.filter((file) => file.status === "skipped").length} skipped`);
+  lines.push("");
+
+  lines.push("## Files");
+  lines.push("");
+  for (const file of result.files) {
+    const suffix = file.reason ? ` - ${file.reason}` : "";
+    lines.push(`- ${file.status}: \`${escapeMarkdownInline(file.path)}\` (${escapeMarkdownInline(file.flowTitle)})${suffix}`);
+  }
+  lines.push("");
+
+  if (result.plan.missingTestability.length > 0) {
+    lines.push("## Testability Gaps");
+    lines.push("");
+    for (const gap of result.plan.missingTestability) {
+      lines.push(`- ${escapeMarkdownInline(gap)}`);
+    }
+    lines.push("");
+  }
+
+  if (result.nextSteps.length > 0) {
+    lines.push("## Next Steps");
+    lines.push("");
+    for (const step of result.nextSteps) {
+      lines.push(`- ${escapeMarkdownInline(step)}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
 async function detectProjectProfile(root: string): Promise<E2eProjectProfile> {
   const packageJson = await readPackageJson(root);
   const dependencies = {
@@ -247,6 +362,27 @@ function recommendRunner(project: E2eProjectProfile): E2eRunnerRecommendation {
     name: "manual",
     reason:
       "No clear app platform was detected, so start with a manual smoke checklist before choosing a runnable E2E framework.",
+  };
+}
+
+function overrideRunner(project: E2eProjectProfile, runner: E2eRunnerName): E2eRunnerRecommendation {
+  if (runner === "maestro") {
+    return {
+      name: runner,
+      reason:
+        "Use Maestro because it was explicitly requested for this E2E draft. This is usually best for Expo and React Native apps.",
+    };
+  }
+  if (runner === "playwright") {
+    return {
+      name: runner,
+      reason:
+        "Use Playwright because it was explicitly requested for this E2E draft. This is usually best for browser-based web apps.",
+    };
+  }
+  return {
+    name: runner,
+    reason: `Use a manual checklist because no runnable E2E runner was selected for this ${formatProjectType(project.type)} project.`,
   };
 }
 
@@ -438,6 +574,208 @@ function dedupeFlows(flows: E2eFlow[]): E2eFlow[] {
   return deduped;
 }
 
+function buildFallbackFlow(plan: E2ePlanResult): E2eFlow {
+  return {
+    title: "App launch smoke flow",
+    reason:
+      "No changed user-facing files were detected, so CodeWard generated a minimal smoke draft for the detected app surface.",
+    files: [],
+    steps: [
+      "Launch the app.",
+      "Verify the first screen renders.",
+      "Exercise the primary visible action if one is present.",
+      "Verify the app remains usable after the action.",
+    ],
+    missingTestability: plan.missingTestability,
+  };
+}
+
+function defaultDraftOutputDirectory(runner: E2eRunnerName): string {
+  if (runner === "maestro") {
+    return ".maestro";
+  }
+  if (runner === "playwright") {
+    return "tests/e2e";
+  }
+  return "docs/e2e";
+}
+
+function draftExtension(runner: E2eRunnerName): string {
+  if (runner === "maestro") {
+    return ".yaml";
+  }
+  if (runner === "playwright") {
+    return ".spec.ts";
+  }
+  return ".md";
+}
+
+function draftContentForFlow(plan: E2ePlanResult, flow: E2eFlow, runner: E2eRunnerName): string {
+  if (runner === "maestro") {
+    return buildMaestroDraft(plan, flow);
+  }
+  if (runner === "playwright") {
+    return buildPlaywrightDraft(plan, flow);
+  }
+  return buildManualDraft(plan, flow);
+}
+
+function buildMaestroDraft(plan: E2ePlanResult, flow: E2eFlow): string {
+  const lines: string[] = [];
+  lines.push(`# Generated by CodeWard ${VERSION}`);
+  lines.push(`# Flow: ${flow.title}`);
+  lines.push(`# Base: ${plan.base}`);
+  lines.push(`# Head: ${plan.head}`);
+  lines.push("# Replace ${APP_ID} with the app id or export APP_ID before running Maestro.");
+  lines.push("");
+  lines.push("appId: ${APP_ID}");
+  lines.push("---");
+  lines.push("- launchApp");
+  for (const step of flow.steps) {
+    const command = maestroCommandForStep(step);
+    lines.push(`- ${command.kind}: ${command.value}`);
+  }
+  if (flow.missingTestability.length > 0) {
+    lines.push("");
+    lines.push("# Testability gaps to address before this flow is stable:");
+    for (const gap of flow.missingTestability) {
+      lines.push(`# - ${gap}`);
+    }
+  }
+  if (flow.files.length > 0) {
+    lines.push("");
+    lines.push("# Related changed files:");
+    for (const file of flow.files.slice(0, maxFilesPerFlow)) {
+      lines.push(`# - ${file}`);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function maestroCommandForStep(step: string): { kind: "tapOn" | "assertVisible" | "swipe"; value: string } {
+  if (isGestureStep(step)) {
+    return {
+      kind: "swipe",
+      value: "{ start: \"35%, 55%\", end: \"65%, 55%\" }",
+    };
+  }
+  if (isVerificationStep(step) && !isInteractionStep(step)) {
+    return {
+      kind: "assertVisible",
+      value: quoteYaml(`TODO: ${step}`),
+    };
+  }
+  return {
+    kind: "tapOn",
+    value: quoteYaml(`TODO: ${step}`),
+  };
+}
+
+function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow): string {
+  const testName = flow.title.replaceAll('"', "'");
+  const lines: string[] = [];
+  lines.push(`// Generated by CodeWard ${VERSION}`);
+  lines.push(`// Base: ${plan.base}`);
+  lines.push(`// Head: ${plan.head}`);
+  lines.push(`// Flow: ${flow.title}`);
+  lines.push("");
+  lines.push('import { expect, test } from "@playwright/test";');
+  lines.push("");
+  lines.push(`test("${testName}", async ({ page }) => {`);
+  lines.push('  await page.goto("/");');
+  for (const step of flow.steps) {
+    lines.push(`  // TODO: ${step}`);
+    if (isVerificationStep(step) && !isInteractionStep(step)) {
+      lines.push('  await expect(page.getByText("TODO")).toBeVisible();');
+    } else {
+      lines.push('  await page.getByText("TODO").click();');
+    }
+  }
+  lines.push("});");
+  if (flow.missingTestability.length > 0) {
+    lines.push("");
+    lines.push("// Testability gaps to address before this spec is stable:");
+    for (const gap of flow.missingTestability) {
+      lines.push(`// - ${gap}`);
+    }
+  }
+  if (flow.files.length > 0) {
+    lines.push("");
+    lines.push("// Related changed files:");
+    for (const file of flow.files.slice(0, maxFilesPerFlow)) {
+      lines.push(`// - ${file}`);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function buildManualDraft(plan: E2ePlanResult, flow: E2eFlow): string {
+  const lines: string[] = [];
+  lines.push(`# ${flow.title}`);
+  lines.push("");
+  lines.push(`Generated by CodeWard ${VERSION}.`);
+  lines.push("");
+  lines.push(`- Base: \`${plan.base}\``);
+  lines.push(`- Head: \`${plan.head}\``);
+  lines.push("");
+  lines.push("## Steps");
+  lines.push("");
+  for (const step of flow.steps) {
+    lines.push(`- [ ] ${step}`);
+  }
+  if (flow.missingTestability.length > 0) {
+    lines.push("");
+    lines.push("## Testability Gaps");
+    lines.push("");
+    for (const gap of flow.missingTestability) {
+      lines.push(`- ${gap}`);
+    }
+  }
+  if (flow.files.length > 0) {
+    lines.push("");
+    lines.push("## Related Changed Files");
+    lines.push("");
+    for (const file of flow.files.slice(0, maxFilesPerFlow)) {
+      lines.push(`- \`${file}\``);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function buildDraftNextSteps(plan: E2ePlanResult, runner: E2eRunnerName): string[] {
+  const steps: string[] = [];
+  if (runner === "maestro") {
+    steps.push("Replace ${APP_ID} or export APP_ID before running Maestro.");
+    steps.push("Replace TODO text selectors with visible copy, testID, or accessibilityLabel selectors.");
+    steps.push("Run the app with the launch command that matches your simulator or device, then run `maestro test .maestro`.");
+  } else if (runner === "playwright") {
+    steps.push("Replace TODO locators with role, text, or data-testid locators from the app.");
+    steps.push("Configure baseURL in Playwright before making the specs required in CI.");
+    steps.push("Run `npx playwright test` after the app can be served locally.");
+  } else {
+    steps.push("Choose a runnable E2E framework once the primary app surface is documented.");
+  }
+  if (plan.missingTestability.length > 0) {
+    steps.push("Address the listed testability gaps before treating the generated drafts as stable regression tests.");
+  }
+  return steps;
+}
+
+function isGestureStep(step: string): boolean {
+  return /\b(?:draw|stroke|swipe)\b/i.test(step);
+}
+
+function isInteractionStep(step: string): boolean {
+  return /^(?:choose|select|open|tap|click|create|save|return|switch|exercise)\b/i.test(step);
+}
+
+function isVerificationStep(step: string): boolean {
+  return /\b(?:verify|assert|visible|appears|renders|available|usable|remains|survive)\b/i.test(step);
+}
+
 async function readPackageJson(root: string): Promise<PackageJson | undefined> {
   try {
     return JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")) as PackageJson;
@@ -474,6 +812,30 @@ async function exists(filePath: string): Promise<boolean> {
 
 function uniqueStrings(values: string[]): string[] {
   return values.filter((value, index) => values.indexOf(value) === index);
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
+function quoteYaml(value: string): string {
+  return JSON.stringify(value);
+}
+
+function toDisplayPath(root: string, filePath: string): string {
+  const relativePath = path.relative(root, filePath);
+  if (!relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+    return toPosixPath(relativePath) || ".";
+  }
+  return filePath;
+}
+
+function toPosixPath(value: string): string {
+  return value.split(path.sep).join("/");
 }
 
 function formatProjectType(type: E2eProjectType): string {

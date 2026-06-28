@@ -131,6 +131,7 @@ node dist/cli.js scan /path/to/repo
 | `codeward github-action . --mode review --base origin/main --head HEAD` | Generate GitHub Action annotations, step summary, and PR comment body. |
 | `codeward test-plan . --base origin/main --head HEAD --include-working-tree` | Suggest domain test scenarios for changed files. |
 | `codeward e2e plan . --base origin/main --head HEAD` | Suggest E2E runner, user flows, and missing testability hooks for changed files. |
+| `codeward e2e draft . --base origin/main --head HEAD` | Generate first-pass Maestro or Playwright E2E draft files from changed flows. |
 | `codeward doctor services/offer --workspace-root .` | Scan a monorepo package while using root guardrails. |
 | `codeward context . --write AGENTS.md` | Generate starter agent instructions for the repo. |
 | `codeward init .` | Create a starter `codeward.config.json`. |
@@ -144,6 +145,8 @@ For monorepos, pass `--workspace-root` when scanning a package. Package-local ch
 `codeward test-plan` turns changed file paths into a review-ready domain test checklist. It also discovers common validation commands from `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, Gradle files, and Maven `pom.xml`. Add `--include-working-tree` for local, uncommitted changes while iterating.
 
 `codeward e2e plan` turns changed file paths into a first-pass E2E testing plan. It detects whether a project looks like Expo/React Native or web, recommends a runner such as Maestro or Playwright, suggests candidate user flows, and points out missing stable selectors such as `testID` or `data-testid` before anyone starts writing tests from a blank file.
+
+`codeward e2e draft` writes runnable draft files from that plan. Expo and React Native projects get Maestro YAML flows under `.maestro/` by default, while web projects get Playwright specs under `tests/e2e/`. Drafts keep `TODO` placeholders where stable selectors or project-specific launch details are still needed, and existing files are not overwritten unless `--force` is passed.
 
 `codeward eval` scores whether a branch has enough validation evidence, changed-test coverage, intent capture, risk explanation, domain verification paths, and reviewable size. In GitHub Actions, CodeWard can read the pull request body from the event payload and append the evaluation to the PR comment.
 
@@ -245,7 +248,7 @@ Near-term priorities:
 - publish a versioned GitHub Action release tag
 - improve branch-aware `review` changed-line locations
 - improve generated domain test plans with framework-specific test skeletons
-- turn E2E plans into runnable Maestro and Playwright draft files
+- refine generated Maestro and Playwright drafts with stronger app-specific selector discovery
 - expand `eval` into repository-specific verification manifests and taste rubrics
 - continue expanding agent surface detection across Codex, Claude Code, Cursor, Copilot, Gemini, and related tools
 - generate rule documentation from scanner metadata
