@@ -73,6 +73,8 @@ export interface E2eDraftFile {
   flowTitle: string;
   runner: E2eRunnerName;
   status: "created" | "skipped";
+  todoCount?: number;
+  inferredSelectorCount?: number;
   reason?: string;
 }
 
@@ -153,12 +155,15 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
       });
       continue;
     }
-    await fs.writeFile(filePath, draftContentForFlow(plan, flow, runner), "utf8");
+    const content = draftContentForFlow(plan, flow, runner);
+    await fs.writeFile(filePath, content, "utf8");
     files.push({
       path: displayPath,
       flowTitle: flow.title,
       runner,
       status: "created",
+      todoCount: countTodos(content),
+      inferredSelectorCount: flow.selectors.length,
     });
   }
 
@@ -284,7 +289,8 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
   lines.push("## Files");
   lines.push("");
   for (const file of result.files) {
-    const suffix = file.reason ? ` - ${file.reason}` : "";
+    const quality = formatDraftFileQuality(file);
+    const suffix = file.reason ? ` - ${file.reason}` : quality ? ` - ${quality}` : "";
     lines.push(`- ${file.status}: \`${escapeMarkdownInline(file.path)}\` (${escapeMarkdownInline(file.flowTitle)})${suffix}`);
   }
   lines.push("");
@@ -815,6 +821,23 @@ function buildDraftNextSteps(plan: E2ePlanResult, runner: E2eRunnerName): string
     steps.push("Address the listed testability gaps before treating the generated drafts as stable regression tests.");
   }
   return steps;
+}
+
+function formatDraftFileQuality(file: E2eDraftFile): string | undefined {
+  const details: string[] = [];
+  if (file.todoCount !== undefined) {
+    details.push(`${file.todoCount} TODO${file.todoCount === 1 ? "" : "s"}`);
+  }
+  if (file.inferredSelectorCount !== undefined) {
+    details.push(
+      `${file.inferredSelectorCount} inferred selector${file.inferredSelectorCount === 1 ? "" : "s"}`,
+    );
+  }
+  return details.length > 0 ? details.join(", ") : undefined;
+}
+
+function countTodos(content: string): number {
+  return [...content.matchAll(/\bTODO\b/g)].length;
 }
 
 function formatMaestroCommand(command: { kind: "tapOn" | "assertVisible" | "swipe"; value: string }): string[] {

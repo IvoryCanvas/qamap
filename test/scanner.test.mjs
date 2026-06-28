@@ -473,6 +473,7 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
   const inkDraft = await readFile(path.join(root, ".maestro/ink-drawing-capture-flow.yaml"), "utf8");
   const recordModeDraft = await readFile(path.join(root, ".maestro/record-mode-selection-flow.yaml"), "utf8");
   const skippedDraft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".maestro" });
+  const forcedDraft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".maestro", force: true });
   const cliOutput = await execFileAsync(process.execPath, [
     cliPath,
     "e2e",
@@ -513,8 +514,13 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
   assert.equal(draft.runner, "maestro");
   assert.ok(draft.files.some((file) => file.path === ".maestro/ink-drawing-capture-flow.yaml"));
   assert.ok(draft.files.every((file) => file.status === "created"));
+  assert.ok(draft.files.some((file) => file.todoCount !== undefined && file.todoCount > 0));
+  assert.ok(draft.files.some((file) => file.inferredSelectorCount !== undefined && file.inferredSelectorCount > 0));
   assert.ok(skippedDraft.files.some((file) => file.status === "skipped"));
+  assert.ok(forcedDraft.files.every((file) => file.status === "created"));
   assert.match(draftMarkdown, /# CodeWard E2E Draft/);
+  assert.match(draftMarkdown, /TODOs/);
+  assert.match(draftMarkdown, /inferred selector/);
   assert.match(inkDraft, /appId: \$\{APP_ID\}/);
   assert.match(inkDraft, /Flow: Ink drawing capture flow/);
   assert.match(inkDraft, /tapOn: \{ id: "ink-save-button" \}/);
@@ -571,6 +577,36 @@ test("generateE2eDraft uses web selectors in Playwright specs", async () => {
   assert.ok(draft.files.some((file) => file.path === "tests/e2e/changed-ui-smoke-flow.spec.ts"));
   assert.match(spec, /page\.getByTestId\("checkout-submit"\)/);
   assert.match(spec, /Inferred selectors/);
+});
+
+test("generateE2eDraft creates a fallback smoke draft without changed files", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        vite: "^7.0.0",
+      },
+    }),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const spec = await readFile(path.join(root, "tests/e2e/app-launch-smoke-flow.spec.ts"), "utf8");
+
+  assert.equal(draft.files.length, 1);
+  assert.equal(draft.files[0].flowTitle, "App launch smoke flow");
+  assert.match(spec, /Flow: App launch smoke flow/);
+  assert.match(spec, /page\.goto\("\/"\)/);
 });
 
 test("generateTestPlan suggests validation commands for common non-JavaScript projects", async () => {
