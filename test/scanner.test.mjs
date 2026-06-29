@@ -2103,6 +2103,7 @@ test("generateAgentContext reflects npm scripts and repository boundaries", asyn
   assert.match(context, /Build command: `npm run build`/);
   assert.match(context, /Do not push directly to `main`/);
   assert.match(context, /Never create or suggest branches with a `codex\/` prefix/);
+  assert.match(context, /Use `feat\/`, `fix\/`, `refactor\/`, `style\/`, `hotfix\/`, `chore\/`, or `docs\/` branch prefixes/);
 });
 
 async function makeTempRepo() {

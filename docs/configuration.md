@@ -54,7 +54,8 @@ Commit-friendly files:
 
 - `codeward.config.json`
 - `.codeward/flows.yml` when a project chooses to define durable core flows
-- `.codeward/domains.yml` when a project chooses to define durable domain mappings
+
+CodeWard does not currently load a separate domain manifest. Domain language suggestions are derived from committed core flows, changed paths, and selected UI copy until a future domain mapping file is implemented.
 
 Ignored local artifacts:
 
