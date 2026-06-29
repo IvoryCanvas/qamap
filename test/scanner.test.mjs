@@ -13,12 +13,16 @@ import {
   formatMarkdownReport,
   formatDoctorReport,
   formatMarkdownDoctorReport,
+  formatMarkdownE2eDraft,
+  formatMarkdownE2ePlan,
   formatMarkdownReviewReport,
   formatMarkdownTestPlan,
   formatMarkdownVerifyReport,
   formatReviewReport,
   formatSarifReport,
   generateAgentContext,
+  generateE2eDraft,
+  generateE2ePlan,
   generateTestPlan,
   loadConfig,
   reviewProject,
@@ -411,6 +415,268 @@ test("generateTestPlan scopes monorepo changes to the requested package", async 
   assert.ok(localPlan.changedFiles.some((file) => file.path === "src/pages/offer/detail.tsx"));
   assert.ok(localPlan.items.some((item) => item.title === "User-facing UI states"));
   assert.match(localMarkdown, /Includes working tree changes: yes/);
+});
+
+test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/home/model"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/home/ui"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/InkDrawingPage"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      packageManager: "pnpm@10.32.1",
+      scripts: {
+        start: "expo start",
+        ios: "expo run:ios",
+        lint: "expo lint",
+      },
+      dependencies: {
+        expo: "^54.0.0",
+        "react-native": "0.81.0",
+      },
+    }),
+  );
+  await writeFile(path.join(root, "app.json"), JSON.stringify({ expo: { name: "Fixture" } }));
+  await writeFile(path.join(root, "app/index.tsx"), "export default function Home() { return null; }\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/ink-flow"]);
+  await writeFile(
+    path.join(root, "src/pages/home/ui/RecordModeSheet.tsx"),
+    [
+      "import { Pressable, Text } from 'react-native';",
+      "export function RecordModeSheet() {",
+      "  return <Pressable testID=\"record-mode-ink\" onPress={() => undefined}><Text>Ink</Text></Pressable>;",
+      "}",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "src/pages/InkDrawingPage/InkDrawingPage.tsx"),
+    [
+      "import { Pressable, Text } from 'react-native';",
+      "export function InkDrawingPage() {",
+      "  return <Pressable testID=\"ink-save-button\" accessibilityLabel=\"Save drawing\" onPress={() => undefined}><Text>Save drawing</Text></Pressable>;",
+      "}",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "src/pages/home/model/useHomeController.ts"),
+    "export function useHomeController() { return { ready: true }; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "add ink flow"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const markdown = formatMarkdownE2ePlan(plan);
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".maestro" });
+  const draftMarkdown = formatMarkdownE2eDraft(draft);
+  const uiFlow = plan.flows.find((flow) => flow.title.endsWith("UI smoke flow"));
+  const uiDraftFile = draft.files.find((file) => file.flowTitle === uiFlow?.title);
+  assert.ok(uiFlow);
+  assert.ok(uiDraftFile);
+  const uiDraft = await readFile(path.join(root, uiDraftFile.path), "utf8");
+  const skippedDraft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".maestro" });
+  const forcedDraft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".maestro", force: true });
+  const cliOutput = await execFileAsync(process.execPath, [
+    cliPath,
+    "e2e",
+    "plan",
+    root,
+    "--base",
+    "main",
+    "--head",
+    "HEAD",
+    "--json",
+  ]);
+  const cliPlan = JSON.parse(cliOutput.stdout);
+  const cliDraftOutput = await execFileAsync(process.execPath, [
+    cliPath,
+    "e2e",
+    "draft",
+    root,
+    "--base",
+    "main",
+    "--head",
+    "HEAD",
+    "--output",
+    ".maestro-cli",
+    "--json",
+  ]);
+  const cliDraft = JSON.parse(cliDraftOutput.stdout);
+
+  assert.equal(plan.project.type, "expo-react-native");
+  assert.equal(plan.recommendedRunner.name, "maestro");
+  assert.ok(uiFlow.title.endsWith("UI smoke flow"));
+  assert.ok(plan.flows.every((flow) => flow.coverage.length > 0));
+  assert.ok(plan.flows.some((flow) => flow.coverage.some((target) => target.title === "Loading, empty, error, and success states")));
+  assert.equal(
+    uiFlow.coverage.some((target) => target.title === "API contract compatibility"),
+    false,
+  );
+  assert.equal(plan.flows.some((flow) => flow.title === "Ink drawing capture flow"), false);
+  assert.equal(plan.flows.some((flow) => flow.title === "Record mode selection flow"), false);
+  assert.ok(plan.flows.some((flow) => flow.selectors.some((selector) => selector.value === "ink-save-button")));
+  assert.ok(plan.flows.some((flow) => flow.selectors.some((selector) => selector.value === "record-mode-ink")));
+  assert.ok(plan.missingTestability.some((gap) => /\.maestro/.test(gap)));
+  assert.deepEqual(plan.suggestedCommands, ["pnpm run lint"]);
+  assert.match(markdown, /# CodeWard E2E Plan/);
+  assert.match(markdown, /Recommended runner: Maestro/);
+  assert.match(markdown, /Coverage targets:/);
+  assert.equal(draft.runner, "maestro");
+  assert.ok(draft.files.some((file) => file.flowTitle === uiFlow.title));
+  assert.ok(draft.files.every((file) => file.status === "created"));
+  assert.ok(draft.files.some((file) => file.todoCount !== undefined && file.todoCount > 0));
+  assert.ok(draft.files.some((file) => file.inferredSelectorCount !== undefined && file.inferredSelectorCount > 0));
+  assert.ok(draft.files.some((file) => file.coverageTargetCount !== undefined && file.coverageTargetCount > 0));
+  assert.ok(skippedDraft.files.some((file) => file.status === "skipped"));
+  assert.ok(forcedDraft.files.every((file) => file.status === "created"));
+  assert.match(draftMarkdown, /# CodeWard E2E Draft/);
+  assert.match(draftMarkdown, /TODOs/);
+  assert.match(draftMarkdown, /inferred selector/);
+  assert.match(draftMarkdown, /coverage targets/);
+  assert.match(uiDraft, /appId: \$\{APP_ID\}/);
+  assert.match(uiDraft, new RegExp(`Flow: ${uiFlow.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(uiDraft, /tapOn: \{ id: "ink-save-button" \}/);
+  assert.match(uiDraft, /record-mode-ink/);
+  assert.match(uiDraft, /Coverage matrix/);
+  assert.match(uiDraft, /Loading, empty, error, and success states/);
+  assert.match(uiDraft, /TODO:/);
+  assert.equal(cliPlan.recommendedRunner.name, "maestro");
+  assert.equal(cliDraft.runner, "maestro");
+  assert.ok(cliDraft.files.some((file) => file.flowTitle === uiFlow.title));
+});
+
+test("generateE2ePlan keeps service changes generic and avoids fixture-specific names", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/services/audit"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        test: "node --test",
+      },
+    }),
+  );
+  await writeFile(path.join(root, "src/services/audit/recordService.ts"), "export const record = () => true;\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/audit-service"]);
+  await mkdir(path.join(root, "src/services/audit/api"), { recursive: true });
+  await mkdir(path.join(root, "src/services/audit/store"), { recursive: true });
+  await writeFile(path.join(root, "src/services/audit/recordService.ts"), "export const record = () => 'changed';\n");
+  await writeFile(path.join(root, "src/services/audit/api/client.ts"), "export const endpoint = '/audit';\n");
+  await writeFile(path.join(root, "src/services/audit/store/sessionState.ts"), "export const sessionState = new Map();\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update audit service"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const titles = plan.flows.map((flow) => flow.title);
+
+  assert.equal(plan.recommendedRunner.name, "manual");
+  assert.ok(titles.includes("Audit API contract smoke checklist"));
+  assert.ok(titles.includes("Audit state transition flow"));
+  assert.ok(titles.includes("Audit workflow smoke checklist"));
+  assert.ok(
+    plan.flows.some((flow) =>
+      flow.title === "Audit API contract smoke checklist" &&
+      flow.coverage.some((target) => target.title === "Network and server failure handling"),
+    ),
+  );
+  assert.ok(
+    plan.flows.some((flow) =>
+      flow.title === "Audit state transition flow" &&
+      flow.coverage.some((target) => target.title === "State transition boundaries"),
+    ),
+  );
+  assert.equal(titles.some((title) => /Ink drawing|Record mode|Saved entry|Localized visual/i.test(title)), false);
+});
+
+test("generateE2eDraft uses web selectors in Playwright specs", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/pages/checkout"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      packageManager: "pnpm@10.32.1",
+      scripts: {
+        test: "playwright test",
+      },
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        vite: "^7.0.0",
+        "react-dom": "^19.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/pages/checkout/CheckoutPage.tsx"),
+    "export function CheckoutPage() { return <button data-testid=\"checkout-submit\">Complete checkout</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/checkout-copy"]);
+  await writeFile(
+    path.join(root, "src/pages/checkout/CheckoutPage.tsx"),
+    "export function CheckoutPage() { return <button data-testid=\"checkout-submit\" aria-label=\"Complete checkout\">Complete checkout</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update checkout page"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const spec = await readFile(path.join(root, "tests/e2e/checkout-ui-smoke-flow.spec.ts"), "utf8");
+
+  assert.equal(draft.runner, "playwright");
+  assert.ok(draft.files.some((file) => file.path === "tests/e2e/checkout-ui-smoke-flow.spec.ts"));
+  assert.match(spec, /page\.getByTestId\("checkout-submit"\)/);
+  assert.match(spec, /Coverage matrix/);
+  assert.match(spec, /Browser viewport regression/);
+  assert.match(spec, /Inferred selectors/);
+});
+
+test("generateE2eDraft creates a fallback smoke draft without changed files", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        vite: "^7.0.0",
+      },
+    }),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const spec = await readFile(path.join(root, "tests/e2e/app-launch-smoke-flow.spec.ts"), "utf8");
+
+  assert.equal(draft.files.length, 1);
+  assert.equal(draft.files[0].flowTitle, "App launch smoke flow");
+  assert.match(spec, /Flow: App launch smoke flow/);
+  assert.match(spec, /page\.goto\("\/"\)/);
 });
 
 test("generateTestPlan suggests validation commands for common non-JavaScript projects", async () => {

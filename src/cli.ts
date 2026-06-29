@@ -4,6 +4,7 @@ import path from "node:path";
 import { loadConfig, writeDefaultConfig } from "./config.js";
 import { generateAgentContext } from "./context.js";
 import { buildDoctorResult, formatDoctorReport, formatMarkdownDoctorReport } from "./doctor.js";
+import { formatMarkdownE2eDraft, formatMarkdownE2ePlan, generateE2eDraft, generateE2ePlan } from "./e2e.js";
 import { evaluateChangeReadiness, formatEvalReport, formatMarkdownEvalReport } from "./eval.js";
 import { runGitHubAction } from "./github.js";
 import { formatMarkdownReport, formatSarifReport, formatTextReport, hasFindingsAtOrAbove } from "./report.js";
@@ -15,6 +16,7 @@ import { formatMarkdownVerifyReport, formatVerifyReport, verifyChange } from "./
 import type { CodeWardConfig } from "./types.js";
 import type { Severity } from "./types.js";
 import { VERSION } from "./version.js";
+import type { E2eRunnerName } from "./e2e.js";
 import type { GitHubActionMode } from "./github.js";
 
 type OutputFormat = "text" | "json" | "markdown" | "sarif";
@@ -43,6 +45,7 @@ interface ParsedOptions {
   evalFile?: string;
   prBodyFile?: string;
   includeWorkingTree?: boolean;
+  e2eRunner?: E2eRunnerName;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -176,6 +179,41 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (command === "e2e") {
+    const [subcommand, ...subcommandRest] = rest;
+    if (!subcommand || subcommand === "--help" || subcommand === "-h") {
+      printE2eHelp();
+      return 0;
+    }
+    if (subcommand !== "plan" && subcommand !== "draft") {
+      throw new Error(`Unknown e2e subcommand: ${subcommand}`);
+    }
+    const options = parseOptions(subcommandRest);
+    const loadedConfig = await loadOptionsConfig(options);
+    const e2eOptions = {
+      base: options.base,
+      head: options.head,
+      workspaceRoot: options.workspaceRoot,
+      includeWorkingTree: options.includeWorkingTree,
+      validationCommands: loadedConfig.config.validationCommands,
+      runner: options.e2eRunner,
+    };
+    if (subcommand === "plan") {
+      const result = await generateE2ePlan(options.path, e2eOptions);
+      const output = formatE2ePlanOutput(result, options.format ?? (options.json ? "json" : "markdown"));
+      await printOrWrite(output, options.output);
+      return 0;
+    }
+    const result = await generateE2eDraft(options.path, {
+      ...e2eOptions,
+      output: options.output,
+      force: options.force,
+    });
+    const output = formatE2eDraftOutput(result, options.format ?? (options.json ? "json" : "markdown"));
+    console.log(output.trimEnd());
+    return 0;
+  }
+
   if (command === "context") {
     const options = parseOptions(rest);
     const context = await generateAgentContext(options.path);
@@ -291,6 +329,15 @@ function parseOptions(args: string[]): ParsedOptions {
         throw new Error(`Invalid mode for --mode: ${value}`);
       }
       options.mode = value;
+      continue;
+    }
+
+    if (arg === "--runner") {
+      const value = readValue(args, ++index, arg);
+      if (!isE2eRunnerName(value)) {
+        throw new Error(`Invalid runner for --runner: ${value}`);
+      }
+      options.e2eRunner = value;
       continue;
     }
 
@@ -455,6 +502,26 @@ function formatTestPlanOutput(result: Awaited<ReturnType<typeof generateTestPlan
   return formatMarkdownTestPlan(result);
 }
 
+function formatE2ePlanOutput(result: Awaited<ReturnType<typeof generateE2ePlan>>, format: OutputFormat): string {
+  if (format === "json") {
+    return `${JSON.stringify(result, null, 2)}\n`;
+  }
+  if (format !== "markdown" && format !== "text") {
+    throw new Error(`E2E plan supports text, json, or markdown output, not ${format}`);
+  }
+  return formatMarkdownE2ePlan(result);
+}
+
+function formatE2eDraftOutput(result: Awaited<ReturnType<typeof generateE2eDraft>>, format: OutputFormat): string {
+  if (format === "json") {
+    return `${JSON.stringify(result, null, 2)}\n`;
+  }
+  if (format !== "markdown" && format !== "text") {
+    throw new Error(`E2E draft supports text, json, or markdown output, not ${format}`);
+  }
+  return formatMarkdownE2eDraft(result);
+}
+
 function formatEvalOutput(result: Awaited<ReturnType<typeof evaluateChangeReadiness>>, format: OutputFormat): string {
   if (format === "json") {
     return `${JSON.stringify(result, null, 2)}\n`;
@@ -499,6 +566,10 @@ function isGitHubActionMode(value: string): value is GitHubActionMode {
   return value === "auto" || value === "scan" || value === "review";
 }
 
+function isE2eRunnerName(value: string): value is E2eRunnerName {
+  return value === "maestro" || value === "playwright" || value === "manual";
+}
+
 function readValue(args: string[], index: number, flag: string): string {
   const value = args[index];
   if (!value || value.startsWith("-")) {
@@ -521,6 +592,8 @@ Usage:
   codeward eval [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--pr-body-file <file>] [--format <format>]
   codeward github-action [path] [--mode auto|scan|review] [--base <ref>] [--head <ref>] [--fail-on <severity>]
   codeward test-plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--format <format>] [--output <file>]
+  codeward e2e plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--format <format>]
+  codeward e2e draft [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--runner maestro|playwright|manual] [--output <dir>] [--force]
   codeward context [path] [--write [file]] [--force]
   codeward init [path] [--write <file>] [--force]
 
@@ -542,9 +615,27 @@ Examples:
   codeward eval . --base origin/main --head HEAD --pr-body-file pr-body.md
   codeward github-action . --mode review --base origin/main --head HEAD --fail-on high
   codeward test-plan . --base origin/main --head HEAD
+  codeward e2e plan . --base origin/main --head HEAD
+  codeward e2e draft . --base origin/main --head HEAD
   codeward test-plan services/offer --workspace-root . --base origin/main --head HEAD --include-working-tree
   codeward context . --write AGENTS.md
   codeward init .
+`);
+}
+
+function printE2eHelp(): void {
+  console.log(`CodeWard ${VERSION}
+
+E2E planning for AI-assisted changes.
+
+Usage:
+  codeward e2e plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--format <format>] [--output <file>]
+  codeward e2e draft [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--runner maestro|playwright|manual] [--output <dir>] [--force]
+
+Examples:
+  codeward e2e plan . --base origin/main --head HEAD
+  codeward e2e draft . --base origin/main --head HEAD
+  codeward e2e plan apps/mobile --workspace-root . --include-working-tree
 `);
 }
 
