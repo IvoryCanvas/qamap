@@ -421,6 +421,7 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
   await mkdir(path.join(root, "app"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/home/model"), { recursive: true });
   await mkdir(path.join(root, "src/pages/home/ui"), { recursive: true });
   await mkdir(path.join(root, "src/pages/InkDrawingPage"), { recursive: true });
   await writeFile(
@@ -463,6 +464,10 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
       "}",
     ].join("\n"),
   );
+  await writeFile(
+    path.join(root, "src/pages/home/model/useHomeController.ts"),
+    "export function useHomeController() { return { ready: true }; }\n",
+  );
   await git(root, ["add", "."]);
   await git(root, ["commit", "-m", "add ink flow"]);
 
@@ -470,8 +475,11 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
   const markdown = formatMarkdownE2ePlan(plan);
   const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".maestro" });
   const draftMarkdown = formatMarkdownE2eDraft(draft);
-  const inkDraft = await readFile(path.join(root, ".maestro/ink-drawing-capture-flow.yaml"), "utf8");
-  const recordModeDraft = await readFile(path.join(root, ".maestro/record-mode-selection-flow.yaml"), "utf8");
+  const uiFlow = plan.flows.find((flow) => flow.title.endsWith("UI smoke flow"));
+  const uiDraftFile = draft.files.find((file) => file.flowTitle === uiFlow?.title);
+  assert.ok(uiFlow);
+  assert.ok(uiDraftFile);
+  const uiDraft = await readFile(path.join(root, uiDraftFile.path), "utf8");
   const skippedDraft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".maestro" });
   const forcedDraft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".maestro", force: true });
   const cliOutput = await execFileAsync(process.execPath, [
@@ -503,32 +511,92 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
 
   assert.equal(plan.project.type, "expo-react-native");
   assert.equal(plan.recommendedRunner.name, "maestro");
-  assert.ok(plan.flows.some((flow) => flow.title === "Ink drawing capture flow"));
-  assert.ok(plan.flows.some((flow) => flow.title === "Record mode selection flow"));
+  assert.ok(uiFlow.title.endsWith("UI smoke flow"));
+  assert.ok(plan.flows.every((flow) => flow.coverage.length > 0));
+  assert.ok(plan.flows.some((flow) => flow.coverage.some((target) => target.title === "Loading, empty, error, and success states")));
+  assert.equal(
+    uiFlow.coverage.some((target) => target.title === "API contract compatibility"),
+    false,
+  );
+  assert.equal(plan.flows.some((flow) => flow.title === "Ink drawing capture flow"), false);
+  assert.equal(plan.flows.some((flow) => flow.title === "Record mode selection flow"), false);
   assert.ok(plan.flows.some((flow) => flow.selectors.some((selector) => selector.value === "ink-save-button")));
   assert.ok(plan.flows.some((flow) => flow.selectors.some((selector) => selector.value === "record-mode-ink")));
   assert.ok(plan.missingTestability.some((gap) => /\.maestro/.test(gap)));
   assert.deepEqual(plan.suggestedCommands, ["pnpm run lint"]);
   assert.match(markdown, /# CodeWard E2E Plan/);
   assert.match(markdown, /Recommended runner: Maestro/);
+  assert.match(markdown, /Coverage targets:/);
   assert.equal(draft.runner, "maestro");
-  assert.ok(draft.files.some((file) => file.path === ".maestro/ink-drawing-capture-flow.yaml"));
+  assert.ok(draft.files.some((file) => file.flowTitle === uiFlow.title));
   assert.ok(draft.files.every((file) => file.status === "created"));
   assert.ok(draft.files.some((file) => file.todoCount !== undefined && file.todoCount > 0));
   assert.ok(draft.files.some((file) => file.inferredSelectorCount !== undefined && file.inferredSelectorCount > 0));
+  assert.ok(draft.files.some((file) => file.coverageTargetCount !== undefined && file.coverageTargetCount > 0));
   assert.ok(skippedDraft.files.some((file) => file.status === "skipped"));
   assert.ok(forcedDraft.files.every((file) => file.status === "created"));
   assert.match(draftMarkdown, /# CodeWard E2E Draft/);
   assert.match(draftMarkdown, /TODOs/);
   assert.match(draftMarkdown, /inferred selector/);
-  assert.match(inkDraft, /appId: \$\{APP_ID\}/);
-  assert.match(inkDraft, /Flow: Ink drawing capture flow/);
-  assert.match(inkDraft, /tapOn: \{ id: "ink-save-button" \}/);
-  assert.match(recordModeDraft, /tapOn: \{ id: "record-mode-ink" \}/);
-  assert.match(inkDraft, /TODO:/);
+  assert.match(draftMarkdown, /coverage targets/);
+  assert.match(uiDraft, /appId: \$\{APP_ID\}/);
+  assert.match(uiDraft, new RegExp(`Flow: ${uiFlow.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(uiDraft, /tapOn: \{ id: "ink-save-button" \}/);
+  assert.match(uiDraft, /record-mode-ink/);
+  assert.match(uiDraft, /Coverage matrix/);
+  assert.match(uiDraft, /Loading, empty, error, and success states/);
+  assert.match(uiDraft, /TODO:/);
   assert.equal(cliPlan.recommendedRunner.name, "maestro");
   assert.equal(cliDraft.runner, "maestro");
-  assert.ok(cliDraft.files.some((file) => file.path === ".maestro-cli/ink-drawing-capture-flow.yaml"));
+  assert.ok(cliDraft.files.some((file) => file.flowTitle === uiFlow.title));
+});
+
+test("generateE2ePlan keeps service changes generic and avoids fixture-specific names", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/services/audit"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        test: "node --test",
+      },
+    }),
+  );
+  await writeFile(path.join(root, "src/services/audit/recordService.ts"), "export const record = () => true;\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/audit-service"]);
+  await mkdir(path.join(root, "src/services/audit/api"), { recursive: true });
+  await mkdir(path.join(root, "src/services/audit/store"), { recursive: true });
+  await writeFile(path.join(root, "src/services/audit/recordService.ts"), "export const record = () => 'changed';\n");
+  await writeFile(path.join(root, "src/services/audit/api/client.ts"), "export const endpoint = '/audit';\n");
+  await writeFile(path.join(root, "src/services/audit/store/sessionState.ts"), "export const sessionState = new Map();\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update audit service"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const titles = plan.flows.map((flow) => flow.title);
+
+  assert.equal(plan.recommendedRunner.name, "manual");
+  assert.ok(titles.includes("Audit API contract smoke checklist"));
+  assert.ok(titles.includes("Audit state transition flow"));
+  assert.ok(titles.includes("Audit workflow smoke checklist"));
+  assert.ok(
+    plan.flows.some((flow) =>
+      flow.title === "Audit API contract smoke checklist" &&
+      flow.coverage.some((target) => target.title === "Network and server failure handling"),
+    ),
+  );
+  assert.ok(
+    plan.flows.some((flow) =>
+      flow.title === "Audit state transition flow" &&
+      flow.coverage.some((target) => target.title === "State transition boundaries"),
+    ),
+  );
+  assert.equal(titles.some((title) => /Ink drawing|Record mode|Saved entry|Localized visual/i.test(title)), false);
 });
 
 test("generateE2eDraft uses web selectors in Playwright specs", async () => {
@@ -571,11 +639,13 @@ test("generateE2eDraft uses web selectors in Playwright specs", async () => {
     output: "tests/e2e",
     runner: "playwright",
   });
-  const spec = await readFile(path.join(root, "tests/e2e/changed-ui-smoke-flow.spec.ts"), "utf8");
+  const spec = await readFile(path.join(root, "tests/e2e/checkout-ui-smoke-flow.spec.ts"), "utf8");
 
   assert.equal(draft.runner, "playwright");
-  assert.ok(draft.files.some((file) => file.path === "tests/e2e/changed-ui-smoke-flow.spec.ts"));
+  assert.ok(draft.files.some((file) => file.path === "tests/e2e/checkout-ui-smoke-flow.spec.ts"));
   assert.match(spec, /page\.getByTestId\("checkout-submit"\)/);
+  assert.match(spec, /Coverage matrix/);
+  assert.match(spec, /Browser viewport regression/);
   assert.match(spec, /Inferred selectors/);
 });
 

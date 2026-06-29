@@ -33,11 +33,21 @@ export interface E2eRunnerRecommendation {
   reason: string;
 }
 
+export type E2eCoveragePriority = "critical" | "recommended" | "optional";
+
+export interface E2eCoverageTarget {
+  title: string;
+  priority: E2eCoveragePriority;
+  reason: string;
+  checks: string[];
+}
+
 export interface E2eFlow {
   title: string;
   reason: string;
   files: string[];
   steps: string[];
+  coverage: E2eCoverageTarget[];
   selectors: E2eSelector[];
   missingTestability: string[];
 }
@@ -75,6 +85,7 @@ export interface E2eDraftFile {
   status: "created" | "skipped";
   todoCount?: number;
   inferredSelectorCount?: number;
+  coverageTargetCount?: number;
   reason?: string;
 }
 
@@ -105,7 +116,7 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
   const testPlan = await generateTestPlan(root, options);
   const project = await detectProjectProfile(root);
   const recommendedRunner = options.runner ? overrideRunner(project, options.runner) : recommendRunner(project);
-  const flows = await buildFlows(root, testPlan.changedFiles, recommendedRunner.name);
+  const flows = await buildFlows(root, testPlan.changedFiles, recommendedRunner.name, project.type);
   const missingTestability = uniqueStrings([
     ...flows.flatMap((flow) => flow.missingTestability),
     ...(await buildGlobalTestabilityGaps(root, recommendedRunner.name)),
@@ -151,6 +162,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
         flowTitle: flow.title,
         runner,
         status: "skipped",
+        coverageTargetCount: flow.coverage.length,
         reason: "File already exists. Pass --force to overwrite it.",
       });
       continue;
@@ -164,6 +176,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
       status: "created",
       todoCount: countTodos(content),
       inferredSelectorCount: flow.selectors.length,
+      coverageTargetCount: flow.coverage.length,
     });
   }
 
@@ -180,6 +193,174 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
     files,
     nextSteps: buildDraftNextSteps(plan, runner),
   };
+}
+
+function buildCoverageTargets(kind: E2eFlowKind, files: string[], runner: E2eRunnerName): E2eCoverageTarget[] {
+  const targets: E2eCoverageTarget[] = [
+    coverageTarget(
+      "Primary success path",
+      "critical",
+      "Every generated flow should prove that the changed behavior works for a realistic successful case.",
+      [
+        "Use production-like input or fixture data.",
+        "Verify the final visible UI, response, event, navigation, or persisted result.",
+      ],
+    ),
+  ];
+
+  if (kind === "ui" || files.some(isUserFacingFile)) {
+    targets.push(
+      coverageTarget(
+        "Loading, empty, error, and success states",
+        "critical",
+        "UI changes often regress non-happy-path states even when the primary action still works.",
+        [
+          "Open the affected surface while data is loading.",
+          "Verify empty and error states use actionable copy and do not break layout.",
+          "Verify the success state after the primary action completes.",
+        ],
+      ),
+      coverageTarget(
+        "Navigation and re-entry",
+        "recommended",
+        "Changed screens should remain stable after back navigation, deep link entry, refresh, or app resume.",
+        [
+          "Leave and re-enter the changed surface.",
+          "Verify the selected tab, route, modal, drawer, or scroll position is intentional after re-entry.",
+        ],
+      ),
+    );
+  }
+
+  if (kind === "api" || files.some(isApiLikeFile)) {
+    targets.push(
+      coverageTarget(
+        "API contract compatibility",
+        "critical",
+        "API-related changes need more than UI smoke coverage because request and response contracts can break existing callers.",
+        [
+          "Verify required request parameters and headers.",
+          "Verify response status, shape, parsing, and fallback handling.",
+          "Check that existing callers remain backward compatible.",
+        ],
+      ),
+      coverageTarget(
+        "Network and server failure handling",
+        "critical",
+        "Timeouts, 4xx, and 5xx paths are common production failures that generated E2E drafts should make visible.",
+        [
+          "Simulate or force timeout, unauthorized, validation, and server-error responses.",
+          "Verify retry, toast, inline error, logging, or recovery behavior.",
+        ],
+      ),
+    );
+  }
+
+  if (kind === "state" || files.some(isStateLikeFile)) {
+    targets.push(
+      coverageTarget(
+        "State transition boundaries",
+        "critical",
+        "State changes need coverage before, during, and after mutation so stale UI and cache bugs are caught.",
+        [
+          "Verify the initial state before the changed action.",
+          "Verify the optimistic, pending, or intermediate state if one exists.",
+          "Verify the final state after refresh, app restart, or re-entry.",
+        ],
+      ),
+      coverageTarget(
+        "Authorization and permission states",
+        "recommended",
+        "State, session, and provider changes frequently affect unauthorized or permission-denied behavior.",
+        [
+          "Check anonymous, expired-session, and permission-denied paths when reachable.",
+          "Verify protected actions fail closed and recover cleanly after sign-in or permission grant.",
+        ],
+      ),
+    );
+  }
+
+  if (kind === "content" || files.some(isContentOrStyleFile)) {
+    targets.push(
+      coverageTarget(
+        "Viewport and visual variants",
+        "recommended",
+        "Copy, theme, and style changes can pass functionally while still breaking layout or readability.",
+        [
+          "Check the smallest supported viewport and the primary desktop or tablet viewport.",
+          "Verify long copy, translated copy, focus state, disabled state, and high-contrast or dark mode when supported.",
+        ],
+      ),
+      coverageTarget(
+        "Locale and theme variants",
+        "recommended",
+        "Locale and theme changes should cover the variant switch, not only the default rendering path.",
+        [
+          "Run the changed surface with the default locale and at least one alternate locale when available.",
+          "Run default theme and alternate theme when the project exposes theme switching.",
+        ],
+      ),
+    );
+  }
+
+  if (kind === "config" || files.some(isConfigLikeFile)) {
+    targets.push(
+      coverageTarget(
+        "Configuration variants",
+        "critical",
+        "Build, dependency, feature-flag, and environment changes should prove both enabled and fallback behavior.",
+        [
+          "Verify the changed flag, dependency, or environment value enabled.",
+          "Verify fallback behavior when the value is absent, disabled, unknown, or using the previous default.",
+        ],
+      ),
+      coverageTarget(
+        "Clean install and runtime startup",
+        "recommended",
+        "Configuration changes often fail only from a clean checkout or clean process start.",
+        [
+          "Run install or dependency validation from a clean checkout when feasible.",
+          "Start the app or service with the documented local command and verify no runtime config error appears.",
+        ],
+      ),
+    );
+  }
+
+  if (kind === "domain" || kind === "changed-file") {
+    targets.push(
+      coverageTarget(
+        "Invalid, blocked, or boundary input",
+        "recommended",
+        "Generic domain changes should still cover one realistic boundary case instead of only the happy path.",
+        [
+          "Exercise missing, invalid, duplicated, or unsupported input.",
+          "Verify the user-visible or caller-visible failure is intentional.",
+        ],
+      ),
+    );
+  }
+
+  if (runner === "playwright") {
+    targets.push(
+      coverageTarget(
+        "Browser viewport regression",
+        "optional",
+        "Browser E2E drafts get more value when they cover at least one compact and one primary viewport.",
+        ["Run the generated spec at the smallest supported viewport and the primary desktop viewport."],
+      ),
+    );
+  }
+
+  return uniqueCoverageTargets(targets).slice(0, 7);
+}
+
+function coverageTarget(
+  title: string,
+  priority: E2eCoveragePriority,
+  reason: string,
+  checks: string[],
+): E2eCoverageTarget {
+  return { title, priority, reason, checks };
 }
 
 export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
@@ -234,6 +415,13 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
       lines.push("Draft steps:");
       for (const step of flow.steps) {
         lines.push(`- ${escapeMarkdownInline(step)}`);
+      }
+      if (flow.coverage.length > 0) {
+        lines.push("");
+        lines.push("Coverage targets:");
+        for (const target of flow.coverage) {
+          lines.push(`- ${formatCoveragePriority(target.priority)} ${escapeMarkdownInline(target.title)}: ${escapeMarkdownInline(target.reason)}`);
+        }
       }
       if (flow.missingTestability.length > 0) {
         lines.push("");
@@ -406,83 +594,173 @@ function overrideRunner(project: E2eProjectProfile, runner: E2eRunnerName): E2eR
   };
 }
 
-async function buildFlows(root: string, changedFiles: TestPlanChangedFile[], runner: E2eRunnerName): Promise<E2eFlow[]> {
+type E2eFlowKind = "ui" | "api" | "state" | "content" | "config" | "domain" | "changed-file";
+type FlowCandidate = Omit<E2eFlow, "coverage" | "selectors" | "missingTestability"> & { kind: E2eFlowKind };
+
+async function buildFlows(
+  root: string,
+  changedFiles: TestPlanChangedFile[],
+  runner: E2eRunnerName,
+  projectType: E2eProjectType,
+): Promise<E2eFlow[]> {
   const files = changedFiles.map((file) => file.path);
-  const flows = [
-    await buildFlow(root, runner, {
-      title: "Ink drawing capture flow",
-      reason: "Drawing, sketch, or canvas-related files changed, so the primary drawing path needs a runnable smoke flow.",
-      files: files.filter((file) => /(?:ink|draw|drawing|canvas|sketch)/i.test(file)),
-      steps: [
-        "Launch the app and open the record entry point.",
-        "Choose the drawing or ink record mode.",
-        "Draw at least one stroke on the canvas.",
-        "Select the required emotion or depth controls.",
-        "Save the entry and verify that the saved result appears in the next screen.",
-      ],
-    }),
-    await buildFlow(root, runner, {
-      title: "Record mode selection flow",
-      reason: "Home, route, or record mode UI changed, so the entry-point choice should be covered before deeper flows run.",
-      files: files.filter((file) => /(?:home|record|mode|route|layout|navigation|_layout)/i.test(file)),
-      steps: [
-        "Launch the app on a clean state.",
-        "Open the main record action from the home screen.",
-        "Choose each visible record mode at least once.",
-        "Verify the selected mode opens the expected next screen.",
-      ],
-    }),
-    await buildFlow(root, runner, {
-      title: "Saved entry persistence flow",
-      reason: "State, context, storage, service, or report files changed, so a saved entry should survive the user path that reads it back.",
-      files: files.filter((file) => /(?:context|store|state|storage|service|report)/i.test(file)),
-      steps: [
-        "Create a realistic entry through the UI.",
-        "Save the entry.",
-        "Return to the home or report surface.",
-        "Verify the saved entry is visible with the expected content.",
-        "Restart or refresh the app if the project supports it, then verify the entry is still available.",
-      ],
-    }),
-    await buildFlow(root, runner, {
-      title: "Localized visual smoke flow",
-      reason: "Theme or i18n files changed, so the E2E draft should include a quick visual and text smoke pass.",
-      files: files.filter((file) => /(?:theme|i18n|locale|translation|copy|styles?)/i.test(file)),
-      steps: [
-        "Launch the app with the default locale and theme.",
-        "Open the changed screen.",
-        "Verify primary text, buttons, and visual states are present.",
-        "Switch locale or theme if the app exposes that control, then repeat the changed screen smoke path.",
-      ],
-    }),
-    await buildFlow(root, runner, {
-      title: "Changed UI smoke flow",
-      reason: "User-facing UI files changed, so the first generated E2E should at least open the touched surface.",
-      files: files.filter(isUserFacingFile),
+  const flowResults = await Promise.all(
+    buildFlowCandidates(files, runner, projectType).map((candidate) => buildFlow(root, runner, candidate)),
+  );
+  const flows = flowResults.filter((flow): flow is E2eFlow => Boolean(flow));
+
+  return dedupeFlows(flows).slice(0, 4);
+}
+
+function buildFlowCandidates(files: string[], runner: E2eRunnerName, projectType: E2eProjectType): FlowCandidate[] {
+  const behaviorFiles = files.filter((file) => !isTestLikeFile(file));
+  const candidateFiles = behaviorFiles.length > 0 ? behaviorFiles : files;
+  const uiFiles = candidateFiles.filter(isUserFacingFile);
+  const apiFiles = candidateFiles.filter(isApiLikeFile);
+  const stateFiles = candidateFiles.filter(isStateLikeFile);
+  const contentFiles = candidateFiles.filter(isContentOrStyleFile);
+  const configFiles = candidateFiles.filter(isConfigLikeFile);
+  const domainFiles = candidateFiles.filter(isDomainOwnedFile);
+  const candidates: FlowCandidate[] = [];
+
+  if (uiFiles.length > 0) {
+    const subject = summarizeFlowSubject(uiFiles, "Changed");
+    candidates.push({
+      kind: "ui",
+      title: `${subject} UI smoke flow`,
+      reason: "User-facing route, screen, navigation, or component files changed, so the draft should open the touched surface and cover the primary visible action.",
+      files: uiFiles,
       steps: [
         "Launch the app.",
         "Navigate to the changed screen or component surface.",
         "Exercise the primary visible action.",
         "Verify loading, empty, error, and success states when they are reachable.",
       ],
-    }),
-  ].filter((flow): flow is E2eFlow => Boolean(flow));
+    });
+  }
 
-  return dedupeFlows(flows).slice(0, 4);
+  if (apiFiles.length > 0) {
+    const subject = summarizeFlowSubject(apiFiles, "Changed");
+    candidates.push({
+      kind: "api",
+      title: `${subject} API contract smoke ${runner === "manual" ? "checklist" : "flow"}`,
+      reason: "API client, schema, endpoint, request, or response files changed, so the generated draft should verify contract shape and failure handling before relying on UI-only coverage.",
+      files: apiFiles,
+      steps:
+        runner === "manual"
+          ? [
+              "Call the changed endpoint, client, command, or handler with a valid request.",
+              "Verify the response shape, status, and parsed data match the public contract.",
+              "Verify invalid input, authorization failure, timeout, and server-error handling.",
+              "Check backward compatibility for existing callers.",
+            ]
+          : [
+              "Launch the app.",
+              "Trigger the user path that calls the changed API or client.",
+              "Verify the successful response is rendered or persisted correctly.",
+              "Verify the reachable error or empty state for a failed response.",
+            ],
+    });
+  }
+
+  if (stateFiles.length > 0) {
+    const subject = summarizeFlowSubject(stateFiles, "Changed");
+    candidates.push({
+      kind: "state",
+      title: `${subject} state transition flow`,
+      reason: "State, cache, auth, permission, or provider files changed, so the draft should verify transitions before and after the affected action.",
+      files: stateFiles,
+      steps: [
+        "Launch the app in a clean state.",
+        "Reach the screen or command path that reads the changed state.",
+        "Exercise the action that mutates or invalidates that state.",
+        "Verify the state-dependent UI, navigation, or output before and after refresh or re-entry.",
+      ],
+    });
+  }
+
+  if (contentFiles.length > 0) {
+    const subject = summarizeFlowSubject(contentFiles, "Changed");
+    candidates.push({
+      kind: "content",
+      title: `${subject} content and theme smoke flow`,
+      reason: "Copy, locale, theme, or style files changed, so the draft should include a quick text, visual-state, and viewport smoke pass.",
+      files: contentFiles,
+      steps: [
+        "Launch the app with the default locale and theme.",
+        "Open the changed screen or component surface.",
+        "Verify primary text, controls, and visual states are present.",
+        "Switch locale, theme, or viewport when the project exposes that variant, then repeat the changed surface smoke path.",
+      ],
+    });
+  }
+
+  if (configFiles.length > 0) {
+    const subject = summarizeFlowSubject(configFiles, "Changed");
+    candidates.push({
+      kind: "config",
+      title: `${subject} configuration verification ${runner === "manual" ? "checklist" : "flow"}`,
+      reason: "Dependency, build, runtime, feature-flag, or environment configuration changed, so the draft should verify the affected variant in a clean run.",
+      files: configFiles,
+      steps: [
+        "Start from a clean install or clean app launch for the affected package.",
+        "Enable the changed configuration, flag, environment, or dependency path.",
+        "Verify the primary user or maintainer workflow still completes.",
+        "Verify fallback behavior when the changed configuration is absent, disabled, or unknown.",
+      ],
+    });
+  }
+
+  const remainingDomainFiles = domainFiles.filter((file) => !isUserFacingFile(file) && !isApiLikeFile(file));
+  if (remainingDomainFiles.length > 0) {
+    const subject = summarizeFlowSubject(remainingDomainFiles, "Changed domain");
+    candidates.push({
+      kind: "domain",
+      title: `${subject} workflow smoke ${runner === "manual" || projectType === "unknown" ? "checklist" : "flow"}`,
+      reason: "Feature or domain-owned files changed, so the draft should verify the affected business path without assuming project-specific terminology.",
+      files: remainingDomainFiles,
+      steps: [
+        "Identify the public entry point, command, route, or screen that imports the changed domain code.",
+        "Run the primary successful path with realistic data.",
+        "Verify the result, emitted event, navigation, or persisted state owned by the changed code.",
+        "Exercise one invalid, blocked, or empty path when reachable.",
+      ],
+    });
+  }
+
+  if (candidates.length === 0 && candidateFiles.length > 0) {
+    candidates.push({
+      kind: "changed-file",
+      title: `${summarizeFlowSubject(candidateFiles, "Changed-file")} smoke ${runner === "manual" ? "checklist" : "flow"}`,
+      reason: "Changed files did not match a specialized E2E pattern, so CodeWard generated a conservative smoke path tied only to the changed files.",
+      files: candidateFiles,
+      steps: [
+        "Run or open the nearest workflow that imports the changed files.",
+        "Verify the default successful behavior still works.",
+        "Verify the most likely error, empty, or unsupported-input state.",
+        "Record any project-specific setup needed to make this smoke path runnable.",
+      ],
+    });
+  }
+
+  return candidates;
 }
 
 async function buildFlow(
   root: string,
   runner: E2eRunnerName,
-  candidate: Omit<E2eFlow, "selectors" | "missingTestability">,
+  candidate: FlowCandidate,
 ): Promise<E2eFlow | undefined> {
   const files = uniqueStrings(candidate.files).slice(0, 20);
   if (files.length === 0) {
     return undefined;
   }
   return {
-    ...candidate,
+    title: candidate.title,
+    reason: candidate.reason,
     files,
+    steps: candidate.steps,
+    coverage: buildCoverageTargets(candidate.kind, files, runner),
     selectors: await inferFlowSelectors(root, files, runner),
     missingTestability: await findFlowTestabilityGaps(root, files, runner),
   };
@@ -564,14 +842,258 @@ async function buildSetupNotes(
 }
 
 function isUserFacingFile(file: string): boolean {
+  if (isApiRouteFile(file)) {
+    return false;
+  }
   return (
     /(?:^|\/)(app|pages|routes|screens|components|ui|navigation)\//i.test(file) ||
     /\.(?:tsx|jsx|vue|svelte)$/i.test(file)
   );
 }
 
+function isApiRouteFile(file: string): boolean {
+  return /(?:^|\/)(?:app|pages|routes)\/api\//i.test(file);
+}
+
+function isDomainOwnedFile(file: string): boolean {
+  return /(?:^|\/)(?:features|domains|modules|services|entities|packages|apps)\/[^/]+/i.test(file);
+}
+
+function isApiLikeFile(file: string): boolean {
+  const tokens = pathWordTokens(file);
+  const strongApiTokens = new Set([
+    "api",
+    "apis",
+    "client",
+    "clients",
+    "queries",
+    "query",
+    "mutations",
+    "mutation",
+    "graphql",
+    "trpc",
+    "rpc",
+    "proto",
+    "openapi",
+    "swagger",
+    "endpoint",
+    "endpoints",
+  ]);
+  return (
+    isApiRouteFile(file) ||
+    /(?:^|\/)(?:api|apis|endpoints?|controllers?|handlers?)\//i.test(file) ||
+    tokens.some((token) => strongApiTokens.has(token)) ||
+    (!isUiImplementationFile(file) && tokens.some((token) => token === "request" || token === "response"))
+  );
+}
+
+function isStateLikeFile(file: string): boolean {
+  return (
+    /(?:^|\/)(?:stores?|states?|reducers?|atoms?|selectors?|contexts?|providers?|cache|session|auth|permissions?|guards?)\//i.test(
+      file,
+    ) || /(?:^|\/)[^/]*(?:auth|permission|session|cache|guard|state|store|context|provider)[^/]*\.[cm]?[jt]sx?$/i.test(file)
+  );
+}
+
+function isContentOrStyleFile(file: string): boolean {
+  return /(?:theme|themes|i18n|locale|locales|translation|translations|copy|styles?|tokens?|\.css|\.scss|\.sass|\.less)/i.test(
+    file,
+  );
+}
+
+function isConfigLikeFile(file: string): boolean {
+  return /(?:package\.json|pnpm-lock\.yaml|yarn\.lock|package-lock\.json|bun\.lockb|pyproject\.toml|requirements\.txt|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|gradle\.properties|vite|webpack|babel|tsconfig|next\.config|app\.config|eas\.json|docker|env|feature-?flags?|experiments?)/i.test(
+    file,
+  );
+}
+
+function isTestLikeFile(file: string): boolean {
+  return (
+    /(?:^|\/)(?:__tests__|tests?|specs?|e2e)\//i.test(file) ||
+    /(?:\.|-)(?:test|spec)\.[cm]?[jt]sx?$/i.test(file) ||
+    /(?:^|\/)test_[^/]+\.py$/i.test(file) ||
+    /(?:^|\/)[^/]+_test\.(?:py|go)$/i.test(file) ||
+    /(?:^|\/)[^/]+(?:Test|Tests|Spec)\.(?:java|kt|cs|swift)$/i.test(file) ||
+    /(?:^|\/)[^/]+_(?:test|spec)\.rs$/i.test(file)
+  );
+}
+
 function isUiImplementationFile(file: string): boolean {
   return /\.(?:tsx|jsx|vue|svelte)$/i.test(file);
+}
+
+function summarizeFlowSubject(files: string[], fallback: string): string {
+  const labelCounts = countLabels(files.flatMap(labelCandidatesFromPath));
+  if (labelCounts.length === 0) {
+    return fallback;
+  }
+  const total = labelCounts.reduce((sum, label) => sum + label.count, 0);
+  if (labelCounts.length > 4 && labelCounts[0].count / total < 0.4) {
+    return fallback;
+  }
+
+  const representativeLabels = labelCounts
+    .filter((label) => labelCounts.length <= 2 || label.count > 1 || label.count / total >= 0.25)
+    .slice(0, 2);
+  if (representativeLabels.length === 0) {
+    return fallback;
+  }
+  return representativeLabels.map((label) => titleCase(label.value)).join(" / ");
+}
+
+function countLabels(labels: string[]): Array<{ value: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const label of labels) {
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((left, right) => right.count - left.count);
+}
+
+function pathWordTokens(file: string): string[] {
+  return uniqueStrings(
+    file
+      .replace(/\.[^.\/]+$/g, "")
+      .split("/")
+      .flatMap((segment) => segment.replace(/([a-z0-9])([A-Z])/g, "$1 $2").split(/[^a-zA-Z0-9]+/))
+      .map((part) => part.toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function labelCandidatesFromPath(file: string): string[] {
+  const domain = domainFromPath(file);
+  if (domain) {
+    return [domain];
+  }
+
+  const surface = surfaceFromPath(file);
+  if (surface) {
+    return [surface];
+  }
+
+  const stem = normalizePathSegment(path.basename(file));
+  return stem ? [stem] : [];
+}
+
+function domainFromPath(file: string): string | undefined {
+  const segments = file.split("/");
+  for (const key of ["features", "domains", "modules", "services", "entities", "packages", "apps"]) {
+    const index = segments.indexOf(key);
+    const candidate = index >= 0 ? normalizePathSegment(segments[index + 1]) : undefined;
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function surfaceFromPath(file: string): string | undefined {
+  const segments = file.split("/");
+  for (const key of ["app", "pages", "routes", "screens"]) {
+    const index = segments.indexOf(key);
+    if (index < 0) {
+      continue;
+    }
+    for (const segment of segments.slice(index + 1)) {
+      const candidate = normalizePathSegment(segment);
+      if (candidate) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
+}
+
+function normalizePathSegment(segment: string | undefined): string | undefined {
+  if (!segment) {
+    return undefined;
+  }
+  if (/^\([^)]*\)$/.test(segment) || /^\[[^]]+\]$/.test(segment)) {
+    return undefined;
+  }
+  const normalized = segment
+    .replace(/\.(?:d\.)?(?:[cm]?[jt]sx?|vue|svelte|css|scss|sass|less|json|ya?ml|md|py|go|rs|kt|java|swift|cs)$/i, "")
+    .replace(/^_+|_+$/g, "")
+    .trim();
+  return isMeaningfulLabel(normalized) ? normalized : undefined;
+}
+
+function isMeaningfulLabel(value: string): boolean {
+  const normalized = value.toLowerCase();
+  const ignored = new Set([
+    "api",
+    "apis",
+    "app",
+    "apps",
+    "client",
+    "component",
+    "components",
+    "config",
+    "configs",
+    "constant",
+    "constants",
+    "context",
+    "contexts",
+    "default",
+    "development",
+    "env",
+    "hook",
+    "hooks",
+    "index",
+    "init",
+    "layout",
+    "main",
+    "module",
+    "modules",
+    "navigation",
+    "navigations",
+    "page",
+    "pages",
+    "package",
+    "production",
+    "provider",
+    "providers",
+    "route",
+    "routes",
+    "screen",
+    "screens",
+    "server",
+    "service",
+    "services",
+    "src",
+    "staging",
+    "state",
+    "store",
+    "style",
+    "styles",
+    "test",
+    "tests",
+    "type",
+    "types",
+    "ui",
+    "util",
+    "utils",
+  ]);
+  return normalized.length > 1 && !ignored.has(normalized);
+}
+
+function titleCase(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[-_]+/g, " ")
+    .replace(/[^a-zA-Z0-9 ]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => {
+      if (/^[A-Z0-9]+$/.test(part)) {
+        return part;
+      }
+      return `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
+    })
+    .join(" ");
 }
 
 function hasInteractiveUi(text: string): boolean {
@@ -584,11 +1106,20 @@ function hasStableSelector(text: string, runner: E2eRunnerName): boolean {
   if (runner === "playwright") {
     return /\b(?:data-testid|data-test|aria-label|role)=/.test(text);
   }
+  if (runner === "manual") {
+    return /\b(?:data-testid|data-test|aria-label|role|testID|accessibilityLabel)=/.test(text);
+  }
   return /\b(?:testID|accessibilityLabel)=/.test(text);
 }
 
 function selectorName(runner: E2eRunnerName): string {
-  return runner === "playwright" ? "data-testid or accessible role" : "testID or accessibilityLabel";
+  if (runner === "playwright") {
+    return "data-testid or accessible role";
+  }
+  if (runner === "manual") {
+    return "data-testid, testID, or accessible label";
+  }
+  return "testID or accessibilityLabel";
 }
 
 function dedupeFlows(flows: E2eFlow[]): E2eFlow[] {
@@ -622,6 +1153,7 @@ function buildFallbackFlow(plan: E2ePlanResult): E2eFlow {
       "Exercise the primary visible action if one is present.",
       "Verify the app remains usable after the action.",
     ],
+    coverage: buildCoverageTargets("changed-file", [], plan.recommendedRunner.name),
     selectors: [],
     missingTestability: plan.missingTestability,
   };
@@ -673,6 +1205,7 @@ function buildMaestroDraft(plan: E2ePlanResult, flow: E2eFlow): string {
     const command = maestroCommandForStep(step, selectorQueue);
     lines.push(...formatMaestroCommand(command));
   }
+  appendMaestroCoverageComments(lines, flow);
   if (flow.missingTestability.length > 0) {
     lines.push("");
     lines.push("# Testability gaps to address before this flow is stable:");
@@ -744,6 +1277,7 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow): string {
       lines.push(`  await ${locator}.click();`);
     }
   }
+  appendPlaywrightCoverageComments(lines, flow);
   lines.push("});");
   if (flow.missingTestability.length > 0) {
     lines.push("");
@@ -784,6 +1318,17 @@ function buildManualDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   for (const step of flow.steps) {
     lines.push(`- [ ] ${step}`);
   }
+  if (flow.coverage.length > 0) {
+    lines.push("");
+    lines.push("## Coverage Matrix");
+    lines.push("");
+    for (const target of flow.coverage) {
+      lines.push(`- [ ] ${formatCoveragePriority(target.priority)} ${target.title} - ${target.reason}`);
+      for (const check of target.checks) {
+        lines.push(`  - [ ] ${check}`);
+      }
+    }
+  }
   if (flow.missingTestability.length > 0) {
     lines.push("");
     lines.push("## Testability Gaps");
@@ -802,6 +1347,34 @@ function buildManualDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   }
   lines.push("");
   return lines.join("\n");
+}
+
+function appendMaestroCoverageComments(lines: string[], flow: E2eFlow): void {
+  if (flow.coverage.length === 0) {
+    return;
+  }
+  lines.push("");
+  lines.push("# Coverage matrix to expand before making this flow required:");
+  for (const target of flow.coverage) {
+    lines.push(`# - [ ] ${formatCoveragePriority(target.priority)} ${target.title}: ${target.reason}`);
+    for (const check of target.checks) {
+      lines.push(`#   - [ ] ${check}`);
+    }
+  }
+}
+
+function appendPlaywrightCoverageComments(lines: string[], flow: E2eFlow): void {
+  if (flow.coverage.length === 0) {
+    return;
+  }
+  lines.push("");
+  lines.push("  // Coverage matrix to expand before making this spec required:");
+  for (const target of flow.coverage) {
+    lines.push(`  // - [ ] ${formatCoveragePriority(target.priority)} ${target.title}: ${target.reason}`);
+    for (const check of target.checks) {
+      lines.push(`  //   - [ ] ${check}`);
+    }
+  }
 }
 
 function buildDraftNextSteps(plan: E2ePlanResult, runner: E2eRunnerName): string[] {
@@ -831,6 +1404,11 @@ function formatDraftFileQuality(file: E2eDraftFile): string | undefined {
   if (file.inferredSelectorCount !== undefined) {
     details.push(
       `${file.inferredSelectorCount} inferred selector${file.inferredSelectorCount === 1 ? "" : "s"}`,
+    );
+  }
+  if (file.coverageTargetCount !== undefined) {
+    details.push(
+      `${file.coverageTargetCount} coverage target${file.coverageTargetCount === 1 ? "" : "s"}`,
     );
   }
   return details.length > 0 ? details.join(", ") : undefined;
@@ -928,7 +1506,7 @@ function isVerificationStep(step: string): boolean {
 
 function extractSelectorsFromText(file: string, text: string, runner: E2eRunnerName): E2eSelector[] {
   const selectors: E2eSelector[] = [];
-  const isWebRunner = runner === "playwright";
+  const canUseWebSelectors = runner === "playwright" || runner === "manual";
 
   selectors.push(
     ...extractAttributeSelectors(file, text, ["testID"], "test-id"),
@@ -936,7 +1514,7 @@ function extractSelectorsFromText(file: string, text: string, runner: E2eRunnerN
     ...extractAttributeSelectors(file, text, ["placeholder"], "placeholder"),
   );
 
-  if (isWebRunner) {
+  if (canUseWebSelectors) {
     selectors.push(
       ...extractAttributeSelectors(file, text, ["data-testid", "data-test"], "web-test-id"),
       ...extractAttributeSelectors(file, text, ["aria-label"], "aria-label"),
@@ -1033,6 +1611,17 @@ function uniqueStrings(values: string[]): string[] {
   return values.filter((value, index) => values.indexOf(value) === index);
 }
 
+function uniqueCoverageTargets(targets: E2eCoverageTarget[]): E2eCoverageTarget[] {
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    if (seen.has(target.title)) {
+      return false;
+    }
+    seen.add(target.title);
+    return true;
+  });
+}
+
 function uniqueSelectors(selectors: E2eSelector[]): E2eSelector[] {
   const seen = new Set<string>();
   const ordered = [...selectors].sort((left, right) => selectorRank(left.kind) - selectorRank(right.kind));
@@ -1112,6 +1701,16 @@ function formatRunnerName(runner: E2eRunnerName): string {
     return "Playwright";
   }
   return "Manual";
+}
+
+function formatCoveragePriority(priority: E2eCoveragePriority): string {
+  if (priority === "critical") {
+    return "[critical]";
+  }
+  if (priority === "recommended") {
+    return "[recommended]";
+  }
+  return "[optional]";
 }
 
 function escapeMarkdownInline(value: string): string {
