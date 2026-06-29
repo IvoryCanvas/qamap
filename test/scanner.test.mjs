@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -24,7 +24,9 @@ import {
   generateE2eDraft,
   generateE2ePlan,
   generateTestPlan,
+  initializeLocalHistory,
   loadConfig,
+  localHistoryGitignorePatterns,
   reviewProject,
   scanProject,
   verifyChange,
@@ -1114,6 +1116,88 @@ test("writeDefaultConfig creates a starter config", async () => {
   assert.equal(loaded.config.failOn, "high");
   assert.deepEqual(loaded.config.ignoreRules, []);
   assert.deepEqual(loaded.config.validationCommands, []);
+});
+
+test("initializeLocalHistory protects local runs with gitignore entries", async () => {
+  const root = await makeTempRepo();
+  await writeFile(path.join(root, ".gitignore"), "node_modules/\n");
+
+  const result = await initializeLocalHistory(root);
+  const gitignore = await readFile(path.join(root, ".gitignore"), "utf8");
+  const secondResult = await initializeLocalHistory(root);
+
+  assert.deepEqual(result.createdDirectories, [".codeward", ".codeward/runs", ".codeward/cache", ".codeward/tmp"]);
+  assert.equal(result.gitignoreUpdated, true);
+  assert.deepEqual(result.addedGitignorePatterns, localHistoryGitignorePatterns);
+  for (const directory of result.createdDirectories) {
+    assert.equal((await stat(path.join(root, directory))).isDirectory(), true);
+  }
+  for (const pattern of localHistoryGitignorePatterns) {
+    assert.match(gitignore, new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.equal(secondResult.gitignoreUpdated, false);
+  assert.deepEqual(secondResult.addedGitignorePatterns, []);
+});
+
+test("e2e plan can record compact local history without breaking JSON output", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/pages/checkout"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        test: "playwright test",
+      },
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        vite: "^7.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/pages/checkout/CheckoutPage.tsx"),
+    "export function CheckoutPage() { return <button data-testid=\"checkout-submit\">Checkout</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/checkout-history"]);
+  await writeFile(
+    path.join(root, "src/pages/checkout/CheckoutPage.tsx"),
+    "export function CheckoutPage() { return <button data-testid=\"checkout-submit\">Complete checkout</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update checkout copy"]);
+
+  const cliOutput = await execFileAsync(process.execPath, [
+    cliPath,
+    "e2e",
+    "plan",
+    root,
+    "--base",
+    "main",
+    "--head",
+    "HEAD",
+    "--record-history",
+    "--json",
+  ]);
+  const plan = JSON.parse(cliOutput.stdout);
+  const snapshotRaw = await readFile(path.join(root, plan.localHistory.path), "utf8");
+  const snapshot = JSON.parse(snapshotRaw);
+  const gitignore = await readFile(path.join(root, ".gitignore"), "utf8");
+
+  assert.equal(plan.localHistory.gitignoreUpdated, true);
+  assert.match(plan.localHistory.path, /^\.codeward\/runs\/.+\.e2e-plan\.json$/);
+  assert.equal(snapshot.kind, "e2e-plan");
+  assert.equal(snapshot.plan.scope, ".");
+  assert.equal(snapshot.plan.recommendedRunner, "playwright");
+  assert.equal(snapshot.summary.changedFiles, 1);
+  assert.equal(JSON.stringify(snapshot).includes(root), false);
+  for (const pattern of localHistoryGitignorePatterns) {
+    assert.match(gitignore, new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 });
 
 test("configured validation commands feed test-plan and eval outputs", async () => {

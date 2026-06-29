@@ -45,3 +45,32 @@ codeward scan . --config ./codeward.config.json
 - Keep ignores small and documented in pull requests.
 - Use `validationCommands` for custom stacks, Makefile-based projects, or monorepos where the right validation command is not discoverable from standard project files.
 - CodeWard does not execute scanned project code while reading config.
+
+## Local History
+
+CodeWard separates shared project policy from generated local history.
+
+Commit-friendly files:
+
+- `codeward.config.json`
+- `.codeward/flows.yml` when a project chooses to define durable core flows
+- `.codeward/domains.yml` when a project chooses to define durable domain mappings
+
+Ignored local artifacts:
+
+- `.codeward/runs/`
+- `.codeward/cache/`
+- `.codeward/tmp/`
+- `.codeward/*.local.json`
+
+Run this once to create the local directories and add those ignore patterns idempotently:
+
+```sh
+codeward history init .
+```
+
+Use `--record-history` when an analysis should leave a compact local snapshot for comparison or debugging:
+
+```sh
+codeward e2e plan . --base origin/main --head HEAD --record-history
+```

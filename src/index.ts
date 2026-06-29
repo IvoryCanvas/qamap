@@ -4,6 +4,16 @@ export { buildDoctorResult, formatDoctorReport, formatMarkdownDoctorReport } fro
 export { formatMarkdownE2eDraft, formatMarkdownE2ePlan, generateE2eDraft, generateE2ePlan } from "./e2e.js";
 export { evaluateChangeReadiness, formatEvalReport, formatMarkdownEvalReport } from "./eval.js";
 export { githubCommentMarker, runGitHubAction } from "./github.js";
+export {
+  codewardDirectoryName,
+  formatLocalHistoryInitResult,
+  initializeLocalHistory,
+  localCacheDirectory,
+  localHistoryDirectory,
+  localHistoryGitignorePatterns,
+  localTmpDirectory,
+  recordE2ePlanHistory,
+} from "./history.js";
 export { formatMarkdownReport, formatSarifReport, formatTextReport, hasFindingsAtOrAbove } from "./report.js";
 export { formatMarkdownReviewReport, formatReviewReport, reviewProject } from "./review.js";
 export { scanProject } from "./scanner.js";
@@ -38,6 +48,7 @@ export type {
 } from "./e2e.js";
 export type { EvalCheck, EvalCheckStatus, EvalOptions, EvalRating, EvalResult } from "./eval.js";
 export type { GitHubActionMode, GitHubActionOptions, GitHubActionResult } from "./github.js";
+export type { E2ePlanHistorySnapshot, LocalHistoryInitResult, LocalHistoryReference } from "./history.js";
 export type { ChangedFile, ChangedRiskyFinding, ReviewOptions, ReviewResult } from "./review.js";
 export type { TestPlanChangedFile, TestPlanItem, TestPlanOptions, TestPlanResult } from "./test-plan.js";
 export type { CodeWardConfig, Finding, ScanCounts, ScanOptions, ScanResult, Severity } from "./types.js";

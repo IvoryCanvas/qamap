@@ -7,6 +7,7 @@ import { buildDoctorResult, formatDoctorReport, formatMarkdownDoctorReport } fro
 import { formatMarkdownE2eDraft, formatMarkdownE2ePlan, generateE2eDraft, generateE2ePlan } from "./e2e.js";
 import { evaluateChangeReadiness, formatEvalReport, formatMarkdownEvalReport } from "./eval.js";
 import { runGitHubAction } from "./github.js";
+import { formatLocalHistoryInitResult, initializeLocalHistory, recordE2ePlanHistory } from "./history.js";
 import { formatMarkdownReport, formatSarifReport, formatTextReport, hasFindingsAtOrAbove } from "./report.js";
 import { formatMarkdownReviewReport, formatReviewReport, reviewProject } from "./review.js";
 import { scanProject } from "./scanner.js";
@@ -46,6 +47,7 @@ interface ParsedOptions {
   prBodyFile?: string;
   includeWorkingTree?: boolean;
   e2eRunner?: E2eRunnerName;
+  recordHistory?: boolean;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -200,6 +202,9 @@ async function main(argv: string[]): Promise<number> {
     };
     if (subcommand === "plan") {
       const result = await generateE2ePlan(options.path, e2eOptions);
+      if (options.recordHistory) {
+        result.localHistory = await recordE2ePlanHistory(options.workspaceRoot ?? options.path, result);
+      }
       const output = formatE2ePlanOutput(result, options.format ?? (options.json ? "json" : "markdown"));
       await printOrWrite(output, options.output);
       return 0;
@@ -211,6 +216,25 @@ async function main(argv: string[]): Promise<number> {
     });
     const output = formatE2eDraftOutput(result, options.format ?? (options.json ? "json" : "markdown"));
     console.log(output.trimEnd());
+    return 0;
+  }
+
+  if (command === "history") {
+    const [subcommand, ...subcommandRest] = rest;
+    if (!subcommand || subcommand === "--help" || subcommand === "-h") {
+      printHistoryHelp();
+      return 0;
+    }
+    if (subcommand !== "init") {
+      throw new Error(`Unknown history subcommand: ${subcommand}`);
+    }
+    const options = parseOptions(subcommandRest);
+    const result = await initializeLocalHistory(options.path);
+    if (options.json || options.format === "json") {
+      await printOrWrite(`${JSON.stringify(result, null, 2)}\n`, options.output);
+    } else {
+      await printOrWrite(formatLocalHistoryInitResult(result), options.output);
+    }
     return 0;
   }
 
@@ -398,6 +422,11 @@ function parseOptions(args: string[]): ParsedOptions {
 
     if (arg === "--include-working-tree") {
       options.includeWorkingTree = true;
+      continue;
+    }
+
+    if (arg === "--record-history") {
+      options.recordHistory = true;
       continue;
     }
 
@@ -592,8 +621,9 @@ Usage:
   codeward eval [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--pr-body-file <file>] [--format <format>]
   codeward github-action [path] [--mode auto|scan|review] [--base <ref>] [--head <ref>] [--fail-on <severity>]
   codeward test-plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--format <format>] [--output <file>]
-  codeward e2e plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--format <format>]
+  codeward e2e plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--record-history] [--format <format>]
   codeward e2e draft [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--runner maestro|playwright|manual] [--output <dir>] [--force]
+  codeward history init [path]
   codeward context [path] [--write [file]] [--force]
   codeward init [path] [--write <file>] [--force]
 
@@ -616,7 +646,9 @@ Examples:
   codeward github-action . --mode review --base origin/main --head HEAD --fail-on high
   codeward test-plan . --base origin/main --head HEAD
   codeward e2e plan . --base origin/main --head HEAD
+  codeward e2e plan . --base origin/main --head HEAD --record-history
   codeward e2e draft . --base origin/main --head HEAD
+  codeward history init .
   codeward test-plan services/offer --workspace-root . --base origin/main --head HEAD --include-working-tree
   codeward context . --write AGENTS.md
   codeward init .
@@ -629,13 +661,27 @@ function printE2eHelp(): void {
 E2E planning for AI-assisted changes.
 
 Usage:
-  codeward e2e plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--format <format>] [--output <file>]
+  codeward e2e plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--record-history] [--format <format>] [--output <file>]
   codeward e2e draft [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--runner maestro|playwright|manual] [--output <dir>] [--force]
 
 Examples:
   codeward e2e plan . --base origin/main --head HEAD
+  codeward e2e plan . --base origin/main --head HEAD --record-history
   codeward e2e draft . --base origin/main --head HEAD
   codeward e2e plan apps/mobile --workspace-root . --include-working-tree
+`);
+}
+
+function printHistoryHelp(): void {
+  console.log(`CodeWard ${VERSION}
+
+Local history for CodeWard analysis runs.
+
+Usage:
+  codeward history init [path] [--json] [--output <file>]
+
+Examples:
+  codeward history init .
 `);
 }
 

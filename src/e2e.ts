@@ -7,6 +7,7 @@ import {
 } from "./test-evidence.js";
 import { generateTestPlan } from "./test-plan.js";
 import type { TestPlanChangedFile, TestPlanOptions } from "./test-plan.js";
+import type { LocalHistoryReference } from "./history.js";
 import type { CoverageEvidence, TestSuiteInventory, TestSuiteSummary } from "./test-evidence.js";
 import { TOOL_NAME, VERSION } from "./version.js";
 
@@ -81,6 +82,7 @@ export interface E2ePlanResult {
   testSuite: TestSuiteSummary;
   changedFiles: TestPlanChangedFile[];
   suggestedCommands: string[];
+  localHistory?: LocalHistoryReference;
   flows: E2eFlow[];
   missingTestability: string[];
   setupNotes: string[];
@@ -395,6 +397,9 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
     lines.push(`- Test frameworks: ${result.testSuite.frameworkSignals.join(", ")}`);
   }
   lines.push(`- Changed files considered: ${result.changedFiles.length}`);
+  if (result.localHistory) {
+    lines.push(`- Local history: \`${escapeMarkdownInline(result.localHistory.path)}\``);
+  }
   lines.push("");
 
   lines.push("## Recommendation");

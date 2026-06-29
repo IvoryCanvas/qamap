@@ -131,7 +131,9 @@ node dist/cli.js scan /path/to/repo
 | `codeward github-action . --mode review --base origin/main --head HEAD` | Generate GitHub Action annotations, step summary, and PR comment body. |
 | `codeward test-plan . --base origin/main --head HEAD --include-working-tree` | Suggest domain test scenarios for changed files. |
 | `codeward e2e plan . --base origin/main --head HEAD` | Suggest E2E runner, user flows, coverage targets, existing test evidence, and missing testability hooks for changed files. |
+| `codeward e2e plan . --base origin/main --head HEAD --record-history` | Save a compact local run snapshot under `.codeward/runs/` while keeping JSON/Markdown output usable. |
 | `codeward e2e draft . --base origin/main --head HEAD` | Generate first-pass Maestro or Playwright E2E draft files from changed flows. |
+| `codeward history init .` | Create local CodeWard history directories and protect generated run history with `.gitignore`. |
 | `codeward doctor services/offer --workspace-root .` | Scan a monorepo package while using root guardrails. |
 | `codeward context . --write AGENTS.md` | Generate starter agent instructions for the repo. |
 | `codeward init .` | Create a starter `codeward.config.json`. |
@@ -146,7 +148,11 @@ For monorepos, pass `--workspace-root` when scanning a package. Package-local ch
 
 `codeward e2e plan` turns changed file paths into a first-pass E2E testing plan. It detects whether a project looks like Expo/React Native or web, recommends a runner such as Maestro or Playwright, suggests candidate user flows, adds coverage targets, compares those targets with existing test-suite evidence when tests are present, and points out missing stable selectors such as `testID` or `data-testid` before anyone starts writing tests from a blank file.
 
+Pass `--record-history` when you want CodeWard to keep a compact local snapshot of an E2E plan under `.codeward/runs/`. CodeWard automatically protects `.codeward/runs/`, `.codeward/cache/`, `.codeward/tmp/`, and `.codeward/*.local.json` with `.gitignore` so generated history stays local by default. Shared project policy, such as `codeward.config.json` or future `.codeward/flows.yml` files, remains commit-friendly.
+
 `codeward e2e draft` writes runnable draft files from that plan. Expo and React Native projects get Maestro YAML flows under `.maestro/` by default, while web projects get Playwright specs under `tests/e2e/`. Drafts infer stable selectors such as `testID`, `accessibilityLabel`, `data-testid`, `aria-label`, and visible text where possible. They keep `TODO` placeholders where selectors or project-specific launch details are still needed, and existing files are not overwritten unless `--force` is passed.
+
+`codeward history init` prepares that local storage explicitly without running an analysis. It creates `.codeward/runs/`, `.codeward/cache/`, and `.codeward/tmp/`, then adds the generated-history ignore patterns to `.gitignore` idempotently.
 
 `codeward eval` scores whether a branch has enough validation evidence, changed-test coverage, intent capture, risk explanation, domain verification paths, and reviewable size. In GitHub Actions, CodeWard can read the pull request body from the event payload and append the evaluation to the PR comment.
 
