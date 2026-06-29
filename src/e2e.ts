@@ -169,6 +169,9 @@ export interface E2eDraftFile {
   fixtureReadinessStatus?: E2eFixtureReadinessStatus;
   inferredSelectorCount?: number;
   coverageTargetCount?: number;
+  validationStatus?: E2eValidationMatrixStatus;
+  validationGapCount?: number;
+  blockingValidationGapCount?: number;
   reason?: string;
 }
 
@@ -255,6 +258,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
   for (const flow of flows) {
     const filePath = path.join(outputDirectory, `${slugify(flow.title)}${draftExtension(runner)}`);
     const displayPath = toDisplayPath(root, filePath);
+    const validationSummary = summarizeDraftValidation(flow);
     if ((await exists(filePath)) && !options.force) {
       files.push({
         path: displayPath,
@@ -268,6 +272,9 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
         setupHintCount: flow.setupHints.length,
         fixtureReadinessStatus: flow.fixtureReadiness.status,
         coverageTargetCount: flow.coverage.length,
+        validationStatus: validationSummary.status,
+        validationGapCount: validationSummary.gapCount,
+        blockingValidationGapCount: validationSummary.blockingGapCount,
         reason: "File already exists. Pass --force to overwrite it.",
       });
       continue;
@@ -288,6 +295,9 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
       fixtureReadinessStatus: flow.fixtureReadiness.status,
       inferredSelectorCount: flow.selectors.length,
       coverageTargetCount: flow.coverage.length,
+      validationStatus: validationSummary.status,
+      validationGapCount: validationSummary.gapCount,
+      blockingValidationGapCount: validationSummary.blockingGapCount,
     });
   }
 
@@ -682,6 +692,28 @@ function validationCategoryRank(category: E2eValidationMatrixCategory): number {
     case "setup":
       return 4;
   }
+}
+
+function validationRowsForDraftFlow(flow: E2eFlow): E2eValidationMatrixRow[] {
+  const coreFlow = coreFlowForDraftFlow(flow);
+  return buildE2eValidationMatrix([flow], coreFlow ? [coreFlow] : []).rows;
+}
+
+function summarizeDraftValidation(flow: E2eFlow): {
+  status: E2eValidationMatrixStatus;
+  gapCount: number;
+  blockingGapCount: number;
+} {
+  const rows = validationRowsForDraftFlow(flow);
+  const blockingGapCount = rows.filter((row) => row.status === "missing").length;
+  const gapCount = rows.filter((row) => row.status !== "ready").length;
+  let status: E2eValidationMatrixStatus = "ready";
+  if (blockingGapCount > 0) {
+    status = "missing";
+  } else if (gapCount > 0) {
+    status = "partial";
+  }
+  return { status, gapCount, blockingGapCount };
 }
 
 export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
@@ -2515,6 +2547,7 @@ function buildMaestroDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   appendEntrypointHints(lines, flow, "#");
   appendSetupHints(lines, flow, "#");
   appendFixtureReadinessHints(lines, flow, "#");
+  appendValidationGapComments(lines, flow, "#");
   for (const step of flow.steps) {
     const command = maestroCommandForStep(step, selectorQueue);
     lines.push(...formatMaestroCommand(command));
@@ -2590,6 +2623,7 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   appendEntrypointHints(lines, flow, "  //");
   appendSetupHints(lines, flow, "  //");
   appendFixtureReadinessHints(lines, flow, "  //");
+  appendValidationGapComments(lines, flow, "  //");
   const routeEntrypoint = primaryRouteEntrypoint(flow);
   const routeDraft = buildPlaywrightRouteDraft(routeEntrypoint?.value ?? "/");
   if (routeDraft.params.length > 0) {
@@ -2688,6 +2722,7 @@ function buildManualDraft(plan: E2ePlanResult, flow: E2eFlow): string {
       lines.push(`- [ ] ${action}`);
     }
   }
+  appendManualValidationGaps(lines, flow);
   if (scenario) {
     lines.push("");
     lines.push("## Scenario Checks");
@@ -2776,6 +2811,31 @@ function appendFixtureReadinessHints(lines: string[], flow: E2eFlow, commentPref
   lines.push(`${commentPrefix} - ${formatFixtureReadiness(flow.fixtureReadiness)}`);
   for (const action of flow.fixtureReadiness.nextActions.slice(0, 3)) {
     lines.push(`${commentPrefix} - Next: ${action}`);
+  }
+}
+
+function appendValidationGapComments(lines: string[], flow: E2eFlow, commentPrefix: string): void {
+  const rows = validationRowsForDraftFlow(flow).filter((row) => row.status !== "ready");
+  if (rows.length === 0) {
+    return;
+  }
+  lines.push("");
+  lines.push(`${commentPrefix} Validation gaps before this draft can be required:`);
+  for (const row of rows.slice(0, maxFilesPerFlow)) {
+    lines.push(`${commentPrefix} - [${row.status}] ${row.area}: ${row.nextAction}`);
+  }
+}
+
+function appendManualValidationGaps(lines: string[], flow: E2eFlow): void {
+  const rows = validationRowsForDraftFlow(flow).filter((row) => row.status !== "ready");
+  if (rows.length === 0) {
+    return;
+  }
+  lines.push("");
+  lines.push("## Validation Gaps");
+  lines.push("");
+  for (const row of rows.slice(0, maxFilesPerFlow)) {
+    lines.push(`- [ ] [${row.status}] ${row.area} - ${row.nextAction}`);
   }
 }
 
@@ -3049,6 +3109,9 @@ function buildDraftNextSteps(plan: E2ePlanResult, runner: E2eRunnerName): string
   if (plan.missingTestability.length > 0) {
     steps.push("Address the listed testability gaps before treating the generated drafts as stable regression tests.");
   }
+  if (plan.validationMatrix.summary.missing > 0) {
+    steps.push("Resolve missing validation matrix rows before promoting generated drafts to required PR evidence.");
+  }
   return steps;
 }
 
@@ -3078,6 +3141,17 @@ function formatDraftFileQuality(file: E2eDraftFile): string | undefined {
   if (file.coverageTargetCount !== undefined) {
     details.push(
       `${file.coverageTargetCount} coverage target${file.coverageTargetCount === 1 ? "" : "s"}`,
+    );
+  }
+  if (file.validationStatus !== undefined) {
+    details.push(`${file.validationStatus} validation`);
+  }
+  if (file.validationGapCount !== undefined) {
+    details.push(`${file.validationGapCount} validation gap${file.validationGapCount === 1 ? "" : "s"}`);
+  }
+  if (file.blockingValidationGapCount !== undefined && file.blockingValidationGapCount > 0) {
+    details.push(
+      `${file.blockingValidationGapCount} missing validation gap${file.blockingValidationGapCount === 1 ? "" : "s"}`,
     );
   }
   return details.length > 0 ? details.join(", ") : undefined;

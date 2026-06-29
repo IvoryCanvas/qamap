@@ -539,12 +539,15 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
   assert.ok(draft.files.some((file) => file.todoCount !== undefined && file.todoCount > 0));
   assert.ok(draft.files.some((file) => file.inferredSelectorCount !== undefined && file.inferredSelectorCount > 0));
   assert.ok(draft.files.some((file) => file.coverageTargetCount !== undefined && file.coverageTargetCount > 0));
+  assert.ok(draft.files.some((file) => file.validationStatus === "missing" || file.validationStatus === "partial"));
+  assert.ok(draft.files.some((file) => file.validationGapCount !== undefined && file.validationGapCount > 0));
   assert.ok(skippedDraft.files.some((file) => file.status === "skipped"));
   assert.ok(forcedDraft.files.every((file) => file.status === "created"));
   assert.match(draftMarkdown, /# CodeWard E2E Draft/);
   assert.match(draftMarkdown, /TODOs/);
   assert.match(draftMarkdown, /inferred selector/);
   assert.match(draftMarkdown, /coverage targets/);
+  assert.match(draftMarkdown, /validation gap/);
   assert.match(uiDraft, /appId: \$\{APP_ID\}/);
   assert.match(uiDraft, new RegExp(`Flow: ${uiDraftFile.flowTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.match(uiDraft, /Domain scenario:/);
@@ -560,10 +563,12 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
   assert.match(uiDraft, /record-mode-ink/);
   assert.match(uiDraft, /Coverage matrix/);
   assert.match(uiDraft, /Loading, empty, error, and success states/);
+  assert.match(uiDraft, /Validation gaps before this draft can be required/);
   assert.match(uiDraft, /TODO:/);
   assert.equal(cliPlan.recommendedRunner.name, "maestro");
   assert.equal(cliDraft.runner, "maestro");
   assert.ok(cliDraft.files.some((file) => file.source === "domain-language"));
+  assert.ok(cliDraft.files.some((file) => file.validationGapCount > 0));
 });
 
 test("generateE2ePlan keeps service changes generic and avoids fixture-specific names", async () => {
@@ -896,9 +901,14 @@ test("generateE2ePlan flags missing mock fixtures for API-dependent UI flows", a
   const draftFile = draft.files.find((file) => file.fixtureReadinessStatus === "missing");
   assert.ok(draftFile);
   assert.equal(draftFile.fixtureReadinessStatus, "missing");
+  assert.equal(draftFile.validationStatus, "missing");
+  assert.ok((draftFile.validationGapCount ?? 0) > 0);
+  assert.ok((draftFile.blockingValidationGapCount ?? 0) > 0);
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
   assert.match(spec, /Fixture\/mock readiness/);
   assert.match(spec, /Add a deterministic mock or fixture response/);
+  assert.match(spec, /Validation gaps before this draft can be required/);
+  assert.match(spec, /\[missing\].*fixture\/mock readiness/);
 });
 
 test("generateE2eDraft uses web selectors in Playwright specs", async () => {
@@ -1113,11 +1123,14 @@ test("generateE2ePlan matches committed core flow definitions", async () => {
   const draftFile = draft.files.find((file) => file.flowTitle === "Checkout purchase");
   assert.ok(draftFile);
   assert.equal(draftFile.source, "core-flow");
+  assert.ok((draftFile.validationGapCount ?? 0) > 0);
   assert.match(draftFile.primaryEntrypoint ?? "", /route \/checkout \[high\] \(\.codeward\/flows\.yml\)/);
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
   assert.match(spec, /Core flow: checkout-purchase \[critical\]/);
   assert.match(spec, /Keep manifest checks required: Complete checkout with a valid payment method\. and Verify declined payment recovery\./);
   assert.match(spec, /route \/checkout \[high\] \(\.codeward\/flows\.yml\)/);
+  assert.match(spec, /Validation gaps before this draft can be required/);
+  assert.match(spec, /\[partial\] Checkout purchase: Make the matched core flow checks required validation evidence/);
   assert.match(spec, /page\.goto\("\/checkout"\)/);
   assert.match(spec, /TODO: Complete checkout with a valid payment method\./);
 });
