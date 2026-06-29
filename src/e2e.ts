@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildDomainLanguageSummary } from "./domain-language.js";
+import { defaultDomainManifestPath, loadDomainManifest, matchDomains } from "./domains.js";
+import { collectProjectFiles } from "./fs.js";
 import { loadCoreFlowManifest, matchCoreFlows } from "./flows.js";
 import {
   collectTestSuiteInventory,
@@ -10,6 +12,7 @@ import {
 import { generateTestPlan } from "./test-plan.js";
 import type { TestPlanChangedFile, TestPlanOptions } from "./test-plan.js";
 import type { DomainLanguageSummary, DomainScenarioSuggestion } from "./domain-language.js";
+import type { MatchedDomain } from "./domains.js";
 import type { MatchedCoreFlow } from "./flows.js";
 import type { LocalHistoryReference } from "./history.js";
 import type { CoverageEvidence, TestSuiteInventory, TestSuiteSummary } from "./test-evidence.js";
@@ -21,6 +24,7 @@ export type E2eEntrypointKind = "route" | "screen" | "command";
 export type E2eEntrypointConfidence = "high" | "medium" | "low";
 export type E2eSetupHintKind = "auth" | "network" | "fixture" | "environment" | "payment" | "state";
 export type E2eSetupHintConfidence = "high" | "medium" | "low";
+export type E2eFixtureReadinessStatus = "ready" | "partial" | "missing" | "not-needed";
 export type E2eSelectorKind =
   | "test-id"
   | "accessibility-label"
@@ -66,6 +70,7 @@ export interface E2eFlow {
   coverageEvidence: CoverageEvidence[];
   entrypoints: E2eEntrypoint[];
   setupHints: E2eSetupHint[];
+  fixtureReadiness: E2eFixtureReadiness;
   selectors: E2eSelector[];
   missingTestability: string[];
 }
@@ -91,6 +96,15 @@ export interface E2eSelector {
   file: string;
 }
 
+export interface E2eFixtureReadiness {
+  status: E2eFixtureReadinessStatus;
+  reason: string;
+  apiSignals: string[];
+  backendSignals: string[];
+  mockSignals: string[];
+  nextActions: string[];
+}
+
 export interface E2ePlanResult {
   tool: {
     name: string;
@@ -107,6 +121,8 @@ export interface E2ePlanResult {
   testSuite: TestSuiteSummary;
   coreFlowManifestPath?: string;
   coreFlows: MatchedCoreFlow[];
+  domainManifestPath?: string;
+  domains: MatchedDomain[];
   domainLanguage: DomainLanguageSummary;
   changedFiles: TestPlanChangedFile[];
   suggestedCommands: string[];
@@ -127,6 +143,7 @@ export interface E2eDraftFile {
   entrypointCount?: number;
   primaryEntrypoint?: string;
   setupHintCount?: number;
+  fixtureReadinessStatus?: E2eFixtureReadinessStatus;
   inferredSelectorCount?: number;
   coverageTargetCount?: number;
   reason?: string;
@@ -164,7 +181,9 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
   const coreFlowManifest = await loadCoreFlowManifest(coreFlowRoot);
   const coreFlowChangedFiles = toCoreFlowChangedFiles(testPlan.changedFiles, root, coreFlowRoot);
   const coreFlows = matchCoreFlows(coreFlowManifest, coreFlowChangedFiles);
-  const domainLanguage = await buildDomainLanguageSummary(root, testPlan.changedFiles, coreFlows);
+  const domainManifest = await loadDomainManifest(coreFlowRoot);
+  const domains = matchDomains(domainManifest, coreFlowChangedFiles);
+  const domainLanguage = await buildDomainLanguageSummary(root, testPlan.changedFiles, coreFlows, domains);
   const flows = await buildFlows(root, testPlan.changedFiles, recommendedRunner.name, project.type, testSuiteInventory);
   const missingTestability = uniqueStrings([
     ...flows.flatMap((flow) => flow.missingTestability),
@@ -187,6 +206,8 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
     testSuite: summarizeTestSuiteInventory(testSuiteInventory),
     coreFlowManifestPath: coreFlowManifest.path,
     coreFlows,
+    domainManifestPath: domainManifest.path,
+    domains,
     domainLanguage,
     changedFiles: testPlan.changedFiles,
     suggestedCommands: testPlan.suggestedCommands,
@@ -220,6 +241,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
         entrypointCount: flow.entrypoints.length,
         primaryEntrypoint: primaryEntrypointLabel(flow),
         setupHintCount: flow.setupHints.length,
+        fixtureReadinessStatus: flow.fixtureReadiness.status,
         coverageTargetCount: flow.coverage.length,
         reason: "File already exists. Pass --force to overwrite it.",
       });
@@ -238,6 +260,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
       entrypointCount: flow.entrypoints.length,
       primaryEntrypoint: primaryEntrypointLabel(flow),
       setupHintCount: flow.setupHints.length,
+      fixtureReadinessStatus: flow.fixtureReadiness.status,
       inferredSelectorCount: flow.selectors.length,
       coverageTargetCount: flow.coverage.length,
     });
@@ -450,7 +473,11 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
   if (result.coreFlowManifestPath) {
     lines.push(`- Core flow manifest: \`${escapeMarkdownInline(result.coreFlowManifestPath)}\``);
   }
+  if (result.domainManifestPath) {
+    lines.push(`- Domain manifest: \`${escapeMarkdownInline(result.domainManifestPath)}\``);
+  }
   lines.push(`- Matched core flows: ${result.coreFlows.length}`);
+  lines.push(`- Matched domains: ${result.domains.length}`);
   lines.push(`- Changed files considered: ${result.changedFiles.length}`);
   if (result.localHistory) {
     lines.push(`- Local history: \`${escapeMarkdownInline(result.localHistory.path)}\``);
@@ -531,6 +558,36 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
     }
   }
 
+  if (result.domains.length > 0) {
+    lines.push("## Matched Domains");
+    lines.push("");
+    for (const domain of result.domains) {
+      lines.push(`### ${escapeMarkdownInline(domain.name)} \`${escapeMarkdownInline(domain.id)}\``);
+      lines.push("");
+      lines.push(domain.reason);
+      lines.push("");
+      lines.push("Matched files:");
+      for (const file of domain.matchedFiles.slice(0, maxFilesPerFlow)) {
+        lines.push(`- \`${escapeMarkdownInline(file)}\``);
+      }
+      if (domain.routes.length > 0) {
+        lines.push("");
+        lines.push("Declared routes:");
+        for (const route of domain.routes) {
+          lines.push(`- \`${escapeMarkdownInline(route)}\``);
+        }
+      }
+      if (domain.scenarios.length > 0) {
+        lines.push("");
+        lines.push("Suggested scenarios:");
+        for (const scenario of domain.scenarios) {
+          lines.push(`- ${escapeMarkdownInline(scenario.title)}`);
+        }
+      }
+      lines.push("");
+    }
+  }
+
   lines.push("## Candidate E2E Flows");
   lines.push("");
   if (result.flows.length === 0) {
@@ -566,6 +623,14 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
         lines.push("Setup hints:");
         for (const hint of flow.setupHints.slice(0, maxFilesPerFlow)) {
           lines.push(`- ${formatSetupHint(hint)}`);
+        }
+      }
+      if (flow.fixtureReadiness.status !== "not-needed") {
+        lines.push("");
+        lines.push("Fixture/mock readiness:");
+        lines.push(`- ${formatFixtureReadiness(flow.fixtureReadiness)}`);
+        for (const action of flow.fixtureReadiness.nextActions.slice(0, 3)) {
+          lines.push(`- Next: ${escapeMarkdownInline(action)}`);
         }
       }
       if (flow.coverage.length > 0) {
@@ -776,7 +841,7 @@ function toCoreFlowChangedFiles(
 type E2eFlowKind = "ui" | "api" | "state" | "content" | "config" | "domain" | "changed-file";
 type FlowCandidate = Omit<
   E2eFlow,
-  "coverage" | "coverageEvidence" | "entrypoints" | "setupHints" | "selectors" | "missingTestability"
+  "coverage" | "coverageEvidence" | "entrypoints" | "setupHints" | "fixtureReadiness" | "selectors" | "missingTestability"
 > & {
   kind: E2eFlowKind;
 };
@@ -795,9 +860,10 @@ async function buildFlows(
   testSuiteInventory: TestSuiteInventory,
 ): Promise<E2eFlow[]> {
   const files = changedFiles.map((file) => file.path);
+  const fixtureContext = await collectFixtureReadinessContext(root, files);
   const flowResults = await Promise.all(
     buildFlowCandidates(files, runner, projectType).map((candidate) =>
-      buildFlow(root, runner, candidate, testSuiteInventory),
+      buildFlow(root, runner, candidate, testSuiteInventory, fixtureContext),
     ),
   );
   const flows = flowResults.filter((flow): flow is E2eFlow => Boolean(flow));
@@ -944,12 +1010,14 @@ async function buildFlow(
   runner: E2eRunnerName,
   candidate: FlowCandidate,
   testSuiteInventory: TestSuiteInventory,
+  fixtureContext: FixtureReadinessContext,
 ): Promise<E2eFlow | undefined> {
   const files = uniqueStrings(candidate.files).slice(0, 20);
   if (files.length === 0) {
     return undefined;
   }
   const coverage = buildCoverageTargets(candidate.kind, files, runner);
+  const setupHints = await inferFlowSetupHints(root, files, candidate.kind);
   return {
     title: candidate.title,
     reason: candidate.reason,
@@ -958,7 +1026,8 @@ async function buildFlow(
     coverage,
     coverageEvidence: evaluateFlowCoverageEvidence({ title: candidate.title, files, coverage }, testSuiteInventory),
     entrypoints: await inferFlowEntrypoints(root, files, runner),
-    setupHints: await inferFlowSetupHints(root, files, candidate.kind),
+    setupHints,
+    fixtureReadiness: await inferFlowFixtureReadiness(root, files, candidate.kind, setupHints, fixtureContext),
     selectors: await inferFlowSelectors(root, files, runner),
     missingTestability: await findFlowTestabilityGaps(root, files, runner),
   };
@@ -1090,6 +1159,203 @@ function setupHint(
     confidence,
   };
 }
+
+interface FixtureReadinessContext {
+  changedBackendFiles: string[];
+  changedMockFiles: string[];
+  projectMockFiles: string[];
+}
+
+async function collectFixtureReadinessContext(root: string, changedFiles: string[]): Promise<FixtureReadinessContext> {
+  const projectFiles = await collectProjectFiles(root, 12000);
+  return {
+    changedBackendFiles: changedFiles.filter(isBackendImplementationFile).slice(0, maxFilesPerFlow),
+    changedMockFiles: changedFiles.filter(isMockOrFixtureFile).slice(0, maxFilesPerFlow),
+    projectMockFiles: projectFiles.map((file) => file.path).filter(isMockOrFixtureFile).slice(0, maxFilesPerFlow),
+  };
+}
+
+async function inferFlowFixtureReadiness(
+  root: string,
+  files: string[],
+  kind: E2eFlowKind,
+  setupHints: E2eSetupHint[],
+  context: FixtureReadinessContext,
+): Promise<E2eFixtureReadiness> {
+  const apiSignals = await findApiDependencySignals(root, files, kind, setupHints);
+  const requiresMock = apiSignals.length > 0 || setupHints.some((hint) => hint.kind === "network" || hint.kind === "payment");
+  if (!requiresMock) {
+    return {
+      status: "not-needed",
+      reason: "No API, network, payment, or external-response dependency was detected for this flow.",
+      apiSignals: [],
+      backendSignals: [],
+      mockSignals: [],
+      nextActions: [],
+    };
+  }
+
+  const changedMockSignals = context.changedMockFiles.filter((file) => isRelatedEvidenceFile(file, files));
+  const projectMockSignals = context.projectMockFiles.filter((file) => isRelatedEvidenceFile(file, files));
+  const backendSignals = context.changedBackendFiles.filter((file) => isRelatedEvidenceFile(file, files));
+  const fallbackProjectMockSignals = projectMockSignals.length > 0 ? projectMockSignals : context.projectMockFiles;
+  const mockSignals = uniqueStrings([...changedMockSignals, ...fallbackProjectMockSignals]).slice(0, maxFilesPerFlow);
+
+  if (changedMockSignals.length > 0) {
+    return {
+      status: "ready",
+      reason: "This branch includes mock or fixture evidence for an API-dependent flow.",
+      apiSignals,
+      backendSignals,
+      mockSignals,
+      nextActions: [
+        "Keep deterministic success, empty, unauthorized, and failure fixture cases aligned with the changed flow.",
+      ],
+    };
+  }
+
+  if (context.projectMockFiles.length > 0) {
+    return {
+      status: "partial",
+      reason: "Mock or fixture infrastructure exists, but this branch does not add flow-specific fixture evidence.",
+      apiSignals,
+      backendSignals,
+      mockSignals,
+      nextActions: [
+        "Add or update the fixture/mock response for this changed flow before making the draft required.",
+        "Cover the primary success response and one empty, rejected, or server-error response.",
+      ],
+    };
+  }
+
+  if (backendSignals.length > 0) {
+    return {
+      status: "partial",
+      reason: "Backend or API contract changes exist, but deterministic fixture evidence was not detected.",
+      apiSignals,
+      backendSignals,
+      mockSignals,
+      nextActions: [
+        "Confirm the test environment can serve the changed API path, or add a mock response for local E2E runs.",
+        "Seed realistic response data for success and failure paths.",
+      ],
+    };
+  }
+
+  return {
+    status: "missing",
+    reason: "This flow appears to depend on API or external response data, but no changed backend, mock, or fixture evidence was detected.",
+    apiSignals,
+    backendSignals,
+    mockSignals,
+    nextActions: [
+      "Add a deterministic mock or fixture response, such as MSW handlers, Playwright route fulfillment, mock data, or seeded test data.",
+      "Include success plus one empty, unauthorized, rejected, timeout, or server-error response.",
+    ],
+  };
+}
+
+async function findApiDependencySignals(
+  root: string,
+  files: string[],
+  kind: E2eFlowKind,
+  setupHints: E2eSetupHint[],
+): Promise<string[]> {
+  const signals = new Set<string>();
+  if (kind === "api") {
+    for (const file of files.slice(0, maxFilesPerFlow)) {
+      signals.add(file);
+    }
+  }
+  for (const hint of setupHints) {
+    if (hint.kind === "network" || hint.kind === "payment") {
+      for (const file of hint.files) {
+        signals.add(file);
+      }
+    }
+  }
+  for (const file of files.slice(0, 12)) {
+    if (isApiDependencyPath(file)) {
+      signals.add(file);
+      continue;
+    }
+    const text = await readTextIfExists(path.join(root, file));
+    if (text && hasApiDependencyText(text)) {
+      signals.add(file);
+    }
+  }
+  return [...signals].slice(0, maxFilesPerFlow);
+}
+
+function isApiDependencyPath(file: string): boolean {
+  return /(?:^|\/)(?:api|apis|clients?|endpoints?|queries|mutations|graphql|trpc|services?)\//i.test(file) ||
+    /(?:api|client|endpoint|query|mutation|graphql|trpc|request|response)\.[cm]?[jt]sx?$/i.test(file);
+}
+
+function hasApiDependencyText(text: string): boolean {
+  return /(?:fetch\(|axios\.|graphql|gql`|trpc\.|useQuery|useMutation|queryKey|apiClient|client\.(?:get|post|put|patch|delete)|\/api\/|endpoint|request|response)/i.test(text);
+}
+
+function isBackendImplementationFile(file: string): boolean {
+  return /(?:^|\/)(?:server|servers|backend|api|apis|routes|controllers?|handlers?|resolvers?|endpoints?)\//i.test(file) ||
+    /(?:openapi|swagger|schema|controller|handler|resolver|route)\.(?:json|ya?ml|[cm]?[jt]sx?|py|go|rs|kt|java|rb|php)$/i.test(file);
+}
+
+function isMockOrFixtureFile(file: string): boolean {
+  return /(?:^|\/)(?:__mocks__|mocks?|fixtures?|factories|seeds?|test-data|testData|msw|mirage)\//i.test(file) ||
+    /(?:mock|fixture|factory|seed|handler|msw)\.[cm]?[jt]sx?$/i.test(file);
+}
+
+function isRelatedEvidenceFile(evidenceFile: string, flowFiles: string[]): boolean {
+  if (flowFiles.length === 0) {
+    return true;
+  }
+  const evidenceTokens = domainTokensForEvidence(evidenceFile);
+  const flowTokens = new Set(flowFiles.flatMap(domainTokensForEvidence));
+  if (evidenceTokens.some((token) => flowTokens.has(token))) {
+    return true;
+  }
+  return flowFiles.some((file) => sameOrNestedPath(evidenceFile, file));
+}
+
+function domainTokensForEvidence(file: string): string[] {
+  return file
+    .replace(/\.[^.\/]+$/g, "")
+    .split("/")
+    .flatMap((part) => part.replace(/([a-z0-9])([A-Z])/g, "$1 $2").split(/[^a-zA-Z0-9]+/))
+    .map((part) => part.toLowerCase())
+    .filter((part) => part.length > 2 && !fixtureEvidenceIgnoredTokens.has(part));
+}
+
+const fixtureEvidenceIgnoredTokens = new Set([
+  "src",
+  "app",
+  "apps",
+  "api",
+  "apis",
+  "client",
+  "clients",
+  "component",
+  "components",
+  "feature",
+  "features",
+  "fixture",
+  "fixtures",
+  "handler",
+  "handlers",
+  "mock",
+  "mocks",
+  "page",
+  "pages",
+  "route",
+  "routes",
+  "screen",
+  "screens",
+  "service",
+  "services",
+  "test",
+  "tests",
+]);
 
 async function inferFlowSelectors(root: string, files: string[], runner: E2eRunnerName): Promise<E2eSelector[]> {
   const selectors: E2eSelector[] = [];
@@ -1702,6 +1968,7 @@ async function buildDomainScenarioDraftFlow(
   const coverage = baseFlow?.coverage ?? buildCoverageTargets("domain", files, plan.recommendedRunner.name);
   const runner = plan.recommendedRunner.name;
   const entrypoints = uniqueEntrypoints([
+    ...domainScenarioEntrypoints(plan, scenario, runner),
     ...coreFlowEntrypoints(plan, coreFlow, runner),
     ...filterEntrypointsForFiles(baseFlows.flatMap((flow) => flow.entrypoints), files),
     ...(await inferFlowEntrypoints(plan.root, files, runner)),
@@ -1723,6 +1990,7 @@ async function buildDomainScenarioDraftFlow(
     coverageEvidence: baseFlow?.coverageEvidence ?? [],
     entrypoints,
     setupHints,
+    fixtureReadiness: scenarioFixtureReadiness(baseFlow, setupHints),
     selectors,
     missingTestability: await findFlowTestabilityGaps(plan.root, files, runner),
     draftSource: scenario.source === "core-flow" ? "core-flow" : "domain-language",
@@ -1741,6 +2009,37 @@ function matchedCoreFlowForScenario(
   return plan.coreFlows.find((flow) => flow.name === scenario.title);
 }
 
+function scenarioFixtureReadiness(
+  baseFlow: E2eFlow | undefined,
+  setupHints: E2eSetupHint[],
+): E2eFixtureReadiness {
+  if (baseFlow) {
+    return baseFlow.fixtureReadiness;
+  }
+  const needsResponseSetup = setupHints.some((hint) => hint.kind === "network" || hint.kind === "payment" || hint.kind === "fixture");
+  if (!needsResponseSetup) {
+    return {
+      status: "not-needed",
+      reason: "No API, network, payment, or external-response dependency was detected for this scenario.",
+      apiSignals: [],
+      backendSignals: [],
+      mockSignals: [],
+      nextActions: [],
+    };
+  }
+  return {
+    status: "missing",
+    reason: "This scenario has response or fixture setup hints, but no base flow fixture evidence was available.",
+    apiSignals: setupHints.flatMap((hint) => hint.files).slice(0, maxFilesPerFlow),
+    backendSignals: [],
+    mockSignals: [],
+    nextActions: [
+      "Add a deterministic mock or fixture response before making this generated scenario required.",
+      "Cover the primary success response and one empty, rejected, or server-error response.",
+    ],
+  };
+}
+
 function normalizeScenarioFilesForRoot(plan: E2ePlanResult, files: string[]): string[] {
   if (!plan.workspaceRoot) {
     return files;
@@ -1754,6 +2053,26 @@ function normalizeScenarioFilesForRoot(plan: E2ePlanResult, files: string[]): st
       ? file.slice(packagePathFromWorkspace.length).replace(/^\/+/, "")
       : file,
   );
+}
+
+function domainScenarioEntrypoints(
+  plan: E2ePlanResult,
+  scenario: DomainScenarioSuggestion,
+  runner: E2eRunnerName,
+): E2eEntrypoint[] {
+  if (runner === "maestro" || scenario.source !== "domain-manifest" || !scenario.routes || scenario.routes.length === 0) {
+    return [];
+  }
+  const manifestPath = plan.domainManifestPath ?? defaultDomainManifestPath;
+  return scenario.routes
+    .map((route) => normalizeEntrypointRoute(route))
+    .filter((route): route is string => Boolean(route))
+    .map((route) => ({
+      kind: "route",
+      value: route,
+      file: manifestPath,
+      confidence: "high",
+    }));
 }
 
 function coreFlowEntrypoints(
@@ -1875,6 +2194,14 @@ function buildFallbackFlow(plan: E2ePlanResult): E2eFlow {
     ),
     entrypoints: [],
     setupHints: [],
+    fixtureReadiness: {
+      status: "not-needed",
+      reason: "No API, network, payment, or external-response dependency was detected for this fallback flow.",
+      apiSignals: [],
+      backendSignals: [],
+      mockSignals: [],
+      nextActions: [],
+    },
     selectors: [],
     missingTestability: plan.missingTestability,
   };
@@ -1930,6 +2257,7 @@ function buildMaestroDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   lines.push("- launchApp");
   appendEntrypointHints(lines, flow, "#");
   appendSetupHints(lines, flow, "#");
+  appendFixtureReadinessHints(lines, flow, "#");
   for (const step of flow.steps) {
     const command = maestroCommandForStep(step, selectorQueue);
     lines.push(...formatMaestroCommand(command));
@@ -2004,6 +2332,7 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   lines.push(`test("${testName}", async ({ page }) => {`);
   appendEntrypointHints(lines, flow, "  //");
   appendSetupHints(lines, flow, "  //");
+  appendFixtureReadinessHints(lines, flow, "  //");
   const routeEntrypoint = primaryRouteEntrypoint(flow);
   const routeDraft = buildPlaywrightRouteDraft(routeEntrypoint?.value ?? "/");
   if (routeDraft.params.length > 0) {
@@ -2093,6 +2422,15 @@ function buildManualDraft(plan: E2ePlanResult, flow: E2eFlow): string {
       lines.push(`- ${formatSetupHint(hint)}`);
     }
   }
+  if (flow.fixtureReadiness.status !== "not-needed") {
+    lines.push("");
+    lines.push("## Fixture / Mock Readiness");
+    lines.push("");
+    lines.push(`- ${formatFixtureReadiness(flow.fixtureReadiness)}`);
+    for (const action of flow.fixtureReadiness.nextActions) {
+      lines.push(`- [ ] ${action}`);
+    }
+  }
   if (scenario) {
     lines.push("");
     lines.push("## Scenario Checks");
@@ -2169,6 +2507,18 @@ function appendSetupHints(lines: string[], flow: E2eFlow, commentPrefix: string)
   lines.push(`${commentPrefix} Setup hints:`);
   for (const hint of flow.setupHints.slice(0, maxFilesPerFlow)) {
     lines.push(`${commentPrefix} - ${formatSetupHint(hint)}`);
+  }
+}
+
+function appendFixtureReadinessHints(lines: string[], flow: E2eFlow, commentPrefix: string): void {
+  if (flow.fixtureReadiness.status === "not-needed") {
+    return;
+  }
+  lines.push("");
+  lines.push(`${commentPrefix} Fixture/mock readiness:`);
+  lines.push(`${commentPrefix} - ${formatFixtureReadiness(flow.fixtureReadiness)}`);
+  for (const action of flow.fixtureReadiness.nextActions.slice(0, 3)) {
+    lines.push(`${commentPrefix} - Next: ${action}`);
   }
 }
 
@@ -2249,6 +2599,9 @@ function buildHumanFixtureInputs(flow: E2eFlow, runner: E2eRunnerName): string[]
   }
   for (const hint of flow.setupHints) {
     inputs.push(humanFixtureInputForSetupHint(hint));
+  }
+  for (const action of flow.fixtureReadiness.nextActions) {
+    inputs.push(action);
   }
   if (flow.missingTestability.length > 0) {
     inputs.push("Replace placeholder selectors with stable test ids, accessibility labels, roles, or visible copy from the app.");
@@ -2406,6 +2759,21 @@ function formatEntrypoint(entrypoint: E2eEntrypoint): string {
 function formatSetupHint(hint: E2eSetupHint): string {
   const files = hint.files.length > 0 ? ` (${hint.files.slice(0, 3).join(", ")})` : "";
   return `[${hint.kind}, ${hint.confidence}] ${hint.title}: ${hint.detail}${files}`;
+}
+
+function formatFixtureReadiness(readiness: E2eFixtureReadiness): string {
+  const evidence: string[] = [];
+  if (readiness.apiSignals.length > 0) {
+    evidence.push(`${readiness.apiSignals.length} API signal${readiness.apiSignals.length === 1 ? "" : "s"}`);
+  }
+  if (readiness.backendSignals.length > 0) {
+    evidence.push(`${readiness.backendSignals.length} backend signal${readiness.backendSignals.length === 1 ? "" : "s"}`);
+  }
+  if (readiness.mockSignals.length > 0) {
+    evidence.push(`${readiness.mockSignals.length} mock/fixture signal${readiness.mockSignals.length === 1 ? "" : "s"}`);
+  }
+  const suffix = evidence.length > 0 ? ` Evidence: ${evidence.join(", ")}.` : "";
+  return `[${readiness.status}] ${readiness.reason}${suffix}`;
 }
 
 function buildDraftNextSteps(plan: E2ePlanResult, runner: E2eRunnerName): string[] {

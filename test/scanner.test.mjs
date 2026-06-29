@@ -828,6 +828,68 @@ test("generateE2ePlan suggests setup hints for auth and session changes", async 
   assert.match(formatMarkdownE2ePlan(plan), /Authenticated session setup/);
 });
 
+test("generateE2ePlan flags missing mock fixtures for API-dependent UI flows", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/pages/orders"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        test: "playwright test",
+      },
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        "react-dom": "^19.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/pages/orders/OrderSummaryPage.tsx"),
+    "export function OrderSummaryPage() { return <button>Open order</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/order-summary-api"]);
+  await writeFile(
+    path.join(root, "src/pages/orders/OrderSummaryPage.tsx"),
+    [
+      "export async function loadOrder() {",
+      "  const response = await fetch('/api/orders/fixture-order-id');",
+      "  return response.json();",
+      "}",
+      "export function OrderSummaryPage() { return <button data-testid=\"open-order\">Open order</button>; }",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "load order summary"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const markdown = formatMarkdownE2ePlan(plan);
+  const flow = plan.flows.find((item) => item.fixtureReadiness.status === "missing");
+
+  assert.ok(flow);
+  assert.equal(flow.fixtureReadiness.status, "missing");
+  assert.ok(flow.fixtureReadiness.apiSignals.includes("src/pages/orders/OrderSummaryPage.tsx"));
+  assert.match(markdown, /Fixture\/mock readiness/);
+  assert.match(markdown, /no changed backend, mock, or fixture evidence was detected/);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const draftFile = draft.files.find((file) => file.fixtureReadinessStatus === "missing");
+  assert.ok(draftFile);
+  assert.equal(draftFile.fixtureReadinessStatus, "missing");
+  const spec = await readFile(path.join(root, draftFile.path), "utf8");
+  assert.match(spec, /Fixture\/mock readiness/);
+  assert.match(spec, /Add a deterministic mock or fixture response/);
+});
+
 test("generateE2eDraft uses web selectors in Playwright specs", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
@@ -1047,6 +1109,92 @@ test("generateE2ePlan matches committed core flow definitions", async () => {
   assert.match(spec, /route \/checkout \[high\] \(\.codeward\/flows\.yml\)/);
   assert.match(spec, /page\.goto\("\/checkout"\)/);
   assert.match(spec, /TODO: Complete checkout with a valid payment method\./);
+});
+
+test("generateE2ePlan uses committed domain manifests for language and draft routes", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, ".codeward"), { recursive: true });
+  await mkdir(path.join(root, "src/features/subscription"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      dependencies: {
+        "react-dom": "^19.0.0",
+      },
+      scripts: {
+        test: "node --test",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, ".codeward/domains.yml"),
+    [
+      "domains:",
+      "  - id: membership",
+      "    name: Membership",
+      "    aliases:",
+      "      - subscription",
+      "    files:",
+      "      - src/features/subscription/**",
+      "    routes:",
+      "      - /membership/renewal",
+      "    scenarios:",
+      "      - title: Membership renewal",
+      "        checks:",
+      "          - Renew an active membership with realistic billing data.",
+      "          - Confirm the renewed membership state is visible.",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "src/features/subscription/RenewalPage.tsx"),
+    "export function RenewalPage() { return <button data-testid=\"renew-membership\">Renew</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/membership-renewal"]);
+  await writeFile(
+    path.join(root, "src/features/subscription/RenewalPage.tsx"),
+    "export function RenewalPage() { return <button data-testid=\"renew-membership\">Renew membership</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update membership renewal"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const markdown = formatMarkdownE2ePlan(plan);
+
+  assert.equal(plan.domainManifestPath, ".codeward/domains.yml");
+  assert.equal(plan.domains.length, 1);
+  assert.equal(plan.domains[0].id, "membership");
+  assert.ok(plan.domains[0].matchedFiles.includes("src/features/subscription/RenewalPage.tsx"));
+  assert.deepEqual(plan.domains[0].routes, ["/membership/renewal"]);
+  assert.ok(
+    plan.domainLanguage.terms.some(
+      (term) => term.term === "Membership" && term.source === "domain-manifest" && term.confidence === "high",
+    ),
+  );
+  assert.ok(plan.domainLanguage.scenarios.some((scenario) => scenario.title === "Membership renewal"));
+  assert.match(markdown, /Domain manifest: `\.codeward\/domains\.yml`/);
+  assert.match(markdown, /## Matched Domains/);
+  assert.match(markdown, /Membership renewal/);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const draftFile = draft.files.find((file) => file.flowTitle === "Membership renewal");
+  assert.ok(draftFile);
+  assert.equal(draftFile.source, "domain-language");
+  assert.match(draftFile.primaryEntrypoint ?? "", /route \/membership\/renewal \[high\] \(\.codeward\/domains\.yml\)/);
+  const spec = await readFile(path.join(root, draftFile.path), "utf8");
+  assert.match(spec, /Domain scenario: Membership renewal/);
+  assert.match(spec, /route \/membership\/renewal \[high\] \(\.codeward\/domains\.yml\)/);
+  assert.match(spec, /page\.goto\("\/membership\/renewal"\)/);
+  assert.match(spec, /TODO: Renew an active membership with realistic billing data\./);
 });
 
 test("generateE2ePlan suggests domain language from changed paths without core flows", async () => {
@@ -1675,6 +1823,17 @@ test("flows init creates a commit-friendly core flow manifest", async () => {
   assert.match(manifest, /primary-success-path/);
 });
 
+test("domains init creates a commit-friendly domain manifest", async () => {
+  const root = await makeTempRepo();
+  const cliOutput = await execFileAsync(process.execPath, [cliPath, "domains", "init", root]);
+  const manifest = await readFile(path.join(root, ".codeward/domains.yml"), "utf8");
+
+  assert.match(cliOutput.stdout, /Wrote /);
+  assert.match(cliOutput.stdout, /team policy/);
+  assert.match(manifest, /domains:/);
+  assert.match(manifest, /Billing primary journey/);
+});
+
 test("configured validation commands feed test-plan and eval outputs", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
@@ -2103,6 +2262,7 @@ test("generateAgentContext reflects npm scripts and repository boundaries", asyn
   assert.match(context, /Build command: `npm run build`/);
   assert.match(context, /Do not push directly to `main`/);
   assert.match(context, /Never create or suggest branches with a `codex\/` prefix/);
+  assert.match(context, /Use `feat\/`, `fix\/`, `refactor\/`, `style\/`, `hotfix\/`, `chore\/`, or `docs\/` branch prefixes/);
 });
 
 async function makeTempRepo() {
