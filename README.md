@@ -208,7 +208,7 @@ Run `codeward flows init .` to create a starter manifest. Run `codeward flows su
 
 Pass `--record-history` when you want CodeWard to keep a compact local snapshot of an E2E plan under `.codeward/runs/`. CodeWard automatically protects `.codeward/runs/`, `.codeward/cache/`, `.codeward/tmp/`, and `.codeward/*.local.json` with `.gitignore` so generated history stays local by default. Shared project policy, such as `codeward.config.json`, `.codeward/domains.yml`, and `.codeward/flows.yml`, remains commit-friendly.
 
-`codeward e2e draft` writes draft files from that plan. Expo and React Native projects get Maestro YAML flows under `.maestro/` by default, web projects get Playwright specs under `tests/e2e/`, and API/service projects get contract checklist drafts until a project-specific API runner is documented. Drafts infer stable selectors such as `testID`, `accessibilityLabel`, `data-testid`, `aria-label`, and visible text where possible. They also carry fixture/mock readiness notes so client flows can be tested with deterministic data before a real server path exists. They keep `TODO` placeholders where selectors, fixtures, assertions, or project-specific launch details are still needed, and existing files are not overwritten unless `--force` is passed.
+`codeward e2e draft` writes draft files from that plan. Expo and React Native projects get Maestro YAML flows under `.maestro/` by default, web projects get Playwright specs under `tests/e2e/`, and API/service projects get contract checklist drafts until a project-specific API runner is documented. Drafts infer stable selectors such as `testID`, `accessibilityLabel`, `data-testid`, `aria-label`, placeholder text, role-based buttons or links, and visible text where possible. They also carry fixture/mock readiness notes so client flows can be tested with deterministic data before a real server path exists. They keep `TODO` placeholders where selectors, fixtures, assertions, or project-specific launch details are still needed, and existing files are not overwritten unless `--force` is passed.
 
 The draft result is meant to be useful as a PR artifact, not only as generated files. Markdown and JSON output include:
 
@@ -228,8 +228,13 @@ await test.step("Open route /checkout.", async () => {
 });
 
 await test.step("Complete checkout with a valid payment method.", async () => {
-  // TODO: Complete checkout with a valid payment method.
+  // Step intent: Complete checkout with a valid payment method.
   await page.getByTestId("checkout-submit").click();
+});
+
+await test.step("Fill profile email.", async () => {
+  // Step intent: Fill profile email.
+  await page.getByPlaceholder("Profile email").fill("codeward@example.com");
 });
 ```
 
@@ -335,7 +340,7 @@ Near-term priorities:
 - publish a versioned GitHub Action release tag after the first public package is ready
 - improve branch-aware `review` changed-line locations
 - improve generated domain test plans with framework-specific test skeletons
-- refine generated Maestro and Playwright drafts with stronger app-specific selector discovery
+- refine generated Maestro and Playwright drafts with stronger app-specific selector discovery and self-check loops
 - expand `eval` into repository-specific verification manifests and taste rubrics
 - continue expanding agent surface detection across Codex, Claude Code, Cursor, Copilot, Gemini, and related tools
 - generate rule documentation from scanner metadata

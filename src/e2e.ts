@@ -45,7 +45,9 @@ export type E2eSelectorKind =
   | "visible-text"
   | "web-test-id"
   | "aria-label"
-  | "placeholder";
+  | "placeholder"
+  | "role-button"
+  | "role-link";
 
 export interface E2ePlanOptions extends TestPlanOptions {
   runner?: E2eRunnerName;
@@ -4501,12 +4503,9 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   for (const step of flow.steps) {
     const selector = takeSelectorForStep(selectorQueue, step);
     const locator = selector ? playwrightLocator(selector) : 'page.getByText("TODO")';
-    const body = [`// TODO: ${step}`];
-    body.push(
-      isVerificationStep(step) && !isInteractionStep(step)
-        ? `await expect(${locator}).toBeVisible();`
-        : `await ${locator}.click();`,
-    );
+    const body = selector
+      ? playwrightActionForStep(selector, locator, step)
+      : [`// TODO: ${step}`, `await expect(${locator}).toBeVisible();`];
     appendPlaywrightTestStep(lines, step, body);
   }
   appendDomainScenarioComments(lines, flow, "  //");
@@ -5315,10 +5314,49 @@ function playwrightLocator(selector: E2eSelector): string {
   if (selector.kind === "test-id" || selector.kind === "web-test-id") {
     return `page.getByTestId("${value}")`;
   }
-  if (selector.kind === "accessibility-label" || selector.kind === "aria-label" || selector.kind === "placeholder") {
+  if (selector.kind === "role-button") {
+    return `page.getByRole("button", { name: "${value}" })`;
+  }
+  if (selector.kind === "role-link") {
+    return `page.getByRole("link", { name: "${value}" })`;
+  }
+  if (selector.kind === "placeholder") {
+    return `page.getByPlaceholder("${value}")`;
+  }
+  if (selector.kind === "accessibility-label" || selector.kind === "aria-label") {
     return `page.getByLabel("${value}")`;
   }
   return `page.getByText("${value}")`;
+}
+
+function playwrightActionForStep(selector: E2eSelector, locator: string, step: string): string[] {
+  const body = [`// Step intent: ${step}`];
+  if (isVerificationStep(step) && !isInteractionStep(step)) {
+    body.push(`await expect(${locator}).toBeVisible();`);
+    return body;
+  }
+  if (selector.kind === "placeholder") {
+    body.push(`await ${locator}.fill("${quoteJs(playwrightSampleInput(selector.value))}");`);
+    return body;
+  }
+  body.push(`await ${locator}.click();`);
+  return body;
+}
+
+function playwrightSampleInput(label: string): string {
+  if (/\b(?:email|e-mail|메일)\b/i.test(label)) {
+    return "codeward@example.com";
+  }
+  if (/\b(?:url|link|링크|주소)\b/i.test(label)) {
+    return "https://example.com/codeward";
+  }
+  if (/\b(?:code|otp|pin|코드|인증)\b/i.test(label)) {
+    return "123456";
+  }
+  if (/\b(?:name|이름)\b/i.test(label)) {
+    return "CodeWard Test";
+  }
+  return "CodeWard sample value";
 }
 
 function isGestureStep(step: string): boolean {
@@ -5347,6 +5385,7 @@ function extractSelectorsFromText(file: string, text: string, runner: E2eRunnerN
     selectors.push(
       ...extractAttributeSelectors(file, text, ["data-testid", "data-test"], "web-test-id"),
       ...extractAttributeSelectors(file, text, ["aria-label"], "aria-label"),
+      ...extractRoleSelectorsFromText(file, text),
     );
   }
 
@@ -5390,6 +5429,29 @@ function extractTextNodeSelectors(file: string, text: string): E2eSelector[] {
     selectors.push(selector);
   }
 
+  return selectors;
+}
+
+function extractRoleSelectorsFromText(file: string, text: string): E2eSelector[] {
+  const selectors: E2eSelector[] = [];
+  const roleMatchers: Array<{ matcher: RegExp; kind: E2eSelectorKind }> = [
+    {
+      matcher: /<(?:button|Button|[^<>\s]*Button)\b[^>]*>([^<>{}\n][^<>{}]*)<\/(?:button|Button|[^<>\s]*Button)>/g,
+      kind: "role-button",
+    },
+    {
+      matcher: /<(?:a|Link|NavLink)\b[^>]*>([^<>{}\n][^<>{}]*)<\/(?:a|Link|NavLink)>/g,
+      kind: "role-link",
+    },
+  ];
+  for (const { matcher, kind } of roleMatchers) {
+    for (const match of text.matchAll(matcher)) {
+      const value = normalizeSelectorValue(match[1]);
+      if (value) {
+        selectors.push({ kind, value, file });
+      }
+    }
+  }
   return selectors;
 }
 
@@ -5549,7 +5611,10 @@ function selectorRank(kind: E2eSelectorKind): number {
   if (kind === "placeholder") {
     return 2;
   }
-  return 3;
+  if (kind === "role-button" || kind === "role-link") {
+    return 3;
+  }
+  return 4;
 }
 
 function slugify(value: string): string {
