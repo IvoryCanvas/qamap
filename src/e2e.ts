@@ -73,11 +73,21 @@ export interface E2eCoverageTarget {
   checks: string[];
 }
 
+export interface E2eFlowLanguageBrief {
+  actor: string;
+  trigger: string;
+  goal: string;
+  successSignal: string;
+  reviewQuestion: string;
+  edgeCases: string[];
+}
+
 export interface E2eFlow {
   title: string;
   reason: string;
   files: string[];
   steps: string[];
+  languageBrief: E2eFlowLanguageBrief;
   coverage: E2eCoverageTarget[];
   coverageEvidence: CoverageEvidence[];
   entrypoints: E2eEntrypoint[];
@@ -192,6 +202,7 @@ export interface E2eDraftFile {
   runner: E2eRunnerName;
   status: "created" | "skipped";
   source?: "domain-language" | "core-flow" | "heuristic";
+  languageBrief?: E2eFlowLanguageBrief;
   promotionStatus?: E2eDraftPromotionStatus;
   promotionReason?: string;
   promotionAction?: string;
@@ -321,6 +332,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
         runner,
         status: "skipped",
         source: draftFlowSource(flow),
+        languageBrief: flow.languageBrief,
         promotionStatus: promotionGuidance.status,
         promotionReason: promotionGuidance.reason,
         promotionAction: promotionGuidance.action,
@@ -345,6 +357,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
       runner,
       status: "created",
       source: draftFlowSource(flow),
+      languageBrief: flow.languageBrief,
       promotionStatus: promotionGuidance.status,
       promotionReason: promotionGuidance.reason,
       promotionAction: promotionGuidance.action,
@@ -1201,6 +1214,109 @@ function buildDraftPromotionGuidance(flow: E2eFlow): E2eDraftPromotionGuidance {
   };
 }
 
+function buildFlowLanguageBrief(flow: Omit<E2eFlow, "languageBrief">): E2eFlowLanguageBrief {
+  const actor = inferFlowActor(flow);
+  const trigger = inferFlowTrigger(flow);
+  const goal = inferFlowGoal(flow);
+  const successSignal = inferFlowSuccessSignal(flow);
+  return {
+    actor,
+    trigger,
+    goal,
+    successSignal,
+    reviewQuestion: `Can a reviewer confirm that ${flow.title} still works from this entrypoint and that "${successSignal}" is asserted?`,
+    edgeCases: inferFlowEdgeCases(flow),
+  };
+}
+
+function inferFlowActor(flow: Omit<E2eFlow, "languageBrief">): string {
+  const haystack = `${flow.title} ${flow.reason} ${flow.files.join(" ")}`.toLowerCase();
+  if (/\b(api|service|webhook|endpoint|controller|mutation|query)\b/.test(haystack)) {
+    return "API consumer or upstream service";
+  }
+  if (/\b(admin|dashboard|console|operator|settings|settlement|manage|moderation)\b/.test(haystack)) {
+    return "Operator";
+  }
+  if (/\b(auth|login|logout|session|account|profile|permission)\b/.test(haystack)) {
+    return "Signed-in user or guest";
+  }
+  if (/\b(checkout|purchase|payment|order|cart|offer|subscription|membership|billing)\b/.test(haystack)) {
+    return "Customer";
+  }
+  return "User";
+}
+
+function inferFlowTrigger(flow: Omit<E2eFlow, "languageBrief">): string {
+  const route = flow.entrypoints.find((entrypoint) => entrypoint.kind === "route");
+  if (route) {
+    return `Open route ${route.value}.`;
+  }
+  const screen = flow.entrypoints.find((entrypoint) => entrypoint.kind === "screen");
+  if (screen) {
+    return `Open the ${titleCase(screen.value)} screen.`;
+  }
+  const command = flow.entrypoints.find((entrypoint) => entrypoint.kind === "command");
+  if (command) {
+    return `Run ${command.value}.`;
+  }
+  if (flow.files.length > 0) {
+    return `Start from the product surface that owns ${flow.files[0]}.`;
+  }
+  return "Launch the app and wait for the first stable screen.";
+}
+
+function inferFlowGoal(flow: Omit<E2eFlow, "languageBrief">): string {
+  const primaryStep = flow.steps.find((step) => !/^record\b|^run or open\b/i.test(step)) ?? flow.steps[0];
+  if (primaryStep) {
+    return `Protect ${flow.title} by ${lowercaseFirst(stripTerminalPunctuation(primaryStep))}.`;
+  }
+  return `Protect ${flow.title} for the changed behavior.`;
+}
+
+function inferFlowSuccessSignal(flow: Omit<E2eFlow, "languageBrief">): string {
+  const verificationStep = flow.steps.find((step) => isVerificationStep(step) && !isInteractionStep(step));
+  if (verificationStep) {
+    return stripTerminalPunctuation(verificationStep);
+  }
+  const coverageCheck = flow.coverage.flatMap((target) => target.checks).find((check) => isVerificationStep(check));
+  if (coverageCheck) {
+    return stripTerminalPunctuation(coverageCheck);
+  }
+  return "the changed journey reaches a visible, stable success state";
+}
+
+function inferFlowEdgeCases(flow: Omit<E2eFlow, "languageBrief">): string[] {
+  const edgeCases: string[] = [];
+  for (const target of flow.coverage) {
+    if (target.priority !== "optional" && target.title !== "Primary success path") {
+      edgeCases.push(target.title);
+    }
+  }
+  for (const hint of flow.setupHints) {
+    if (hint.kind === "auth") {
+      edgeCases.push("Anonymous, expired-session, and permission-denied states");
+    } else if (hint.kind === "network" || hint.kind === "payment" || hint.kind === "fixture") {
+      edgeCases.push("Success, empty, declined, timeout, and server-error fixture variants");
+    } else if (hint.kind === "state") {
+      edgeCases.push("Persisted state, cache, and retry behavior");
+    }
+  }
+  if (flow.fixtureReadiness.status !== "not-needed") {
+    edgeCases.push("Fixture or mock data needed before the journey is reliable");
+  }
+  if (flow.missingTestability.length > 0) {
+    edgeCases.push("Stable selector, accessibility label, or test id coverage");
+  }
+  return uniqueStrings(edgeCases).slice(0, 5);
+}
+
+function lowercaseFirst(value: string): string {
+  if (!value) {
+    return value;
+  }
+  return value[0].toLowerCase() + value.slice(1);
+}
+
 export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
   const lines: string[] = [];
   lines.push("# CodeWard E2E Plan");
@@ -1391,6 +1507,8 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
       lines.push(`### ${index + 1}. ${escapeMarkdownInline(flow.title)}`);
       lines.push("");
       lines.push(flow.reason);
+      lines.push("");
+      appendFlowLanguageBriefMarkdown(lines, flow.languageBrief);
       lines.push("");
       lines.push("Files:");
       for (const file of flow.files.slice(0, maxFilesPerFlow)) {
@@ -1648,7 +1766,14 @@ function toCoreFlowChangedFiles(
 type E2eFlowKind = "ui" | "api" | "state" | "content" | "config" | "domain" | "changed-file";
 type FlowCandidate = Omit<
   E2eFlow,
-  "coverage" | "coverageEvidence" | "entrypoints" | "setupHints" | "fixtureReadiness" | "selectors" | "missingTestability"
+  | "languageBrief"
+  | "coverage"
+  | "coverageEvidence"
+  | "entrypoints"
+  | "setupHints"
+  | "fixtureReadiness"
+  | "selectors"
+  | "missingTestability"
 > & {
   kind: E2eFlowKind;
 };
@@ -1825,7 +1950,7 @@ async function buildFlow(
   }
   const coverage = buildCoverageTargets(candidate.kind, files, runner);
   const setupHints = await inferFlowSetupHints(root, files, candidate.kind);
-  return {
+  const flow: Omit<E2eFlow, "languageBrief"> = {
     title: candidate.title,
     reason: candidate.reason,
     files,
@@ -1837,6 +1962,10 @@ async function buildFlow(
     fixtureReadiness: await inferFlowFixtureReadiness(root, files, candidate.kind, setupHints, fixtureContext),
     selectors: await inferFlowSelectors(root, files, runner),
     missingTestability: await findFlowTestabilityGaps(root, files, runner),
+  };
+  return {
+    ...flow,
+    languageBrief: buildFlowLanguageBrief(flow),
   };
 }
 
@@ -2788,7 +2917,7 @@ async function buildDomainScenarioDraftFlow(
     ...filterSetupHintsForFiles(baseFlows.flatMap((flow) => flow.setupHints), files),
     ...(await inferFlowSetupHints(plan.root, files, "domain")),
   ]);
-  return {
+  const flow: Omit<DraftE2eFlow, "languageBrief"> = {
     title: scenario.title,
     reason: scenario.intent,
     files,
@@ -2803,6 +2932,10 @@ async function buildDomainScenarioDraftFlow(
     draftSource: scenario.source === "core-flow" ? "core-flow" : "domain-language",
     domainScenario: scenario,
     coreFlow,
+  };
+  return {
+    ...flow,
+    languageBrief: buildFlowLanguageBrief(flow),
   };
 }
 
@@ -2980,7 +3113,7 @@ function draftStability(
 
 function buildFallbackFlow(plan: E2ePlanResult): E2eFlow {
   const coverage = buildCoverageTargets("changed-file", [], plan.recommendedRunner.name);
-  return {
+  const flow: Omit<E2eFlow, "languageBrief"> = {
     title: "App launch smoke flow",
     reason:
       "No changed user-facing files were detected, so CodeWard generated a minimal smoke draft for the detected app surface.",
@@ -3011,6 +3144,10 @@ function buildFallbackFlow(plan: E2ePlanResult): E2eFlow {
     },
     selectors: [],
     missingTestability: plan.missingTestability,
+  };
+  return {
+    ...flow,
+    languageBrief: buildFlowLanguageBrief(flow),
   };
 }
 
@@ -3066,6 +3203,7 @@ function buildMaestroDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   appendSetupHints(lines, flow, "#");
   appendFixtureReadinessHints(lines, flow, "#");
   appendValidationGapComments(lines, flow, "#");
+  appendFlowLanguageBriefComments(lines, flow.languageBrief, "#");
   appendDraftPromotionComments(lines, flow, "#");
   for (const step of flow.steps) {
     const command = maestroCommandForStep(step, selectorQueue);
@@ -3143,6 +3281,7 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   appendSetupHints(lines, flow, "  //");
   appendFixtureReadinessHints(lines, flow, "  //");
   appendValidationGapComments(lines, flow, "  //");
+  appendFlowLanguageBriefComments(lines, flow.languageBrief, "  //");
   appendDraftPromotionComments(lines, flow, "  //");
   const routeEntrypoint = primaryRouteEntrypoint(flow);
   const routeDraft = buildPlaywrightRouteDraft(routeEntrypoint?.value ?? "/");
@@ -3243,6 +3382,7 @@ function buildManualDraft(plan: E2ePlanResult, flow: E2eFlow): string {
     }
   }
   appendManualValidationGaps(lines, flow);
+  appendManualFlowLanguageBrief(lines, flow.languageBrief);
   appendManualDraftPromotion(lines, flow);
   if (scenario) {
     lines.push("");
@@ -3298,6 +3438,49 @@ function appendMaestroCoverageComments(lines: string[], flow: E2eFlow): void {
     for (const check of target.checks) {
       lines.push(`#   - [ ] ${check}`);
     }
+  }
+}
+
+function appendFlowLanguageBriefMarkdown(lines: string[], brief: E2eFlowLanguageBrief): void {
+  lines.push("Flow language brief:");
+  lines.push(`- Actor: ${escapeMarkdownInline(brief.actor)}`);
+  lines.push(`- Trigger: ${escapeMarkdownInline(brief.trigger)}`);
+  lines.push(`- Goal: ${escapeMarkdownInline(brief.goal)}`);
+  lines.push(`- Success signal: ${escapeMarkdownInline(brief.successSignal)}`);
+  lines.push(`- Review question: ${escapeMarkdownInline(brief.reviewQuestion)}`);
+  if (brief.edgeCases.length > 0) {
+    lines.push(`- Edge cases: ${escapeMarkdownInline(brief.edgeCases.join("; "))}`);
+  }
+}
+
+function appendFlowLanguageBriefComments(
+  lines: string[],
+  brief: E2eFlowLanguageBrief,
+  commentPrefix: string,
+): void {
+  lines.push("");
+  lines.push(`${commentPrefix} Flow language brief:`);
+  lines.push(`${commentPrefix} - Actor: ${brief.actor}`);
+  lines.push(`${commentPrefix} - Trigger: ${brief.trigger}`);
+  lines.push(`${commentPrefix} - Goal: ${brief.goal}`);
+  lines.push(`${commentPrefix} - Success signal: ${brief.successSignal}`);
+  lines.push(`${commentPrefix} - Review question: ${brief.reviewQuestion}`);
+  if (brief.edgeCases.length > 0) {
+    lines.push(`${commentPrefix} - Edge cases: ${brief.edgeCases.join("; ")}`);
+  }
+}
+
+function appendManualFlowLanguageBrief(lines: string[], brief: E2eFlowLanguageBrief): void {
+  lines.push("");
+  lines.push("## Flow Language Brief");
+  lines.push("");
+  lines.push(`- Actor: ${brief.actor}`);
+  lines.push(`- Trigger: ${brief.trigger}`);
+  lines.push(`- Goal: ${brief.goal}`);
+  lines.push(`- Success signal: ${brief.successSignal}`);
+  lines.push(`- Review question: ${brief.reviewQuestion}`);
+  if (brief.edgeCases.length > 0) {
+    lines.push(`- Edge cases: ${brief.edgeCases.join("; ")}`);
   }
 }
 
