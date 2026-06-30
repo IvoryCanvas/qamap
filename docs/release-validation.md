@@ -73,6 +73,7 @@ The E2E draft should show:
 - `selfCheck` status, summary, command, warnings, and blockers for each generated draft file
 - `actionItems` grouped by assertion, fixture, selector, runner, validation, or manifest
 - `actionSummary` with required and recommended action counts
+- `readinessSummary` with score, level, self-check counts, TODO counts, execution blocker counts, and top blockers
 - Playwright `test.step()` names that read like the product journey
 
 ## Current Fixture Evidence Matrix

@@ -1412,8 +1412,11 @@ test("generateE2ePlan flags missing mock fixtures for API-dependent UI flows", a
   assert.ok(draftFile.actionItems.some((item) => item.kind === "validation" && item.priority === "required"));
   assert.equal(draft.actionSummary.filesWithRequiredActions > 0, true);
   assert.equal(draft.actionSummary.required > 0, true);
+  assert.equal(draft.readinessSummary.filesWithExecutionBlockers > 0, true);
+  assert.equal(draft.readinessSummary.totalExecutionBlockers > 0, true);
   assert.ok(draft.actionSummary.byKind.some((item) => item.kind === "fixture" && item.required > 0));
   assert.match(formatMarkdownE2eDraft(draft), /## Draft Readiness Summary/);
+  assert.match(formatMarkdownE2eDraft(draft), /Top blockers:/);
   assert.match(formatMarkdownE2eDraft(draft), /Files with required actions:/);
   assert.match(formatMarkdownE2eDraft(draft), /## Draft Action Items/);
   assert.match(formatMarkdownE2eDraft(draft), /\[required\] fixture: Add deterministic fixture or mock data/);
@@ -1628,9 +1631,13 @@ test("generateE2ePlan captures Playwright execution profile and self-check block
   assert.equal(draftFile.runnableStatus, "review-only");
   assert.equal(draftFile.selfCheck?.status, "fail");
   assert.ok(draftFile.selfCheck?.blockers.some((blocker) => /Unresolved placeholders/.test(blocker)));
+  assert.equal(draft.readinessSummary.reviewOnly > 0, true);
+  assert.equal(draft.readinessSummary.selfCheckFail > 0, true);
+  assert.ok(draft.readinessSummary.topBlockers.some((blocker) => /Unresolved placeholders/.test(blocker)));
   assert.deepEqual(draftFile.executionBlockers?.filter((blocker) => /Playwright|baseURL|start command/i.test(blocker)), []);
   assert.match(formatMarkdownE2eDraft(draft), /review-only/);
   assert.match(formatMarkdownE2eDraft(draft), /## Draft Self Checks/);
+  assert.match(formatMarkdownE2eDraft(draft), /Score: \d+\/100/);
   assert.match(spec, /Execution profile:/);
   assert.match(spec, /Start command: pnpm run dev/);
   assert.match(spec, /Test command: pnpm run test:e2e/);
@@ -1725,7 +1732,11 @@ test("generateE2eDraft emits runnable Playwright role and input actions", async 
   assert.match(spec, /role-link: View history/);
   assert.equal(draftFile.selfCheck?.status, "pass");
   assert.equal(draftFile.selfCheck?.summary, "Playwright draft passed static runner checks.");
+  assert.equal(draft.readinessSummary.nearRunnable, 1);
+  assert.equal(draft.readinessSummary.selfCheckPass, 1);
+  assert.equal(draft.readinessSummary.totalTodos, 0);
   assert.match(formatMarkdownE2eDraft(draft), /Draft Self Checks/);
+  assert.match(formatMarkdownE2eDraft(draft), /Self-checks: 1 pass, 0 warning, 0 fail/);
   assert.doesNotMatch(formatMarkdownE2eDraft(draft), /Turn generated TODOs into runnable assertions/);
   assert.doesNotMatch(spec, /page\.getByLabel\("Profile email"\)/);
   assert.doesNotMatch(spec, /\/\/ TODO: Fill profile email/);

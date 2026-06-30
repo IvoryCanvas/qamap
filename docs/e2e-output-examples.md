@@ -143,8 +143,10 @@ Draft action items should make the next developer action explicit:
 
 ```txt
 Action summary:
+- readiness score: 64/100 (needs-work)
 - runnable status: near-runnable
 - self-check: warning or fail when placeholder locators remain
+- top blocker: No Playwright baseURL or E2E base URL was detected.
 - required assertion: Turn generated TODOs into runnable assertions
 - required fixture: Add deterministic fixture or mock data
 - required validation: Resolve missing validation evidence

@@ -296,6 +296,24 @@ export interface E2eDraftActionSummary {
 }
 
 export type E2eDraftPromotionStatus = "commit-candidate" | "needs-review" | "low-signal";
+export type E2eDraftReadinessLevel = "ready" | "near-runnable" | "needs-work" | "blocked";
+
+export interface E2eDraftReadinessSummary {
+  score: number;
+  level: E2eDraftReadinessLevel;
+  recommendation: string;
+  runnableCandidates: number;
+  nearRunnable: number;
+  reviewOnly: number;
+  selfCheckPass: number;
+  selfCheckWarning: number;
+  selfCheckFail: number;
+  filesWithTodos: number;
+  totalTodos: number;
+  filesWithExecutionBlockers: number;
+  totalExecutionBlockers: number;
+  topBlockers: string[];
+}
 
 export interface E2eDraftResult {
   tool: {
@@ -309,6 +327,7 @@ export interface E2eDraftResult {
   plan: E2ePlanResult;
   files: E2eDraftFile[];
   actionSummary: E2eDraftActionSummary;
+  readinessSummary: E2eDraftReadinessSummary;
   nextSteps: string[];
 }
 
@@ -497,6 +516,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
     });
   }
 
+  const actionSummary = summarizeDraftActionItems(files);
   return {
     tool: {
       name: TOOL_NAME,
@@ -508,7 +528,8 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
     outputDirectory: toDisplayPath(root, outputDirectory),
     plan,
     files,
-    actionSummary: summarizeDraftActionItems(files),
+    actionSummary,
+    readinessSummary: summarizeDraftReadiness(files, actionSummary),
     nextSteps: buildDraftNextSteps(plan, runner),
   };
 }
@@ -1627,6 +1648,106 @@ function compareDraftActionKindSummary(left: E2eDraftActionKindSummary, right: E
   return right.total - left.total || right.required - left.required || left.kind.localeCompare(right.kind);
 }
 
+function summarizeDraftReadiness(
+  files: E2eDraftFile[],
+  actionSummary: E2eDraftActionSummary,
+): E2eDraftReadinessSummary {
+  const totalFiles = Math.max(files.length, 1);
+  const runnableCandidates = files.filter((file) => file.runnableStatus === "runnable-candidate").length;
+  const nearRunnable = files.filter((file) => file.runnableStatus === "near-runnable").length;
+  const reviewOnly = files.filter((file) => file.runnableStatus === "review-only").length;
+  const selfCheckPass = files.filter((file) => file.selfCheck?.status === "pass").length;
+  const selfCheckWarning = files.filter((file) => file.selfCheck?.status === "warning").length;
+  const selfCheckFail = files.filter((file) => file.selfCheck?.status === "fail").length;
+  const filesWithTodos = files.filter((file) => (file.todoCount ?? 0) > 0).length;
+  const totalTodos = files.reduce((sum, file) => sum + (file.todoCount ?? 0), 0);
+  const filesWithExecutionBlockers = files.filter((file) => (file.executionBlockers?.length ?? 0) > 0).length;
+  const totalExecutionBlockers = files.reduce((sum, file) => sum + (file.executionBlockers?.length ?? 0), 0);
+  const topBlockers = topDraftReadinessBlockers(files);
+
+  const statusScore =
+    (runnableCandidates * 100 + nearRunnable * 75 + reviewOnly * 35) / totalFiles;
+  const selfCheckPenalty = (selfCheckWarning * 10 + selfCheckFail * 25) / totalFiles;
+  const requiredActionPenalty = Math.min(25, actionSummary.required * 3);
+  const todoPenalty = Math.min(15, totalTodos);
+  const blockerPenalty = Math.min(20, filesWithExecutionBlockers * 5);
+  const score = clampReadinessScore(
+    Math.round(statusScore - selfCheckPenalty - requiredActionPenalty - todoPenalty - blockerPenalty),
+  );
+  const level = draftReadinessLevel(score, actionSummary.required, selfCheckFail, reviewOnly);
+
+  return {
+    score,
+    level,
+    recommendation: draftReadinessRecommendation(level, topBlockers),
+    runnableCandidates,
+    nearRunnable,
+    reviewOnly,
+    selfCheckPass,
+    selfCheckWarning,
+    selfCheckFail,
+    filesWithTodos,
+    totalTodos,
+    filesWithExecutionBlockers,
+    totalExecutionBlockers,
+    topBlockers,
+  };
+}
+
+function topDraftReadinessBlockers(files: E2eDraftFile[]): string[] {
+  const counts = new Map<string, number>();
+  for (const file of files) {
+    const blockers = [...(file.executionBlockers ?? []), ...(file.selfCheck?.blockers ?? [])];
+    for (const blocker of uniqueStrings(blockers)) {
+      counts.set(blocker, (counts.get(blocker) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 5)
+    .map(([blocker, count]) => count > 1 ? `${blocker} (${count} files)` : blocker);
+}
+
+function clampReadinessScore(score: number): number {
+  return Math.max(0, Math.min(100, score));
+}
+
+function draftReadinessLevel(
+  score: number,
+  requiredActions: number,
+  selfCheckFail: number,
+  reviewOnly: number,
+): E2eDraftReadinessLevel {
+  if (score >= 85 && requiredActions === 0 && selfCheckFail === 0 && reviewOnly === 0) {
+    return "ready";
+  }
+  if (score >= 70 && selfCheckFail === 0) {
+    return "near-runnable";
+  }
+  if (score >= 45) {
+    return "needs-work";
+  }
+  return "blocked";
+}
+
+function draftReadinessRecommendation(level: E2eDraftReadinessLevel, blockers: string[]): string {
+  if (level === "ready") {
+    return "Generated drafts are ready to try as local regression evidence.";
+  }
+  if (level === "near-runnable") {
+    return "Run the suggested command locally, then close the remaining recommended review items.";
+  }
+  const blocker = blockers[0];
+  if (level === "needs-work") {
+    return blocker
+      ? `Resolve the highest-impact blocker first: ${blocker}.`
+      : "Close required action items before treating the drafts as regression evidence.";
+  }
+  return blocker
+    ? `Do not treat these drafts as runnable yet. Start with: ${blocker}.`
+    : "Do not treat these drafts as runnable until required setup and validation gaps are closed.";
+}
+
 function buildFlowLanguageBrief(flow: Omit<E2eFlow, "languageBrief">): E2eFlowLanguageBrief {
   const actor = inferFlowActor(flow);
   const trigger = inferFlowTrigger(flow);
@@ -2106,8 +2227,25 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
   lines.push("## Draft Readiness Summary");
   lines.push("");
   lines.push(
+    `Score: ${result.readinessSummary.score}/100 (${result.readinessSummary.level}) - ${escapeMarkdownInline(result.readinessSummary.recommendation)}`,
+  );
+  lines.push(
     `Summary: ${result.actionSummary.required} required action${result.actionSummary.required === 1 ? "" : "s"}, ${result.actionSummary.recommended} recommended action${result.actionSummary.recommended === 1 ? "" : "s"}.`,
   );
+  lines.push(`- Runnable candidates: ${result.readinessSummary.runnableCandidates}`);
+  lines.push(`- Near-runnable files: ${result.readinessSummary.nearRunnable}`);
+  lines.push(`- Review-only files: ${result.readinessSummary.reviewOnly}`);
+  lines.push(
+    `- Self-checks: ${result.readinessSummary.selfCheckPass} pass, ${result.readinessSummary.selfCheckWarning} warning, ${result.readinessSummary.selfCheckFail} fail`,
+  );
+  lines.push(`- TODO markers: ${result.readinessSummary.totalTodos} across ${result.readinessSummary.filesWithTodos} file${result.readinessSummary.filesWithTodos === 1 ? "" : "s"}`);
+  lines.push(`- Execution blockers: ${result.readinessSummary.totalExecutionBlockers} across ${result.readinessSummary.filesWithExecutionBlockers} file${result.readinessSummary.filesWithExecutionBlockers === 1 ? "" : "s"}`);
+  if (result.readinessSummary.topBlockers.length > 0) {
+    lines.push("- Top blockers:");
+    for (const blocker of result.readinessSummary.topBlockers.slice(0, 3)) {
+      lines.push(`  - ${escapeMarkdownInline(blocker)}`);
+    }
+  }
   lines.push(`- Ready files: ${result.actionSummary.readyFiles}`);
   lines.push(`- Files with required actions: ${result.actionSummary.filesWithRequiredActions}`);
   lines.push(`- Files with recommended actions: ${result.actionSummary.filesWithRecommendedActions}`);
