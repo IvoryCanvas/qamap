@@ -3294,16 +3294,19 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow): string {
     lines.push("  };");
     lines.push("  // TODO: Replace routeParams with fixture ids, tabs, or slugs from the target environment.");
   }
-  lines.push(`  await page.goto(${routeDraft.expression});`);
+  appendPlaywrightTestStep(lines, flow.languageBrief.trigger, [
+    `await page.goto(${routeDraft.expression});`,
+  ]);
   for (const step of flow.steps) {
     const selector = takeSelectorForStep(selectorQueue, step);
     const locator = selector ? playwrightLocator(selector) : 'page.getByText("TODO")';
-    lines.push(`  // TODO: ${step}`);
-    if (isVerificationStep(step) && !isInteractionStep(step)) {
-      lines.push(`  await expect(${locator}).toBeVisible();`);
-    } else {
-      lines.push(`  await ${locator}.click();`);
-    }
+    const body = [`// TODO: ${step}`];
+    body.push(
+      isVerificationStep(step) && !isInteractionStep(step)
+        ? `await expect(${locator}).toBeVisible();`
+        : `await ${locator}.click();`,
+    );
+    appendPlaywrightTestStep(lines, step, body);
   }
   appendDomainScenarioComments(lines, flow, "  //");
   appendPlaywrightCoverageComments(lines, flow);
@@ -3723,6 +3726,23 @@ function appendPlaywrightCoverageComments(lines: string[], flow: E2eFlow): void 
       lines.push(`  //   - [ ] ${check}`);
     }
   }
+}
+
+function appendPlaywrightTestStep(lines: string[], title: string, body: string[]): void {
+  lines.push("");
+  lines.push(`  await test.step("${quoteJs(playwrightStepTitle(title))}", async () => {`);
+  for (const line of body) {
+    lines.push(`    ${line}`);
+  }
+  lines.push("  });");
+}
+
+function playwrightStepTitle(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "Run generated flow step";
+  }
+  return normalized.length > 96 ? `${normalized.slice(0, 93).trim()}...` : normalized;
 }
 
 function sameStringList(left: string[], right: string[]): boolean {

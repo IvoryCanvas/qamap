@@ -1212,6 +1212,9 @@ test("generateE2ePlan matches committed core flow definitions", async () => {
   assert.match(spec, /Manifest promotion guidance/);
   assert.match(spec, /Status: commit-candidate/);
   assert.match(spec, /\[partial\] Checkout purchase: Make the matched core flow checks required validation evidence/);
+  assert.match(spec, /await test\.step\("Open route \/checkout\.", async \(\) => \{/);
+  assert.match(spec, /await test\.step\("Complete checkout with a valid payment method\.", async \(\) => \{/);
+  assert.match(spec, /await test\.step\("Verify declined payment recovery\.", async \(\) => \{/);
   assert.match(spec, /page\.goto\("\/checkout"\)/);
   assert.match(spec, /TODO: Complete checkout with a valid payment method\./);
 });
@@ -1307,6 +1310,8 @@ test("generateE2ePlan uses committed domain manifests for language and draft rou
   assert.match(spec, /Actor: Customer/);
   assert.match(spec, /Manifest promotion guidance/);
   assert.match(spec, /Status: commit-candidate/);
+  assert.match(spec, /await test\.step\("Open route \/membership\/renewal\.", async \(\) => \{/);
+  assert.match(spec, /await test\.step\("Renew an active membership with realistic billing data\.", async \(\) => \{/);
   assert.match(spec, /page\.goto\("\/membership\/renewal"\)/);
   assert.match(spec, /TODO: Renew an active membership with realistic billing data\./);
 });
@@ -1527,6 +1532,7 @@ test("generateE2eDraft creates a fallback smoke draft without changed files", as
   assert.match(spec, /Flow: App launch smoke flow/);
   assert.match(spec, /Flow language brief/);
   assert.match(spec, /Status: low-signal/);
+  assert.match(spec, /await test\.step\("Launch the app and wait for the first stable screen\.", async \(\) => \{/);
   assert.match(spec, /page\.goto\("\/"\)/);
 });
 
