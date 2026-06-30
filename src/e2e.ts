@@ -359,7 +359,7 @@ const workspacePackageIgnoredDirectories = new Set([
 export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions = {}): Promise<E2ePlanResult> {
   const root = path.resolve(rootInput);
   const testPlan = await generateTestPlan(root, options);
-  const project = await detectProjectProfile(root);
+  const project = await detectProjectProfile(root, testPlan.workspaceRoot);
   const recommendedRunner = options.runner ? overrideRunner(project, options.runner) : recommendRunner(project);
   const executionProfile = await buildExecutionProfile(root, testPlan.workspaceRoot, project, recommendedRunner.name);
   const testSuiteInventory = await collectTestSuiteInventory(root);
@@ -2333,9 +2333,13 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
   return lines.join("\n");
 }
 
-async function detectProjectProfile(root: string): Promise<E2eProjectProfile> {
+async function detectProjectProfile(root: string, workspaceRoot?: string): Promise<E2eProjectProfile> {
+  const profileRoots = profileSearchRoots(root, workspaceRoot);
   const packageJson = await readPackageJson(root);
+  const workspacePackageJson = workspaceRoot && workspaceRoot !== root ? await readPackageJson(workspaceRoot) : undefined;
   const dependencies = {
+    ...(workspacePackageJson?.dependencies ?? {}),
+    ...(workspacePackageJson?.devDependencies ?? {}),
     ...(packageJson?.dependencies ?? {}),
     ...(packageJson?.devDependencies ?? {}),
   };
@@ -2401,6 +2405,15 @@ async function detectProjectProfile(root: string): Promise<E2eProjectProfile> {
     "swagger.yml",
     "swagger.yaml",
   ]);
+  const hasDjangoEntrypoint = await hasAnyProfileFile(profileRoots, ["manage.py"]);
+  const hasPythonServiceDependency = await detectPythonServiceDependency(profileRoots);
+  const hasPythonServiceModule = await hasAnyFile(root, [
+    "urls.py",
+    "views.py",
+    "serializers.py",
+    "routers.py",
+    "admin.py",
+  ]);
 
   if (hasExpoDependency) {
     evidence.push("package.json dependency: expo");
@@ -2429,6 +2442,15 @@ async function detectProjectProfile(root: string): Promise<E2eProjectProfile> {
   if (hasApiServiceConfig) {
     evidence.push("API or serverless service configuration found");
   }
+  if (hasDjangoEntrypoint) {
+    evidence.push("Django manage.py entrypoint found");
+  }
+  if (hasPythonServiceDependency) {
+    evidence.push(`Python service dependency: ${hasPythonServiceDependency}`);
+  }
+  if (hasPythonServiceModule) {
+    evidence.push("Python web service module file found");
+  }
 
   if (hasExpoDependency || (hasExpoConfig && hasReactNativeDependency)) {
     return { type: "expo-react-native", evidence };
@@ -2439,13 +2461,53 @@ async function detectProjectProfile(root: string): Promise<E2eProjectProfile> {
   if (hasWebDependency || hasWebConfig) {
     return { type: "web", evidence };
   }
-  if (apiServiceDependency || hasApiServiceConfig) {
+  if (apiServiceDependency || hasApiServiceConfig || hasDjangoEntrypoint || hasPythonServiceDependency || hasPythonServiceModule) {
     return { type: "api-service", evidence };
   }
   return {
     type: "unknown",
     evidence,
   };
+}
+
+function profileSearchRoots(root: string, workspaceRoot: string | undefined): string[] {
+  return uniqueStrings([root, ...(workspaceRoot && workspaceRoot !== root ? [workspaceRoot] : [])]);
+}
+
+async function hasAnyProfileFile(roots: string[], fileNames: string[]): Promise<boolean> {
+  for (const root of roots) {
+    if (await hasAnyFile(root, fileNames)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function detectPythonServiceDependency(roots: string[]): Promise<string | undefined> {
+  for (const root of roots) {
+    const dependency = await detectPythonServiceDependencyInRoot(root);
+    if (dependency) {
+      return dependency;
+    }
+  }
+  return undefined;
+}
+
+async function detectPythonServiceDependencyInRoot(root: string): Promise<string | undefined> {
+  const dependencyFiles = ["requirements.txt", "requirements-dev.txt", "requirements/base.txt", "pyproject.toml"];
+  for (const fileName of dependencyFiles) {
+    const text = await readTextIfExists(path.join(root, fileName));
+    const dependency = text ? pythonServiceDependencyName(text) : undefined;
+    if (dependency) {
+      return dependency;
+    }
+  }
+  return undefined;
+}
+
+function pythonServiceDependencyName(text: string): string | undefined {
+  const match = text.match(/\b(django|djangorestframework|fastapi|flask|starlette|litestar|sanic|tornado)\b/i);
+  return match?.[1]?.toLowerCase();
 }
 
 function recommendRunner(project: E2eProjectProfile): E2eRunnerRecommendation {
@@ -2517,8 +2579,12 @@ async function buildExecutionProfile(
   ]);
   const startScript = chooseScript(scripts, startScriptCandidates(runner, project.type));
   const testScript = chooseScript(scripts, testScriptCandidates(runner));
-  const startCommand = startScript ? commandForScript(packageManager, startScript) : undefined;
-  const testCommand = testScript ? commandForScript(packageManager, testScript) : defaultRunnerCommand(runner);
+  const scriptStartCommand = startScript ? commandForScript(packageManager, startScript) : undefined;
+  const scriptTestCommand = testScript ? commandForScript(packageManager, testScript) : defaultRunnerCommand(runner);
+  const apiStartCommand = project.type === "api-service" ? await detectApiServiceStartCommand(root, workspaceRoot) : undefined;
+  const apiTestCommand = project.type === "api-service" ? await detectApiServiceTestCommand(root) : undefined;
+  const startCommand = scriptStartCommand ?? apiStartCommand;
+  const testCommand = scriptTestCommand ?? apiTestCommand;
   const baseUrl = runner === "playwright" ? await detectPlaywrightBaseUrl(root, configFiles, envFiles) : undefined;
   const appId = runner === "maestro" ? await detectMobileAppId(root) : undefined;
   const evidence = executionProfileEvidence({
@@ -2615,6 +2681,37 @@ function defaultRunnerCommand(runner: E2eRunnerName): string | undefined {
     return "maestro test .maestro";
   }
   return undefined;
+}
+
+async function detectApiServiceStartCommand(root: string, workspaceRoot: string | undefined): Promise<string | undefined> {
+  const roots = profileSearchRoots(root, workspaceRoot);
+  for (const candidateRoot of roots) {
+    const managePath = path.join(candidateRoot, "manage.py");
+    if (await exists(managePath)) {
+      return `python ${shellArg(relativeCommandPath(root, managePath))} runserver`;
+    }
+  }
+  for (const candidate of ["main.py", "app.py"]) {
+    if (await exists(path.join(root, candidate))) {
+      return `python ${candidate}`;
+    }
+  }
+  return undefined;
+}
+
+async function detectApiServiceTestCommand(root: string): Promise<string | undefined> {
+  if (await hasAnyFile(root, ["pytest.ini", "tox.ini"]) || (await exists(path.join(root, "tests")))) {
+    return "pytest";
+  }
+  return undefined;
+}
+
+function relativeCommandPath(fromRoot: string, targetPath: string): string {
+  const relativePath = toPosixPath(path.relative(fromRoot, targetPath));
+  if (!relativePath || relativePath === ".") {
+    return path.basename(targetPath);
+  }
+  return relativePath.startsWith(".") ? relativePath : `./${relativePath}`;
 }
 
 async function detectPackageManager(
@@ -3078,7 +3175,9 @@ function buildFlowCandidates(
   }
 
   if (configFiles.length > 0) {
-    const subject = summarizeFlowSubject(configFiles, "Changed", domainLanguage);
+    const subject = isReleaseMetadataOnlyChange(configFiles)
+      ? "Release metadata"
+      : summarizeFlowSubject(configFiles, "Changed", domainLanguage);
     candidates.push({
       kind: "config",
       title: `${subject} configuration verification ${runner === "manual" ? "checklist" : "flow"}`,
@@ -3093,7 +3192,14 @@ function buildFlowCandidates(
     });
   }
 
-  const remainingDomainFiles = domainFiles.filter((file) => !isUserFacingFile(file) && !isApiLikeFile(file));
+  const remainingDomainFiles = domainFiles.filter(
+    (file) =>
+      !isUserFacingFile(file) &&
+      !isApiLikeFile(file) &&
+      !isConfigLikeFile(file) &&
+      !isContentOrStyleFile(file) &&
+      !isReleaseMetadataFile(file),
+  );
   if (remainingDomainFiles.length > 0) {
     const subject = summarizeFlowSubject(remainingDomainFiles, "Changed domain", domainLanguage);
     candidates.push({
@@ -3425,7 +3531,8 @@ function hasApiDependencyText(text: string): boolean {
 
 function isBackendImplementationFile(file: string): boolean {
   return /(?:^|\/)(?:server|servers|backend|api|apis|routes|controllers?|handlers?|resolvers?|endpoints?)\//i.test(file) ||
-    /(?:openapi|swagger|schema|controller|handler|resolver|route)\.(?:json|ya?ml|[cm]?[jt]sx?|py|go|rs|kt|java|rb|php)$/i.test(file);
+    /(?:openapi|swagger|schema|controller|handler|resolver|route)\.(?:json|ya?ml|[cm]?[jt]sx?|py|go|rs|kt|java|rb|php)$/i.test(file) ||
+    /(?:^|\/)(?:urls|views|serializers|routers|controllers?|handlers?|admin|models|services|tasks|permissions|filters)\.py$/i.test(file);
 }
 
 function isMockOrFixtureFile(file: string): boolean {
@@ -3821,9 +3928,23 @@ function isContentOrStyleFile(file: string): boolean {
 }
 
 function isConfigLikeFile(file: string): boolean {
-  return /(?:(?:^|\/)(?:\.agents?|\.claude|\.cursor|\.dev|\.gemini|\.github|docs?)\/|(?:^|\/)(?:AGENTS|CLAUDE|CODEX|DECISIONS|GEMINI|PLAN|README|SKILL)\.md$|\.gitignore|package\.json|pnpm-lock\.yaml|yarn\.lock|package-lock\.json|bun\.lockb|pyproject\.toml|requirements\.txt|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|gradle\.properties|vite|webpack|babel|tsconfig|next\.config|app\.config|eas\.json|release-please|docker|env|feature-?flags?|experiments?)/i.test(
+  return isReleaseMetadataFile(file) || /(?:(?:^|\/)(?:\.agents?|\.claude|\.cursor|\.dev|\.gemini|\.github|docs?)\/|(?:^|\/)(?:AGENTS|CLAUDE|CODEX|DECISIONS|GEMINI|PLAN|README|SKILL)\.md$|\.gitignore|package\.json|pnpm-lock\.yaml|yarn\.lock|package-lock\.json|bun\.lockb|pyproject\.toml|requirements\.txt|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|gradle\.properties|vite|webpack|babel|tsconfig|next\.config|app\.config|eas\.json|release-please|docker|env|feature-?flags?|experiments?)/i.test(
     file,
   );
+}
+
+function isReleaseMetadataFile(file: string): boolean {
+  return /(?:^|\/)(?:CHANGELOG|RELEASES?|release-notes?|\.release-please-manifest)\.(?:md|json)$/i.test(file) ||
+    /(?:^|\/)\.changeset\//i.test(file) ||
+    /(?:release-please|changeset)/i.test(file);
+}
+
+function isPackageMetadataFile(file: string): boolean {
+  return /(?:^|\/)package\.json$/i.test(file);
+}
+
+function isReleaseMetadataOnlyChange(files: string[]): boolean {
+  return files.some(isReleaseMetadataFile) && files.every((file) => isReleaseMetadataFile(file) || isPackageMetadataFile(file));
 }
 
 function isTestLikeFile(file: string): boolean {
@@ -3842,7 +3963,8 @@ function isUiImplementationFile(file: string): boolean {
 }
 
 function isServiceSourceFile(file: string): boolean {
-  return /(?:^|\/)src\/.+\.(?:[cm]?[jt]s|py|go|rs|java|kt|cs)$/i.test(file);
+  return /(?:^|\/)src\/.+\.(?:[cm]?[jt]s|py|go|rs|java|kt|cs)$/i.test(file) ||
+    /(?:^|\/)(?:urls|views|serializers|routers|controllers?|handlers?|admin|models|services|tasks|permissions|filters)\.py$/i.test(file);
 }
 
 function summarizeFlowSubject(files: string[], fallback: string, domainLanguage?: DomainLanguageSummary): string {

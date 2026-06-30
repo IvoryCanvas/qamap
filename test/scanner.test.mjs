@@ -833,6 +833,41 @@ test("generateE2ePlan avoids turning release metadata into domain journeys", asy
   assert.ok(plan.flows.some((flow) => /configuration verification/.test(flow.title)));
 });
 
+test("generateE2ePlan keeps package release metadata out of product workflows", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "packages/react"), { recursive: true });
+  await mkdir(path.join(root, ".changeset"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      dependencies: {
+        "react-dom": "^19.0.0",
+      },
+    }),
+  );
+  await writeFile(path.join(root, "packages/react/package.json"), JSON.stringify({ name: "@example/react", version: "1.0.0" }));
+  await writeFile(path.join(root, "packages/react/CHANGELOG.md"), "# Changelog\n\n## 1.0.0\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/react-package-release"]);
+  await writeFile(path.join(root, "packages/react/package.json"), JSON.stringify({ name: "@example/react", version: "1.0.1" }));
+  await writeFile(path.join(root, "packages/react/CHANGELOG.md"), "# Changelog\n\n## 1.0.1\n");
+  await writeFile(path.join(root, ".changeset/good-places-enjoy.md"), "---\n\"@example/react\": patch\n---\n\nRelease patch.\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update react package release"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const titles = plan.flows.map((flow) => flow.title);
+
+  assert.equal(plan.project.type, "web");
+  assert.ok(titles.includes("Release metadata configuration verification flow"));
+  assert.equal(titles.some((title) => /workflow smoke|UI smoke|React workflow/i.test(title)), false);
+  assert.ok(plan.flows.every((flow) => flow.languageBrief.actor === "Maintainer or release operator"));
+});
+
 test("generateE2ePlan treats agent and repo metadata as configuration, not product journeys", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
@@ -909,6 +944,46 @@ test("generateE2ePlan treats API service source utilities as contract-impacting 
   assert.match(flow.languageBrief.successSignal, /expected status, response shape, auth behavior/);
   assert.match(flow.languageBrief.reviewQuestion, /endpoint, handler, or service contract/);
   assert.equal(plan.flows.some((item) => item.title === "Changed-file smoke checklist"), false);
+});
+
+test("generateE2ePlan detects Django service apps from a workspace root", async () => {
+  const workspaceRoot = await makeTempRepo();
+  const appRoot = path.join(workspaceRoot, "offers");
+  await initGitRepo(workspaceRoot);
+  await mkdir(path.join(appRoot, "tests"), { recursive: true });
+  await writeFile(path.join(workspaceRoot, "manage.py"), "import django\n");
+  await writeFile(
+    path.join(workspaceRoot, "requirements.txt"),
+    ["Django==5.0.0", "djangorestframework==3.15.0", "pytest==8.0.0"].join("\n"),
+  );
+  await writeFile(path.join(appRoot, "admin.py"), "class OfferAdmin:\n    list_display = ['id']\n");
+  await writeFile(path.join(appRoot, "tests/test_admin.py"), "def test_admin():\n    assert True\n");
+  await git(workspaceRoot, ["add", "."]);
+  await git(workspaceRoot, ["commit", "-m", "base"]);
+  await git(workspaceRoot, ["branch", "-M", "main"]);
+
+  await git(workspaceRoot, ["switch", "-c", "feature/offer-admin-contract"]);
+  await writeFile(path.join(appRoot, "admin.py"), "class OfferAdmin:\n    list_display = ['id', 'status']\n");
+  await writeFile(path.join(appRoot, "tests/test_admin.py"), "def test_admin_status():\n    assert True\n");
+  await git(workspaceRoot, ["add", "."]);
+  await git(workspaceRoot, ["commit", "-m", "update offer admin"]);
+
+  const plan = await generateE2ePlan(appRoot, {
+    workspaceRoot,
+    base: "main",
+    head: "HEAD",
+  });
+  const flow = plan.flows.find((item) => /API contract/.test(item.title));
+
+  assert.equal(plan.project.type, "api-service");
+  assert.equal(plan.recommendedRunner.name, "manual");
+  assert.ok(plan.project.evidence.some((item) => /Django manage.py/.test(item)));
+  assert.equal(plan.executionProfile.startCommand, "python ../manage.py runserver");
+  assert.equal(plan.executionProfile.testCommand, "pytest");
+  assert.ok(flow);
+  assert.equal(flow.title, "Admin API contract smoke checklist");
+  assert.equal(flow.languageBrief.actor, "API consumer or upstream service");
+  assert.ok(flow.fixtureReadiness.backendSignals.includes("admin.py"));
 });
 
 test("generateE2ePlan names versioned API service paths with domain language", async () => {
