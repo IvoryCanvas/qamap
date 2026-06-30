@@ -906,6 +906,14 @@ test("generateE2ePlan flags missing mock fixtures for API-dependent UI flows", a
   assert.equal(draftFile.validationStatus, "missing");
   assert.ok((draftFile.validationGapCount ?? 0) > 0);
   assert.ok((draftFile.blockingValidationGapCount ?? 0) > 0);
+  assert.ok(
+    draftFile.actionItems.some(
+      (item) => item.kind === "fixture" && item.priority === "required" && /deterministic fixture/.test(item.title),
+    ),
+  );
+  assert.ok(draftFile.actionItems.some((item) => item.kind === "validation" && item.priority === "required"));
+  assert.match(formatMarkdownE2eDraft(draft), /## Draft Action Items/);
+  assert.match(formatMarkdownE2eDraft(draft), /\[required\] fixture: Add deterministic fixture or mock data/);
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
   assert.match(spec, /Fixture\/mock readiness/);
   assert.match(spec, /Add a deterministic mock or fixture response/);
@@ -1197,8 +1205,12 @@ test("generateE2ePlan matches committed core flow definitions", async () => {
   assert.equal(draftFile.source, "core-flow");
   assert.equal(draftFile.promotionStatus, "commit-candidate");
   assert.match(draftFile.promotionReason, /Team-approved core flow already exists/);
+  assert.ok(draftFile.actionItems.some((item) => item.kind === "assertion" && item.priority === "required"));
+  assert.ok(draftFile.actionItems.some((item) => item.kind === "validation"));
   assert.ok((draftFile.validationGapCount ?? 0) > 0);
   assert.match(draftFile.primaryEntrypoint ?? "", /route \/checkout \[high\] \(\.codeward\/flows\.yml\)/);
+  assert.match(formatMarkdownE2eDraft(draft), /## Draft Action Items/);
+  assert.match(formatMarkdownE2eDraft(draft), /\[required\] assertion: Turn generated TODOs into runnable assertions/);
   assert.match(formatMarkdownE2eDraft(draft), /## Manifest Promotion Guidance/);
   assert.match(formatMarkdownE2eDraft(draft), /commit-candidate: `Checkout purchase`/);
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
