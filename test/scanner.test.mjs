@@ -1812,6 +1812,11 @@ test("generateE2ePlan infers Playwright base URLs from dev scripts", async () =>
   await git(root, ["commit", "-m", "update settings page"]);
 
   const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".generated-e2e" });
+  const runnerStep = plan.bootstrap.steps.find((step) => step.title === "Configure Playwright before making drafts required");
+  const runnerAction = draft.files
+    .flatMap((file) => file.actionItems ?? [])
+    .find((item) => item.kind === "runner" && item.title === "Configure Playwright execution");
 
   assert.equal(plan.executionProfile.runner, "playwright");
   assert.equal(plan.executionProfile.startCommand, "pnpm run dev");
@@ -1819,6 +1824,14 @@ test("generateE2ePlan infers Playwright base URLs from dev scripts", async () =>
   assert.equal(plan.executionProfile.baseUrl, "http://localhost:3004");
   assert.ok(plan.executionProfile.blockers.some((blocker) => /Playwright config/.test(blocker)));
   assert.equal(plan.executionProfile.blockers.some((blocker) => /baseURL|base URL/.test(blocker)), false);
+  assert.ok(runnerStep);
+  assert.match(runnerStep.action, /playwright\.config\.ts/);
+  assert.match(runnerStep.action, /webServer\.command "pnpm run dev"/);
+  assert.match(runnerStep.action, /use\.baseURL "http:\/\/localhost:3004"/);
+  assert.deepEqual(runnerStep.commands, ["pnpm run dev", "npx playwright test"]);
+  assert.ok(runnerAction);
+  assert.match(runnerAction.detail, /playwright\.config\.ts/);
+  assert.match(runnerAction.detail, /http:\/\/localhost:3004/);
 });
 
 test("generateE2eDraft emits runnable Playwright role and input actions", async () => {

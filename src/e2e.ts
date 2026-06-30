@@ -861,9 +861,9 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
         `Configure ${formatRunnerName(input.recommendedRunner.name)} before making drafts required`,
         runnerGap,
         input.recommendedRunner.name === "playwright"
-          ? "Add a Playwright config, baseURL, and app serve command, then run the generated spec locally."
+          ? playwrightConfigGuidance(input.executionProfile)
           : "Add a .maestro directory or documented Maestro setup, app id, and simulator launch command.",
-        [],
+        input.recommendedRunner.name === "playwright" ? playwrightSetupCommands(input.executionProfile) : [],
         [],
       ),
     );
@@ -1415,7 +1415,7 @@ function buildDraftActionItems(
       "runner",
       "required",
       `Configure ${formatRunnerName(runner)} execution`,
-      runnerGap,
+      runner === "playwright" ? playwrightConfigGuidance(plan.executionProfile) : runnerGap,
     ));
   }
   const executionBlockers = remainingExecutionProfileBlockers(plan.executionProfile.blockers, runnerGap);
@@ -5778,6 +5778,9 @@ function buildDraftNextSteps(plan: E2ePlanResult, runner: E2eRunnerName): string
       : `Run the app with the launch command that matches your simulator or device, then run \`${plan.executionProfile.testCommand ?? "maestro test .maestro"}\`.`);
   } else if (runner === "playwright") {
     steps.push("Replace TODO locators with role, text, or data-testid locators from the app.");
+    if (plan.executionProfile.blockers.some((blocker) => /No Playwright config/i.test(blocker))) {
+      steps.push(playwrightConfigGuidance(plan.executionProfile));
+    }
     if (plan.executionProfile.baseUrl) {
       steps.push(`Confirm Playwright baseURL \`${plan.executionProfile.baseUrl}\` points at the target environment.`);
     } else {
@@ -5803,6 +5806,23 @@ function buildDraftNextSteps(plan: E2ePlanResult, runner: E2eRunnerName): string
     steps.push("Resolve missing validation matrix rows before promoting generated drafts to required PR evidence.");
   }
   return steps;
+}
+
+function playwrightConfigGuidance(profile: E2eExecutionProfile): string {
+  if (profile.baseUrl && profile.startCommand) {
+    return `Create playwright.config.ts with testDir "./tests/e2e", use.baseURL "${profile.baseUrl}", and webServer.command "${profile.startCommand}" before treating generated specs as required.`;
+  }
+  if (profile.baseUrl) {
+    return `Create playwright.config.ts with testDir "./tests/e2e" and use.baseURL "${profile.baseUrl}", then document the app serve command before treating generated specs as required.`;
+  }
+  if (profile.startCommand) {
+    return `Create playwright.config.ts with a confirmed baseURL and webServer.command "${profile.startCommand}", then run the generated spec locally.`;
+  }
+  return "Create playwright.config.ts with testDir \"./tests/e2e\", a confirmed baseURL, and a webServer command before treating generated specs as required.";
+}
+
+function playwrightSetupCommands(profile: E2eExecutionProfile): string[] {
+  return uniqueStrings([profile.startCommand, profile.testCommand].filter(Boolean) as string[]);
 }
 
 function formatDraftFileQuality(file: E2eDraftFile): string | undefined {

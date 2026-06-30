@@ -146,7 +146,8 @@ Action summary:
 - readiness score: 64/100 (needs-work)
 - runnable status: near-runnable
 - self-check: warning or fail when placeholder locators remain
-- top blocker: No Playwright baseURL or E2E base URL was detected.
+- top blocker: No Playwright config file was detected.
+- required runner: Create `playwright.config.ts` with `testDir`, `use.baseURL`, and `webServer.command` when CodeWard inferred the dev URL from scripts.
 - required assertion: Turn generated TODOs into runnable assertions
 - required fixture: Add deterministic fixture or mock data
 - required validation: Resolve missing validation evidence
