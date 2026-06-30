@@ -156,6 +156,7 @@ export interface E2eFixtureReadiness {
   status: E2eFixtureReadinessStatus;
   reason: string;
   apiSignals: string[];
+  apiEndpoints: string[];
   backendSignals: string[];
   mockSignals: string[];
   nextActions: string[];
@@ -1311,6 +1312,7 @@ function nextActionForCoverageEvidence(evidence: CoverageEvidence): string {
 function fixtureReadinessEvidenceSummary(readiness: E2eFixtureReadiness): string {
   const parts = [
     readiness.apiSignals.length > 0 ? `${readiness.apiSignals.length} API signal${readiness.apiSignals.length === 1 ? "" : "s"}` : "",
+    readiness.apiEndpoints.length > 0 ? `${readiness.apiEndpoints.length} endpoint hint${readiness.apiEndpoints.length === 1 ? "" : "s"}` : "",
     readiness.backendSignals.length > 0 ? `${readiness.backendSignals.length} backend signal${readiness.backendSignals.length === 1 ? "" : "s"}` : "",
     readiness.mockSignals.length > 0 ? `${readiness.mockSignals.length} mock/fixture signal${readiness.mockSignals.length === 1 ? "" : "s"}` : "",
   ].filter(Boolean);
@@ -1551,13 +1553,14 @@ function buildDraftActionItems(
 
   const route = primaryRouteEntrypoint(flow);
   if (runner === "playwright" && route) {
-    const routeDraft = buildPlaywrightRouteDraft(route.value);
-    if (routeDraft.params.length > 0) {
+    const routeDraft = buildPlaywrightRouteDraft(route.value, flow.entrypoints);
+    const unresolvedParams = routeDraft.params.filter((param) => param.value === undefined);
+    if (unresolvedParams.length > 0) {
       items.push(draftActionItem(
         "fixture",
         "required",
         "Replace dynamic route parameters",
-        `Provide real fixture values for ${routeDraft.params.map((param) => param.name).join(", ")} before running ${route.value}.`,
+        `Provide real fixture values for ${unresolvedParams.map((param) => param.name).join(", ")} before running ${route.value}.`,
       ));
     }
   }
@@ -3787,6 +3790,7 @@ async function inferFlowFixtureReadiness(
       status: "not-needed",
       reason: "This verification flow targets generated artifacts, schema, catalog output, or consumer fixtures rather than API response data.",
       apiSignals: [],
+      apiEndpoints: [],
       backendSignals: [],
       mockSignals: [],
       nextActions: [],
@@ -3794,12 +3798,14 @@ async function inferFlowFixtureReadiness(
   }
 
   const apiSignals = await findApiDependencySignals(root, files, kind, setupHints);
+  const apiEndpoints = await findApiEndpointHints(root, uniqueStrings([...files, ...apiSignals]));
   const requiresMock = apiSignals.length > 0 || setupHints.some((hint) => hint.kind === "network" || hint.kind === "payment");
   if (!requiresMock) {
     return {
       status: "not-needed",
       reason: "No API, network, payment, or external-response dependency was detected for this flow.",
       apiSignals: [],
+      apiEndpoints: [],
       backendSignals: [],
       mockSignals: [],
       nextActions: [],
@@ -3817,6 +3823,7 @@ async function inferFlowFixtureReadiness(
       status: "ready",
       reason: "This branch includes mock or fixture evidence for an API-dependent flow.",
       apiSignals,
+      apiEndpoints,
       backendSignals,
       mockSignals,
       nextActions: [
@@ -3830,6 +3837,7 @@ async function inferFlowFixtureReadiness(
       status: "partial",
       reason: "Mock or fixture infrastructure exists, but this branch does not add flow-specific fixture evidence.",
       apiSignals,
+      apiEndpoints,
       backendSignals,
       mockSignals,
       nextActions: [
@@ -3844,6 +3852,7 @@ async function inferFlowFixtureReadiness(
       status: "partial",
       reason: "Backend or API contract changes exist, but deterministic fixture evidence was not detected.",
       apiSignals,
+      apiEndpoints,
       backendSignals,
       mockSignals,
       nextActions: [
@@ -3857,6 +3866,7 @@ async function inferFlowFixtureReadiness(
     status: "missing",
     reason: "This flow appears to depend on API or external response data, but no changed backend, mock, or fixture evidence was detected.",
     apiSignals,
+    apiEndpoints,
     backendSignals,
     mockSignals,
     nextActions: [
@@ -3905,6 +3915,43 @@ function isApiDependencyPath(file: string): boolean {
 
 function hasApiDependencyText(text: string): boolean {
   return /(?:fetch\(|axios\.|graphql|gql`|trpc\.|useQuery|useMutation|queryKey|apiClient|client\.(?:get|post|put|patch|delete)|\/api\/|endpoint|request|response)/i.test(text);
+}
+
+async function findApiEndpointHints(root: string, files: string[]): Promise<string[]> {
+  const endpoints: string[] = [];
+  for (const file of files.slice(0, 12)) {
+    const text = await readTextIfExists(path.join(root, file));
+    if (text) {
+      endpoints.push(...extractApiEndpointHints(text));
+    }
+  }
+  return uniqueStrings(endpoints).slice(0, maxFilesPerFlow);
+}
+
+function extractApiEndpointHints(text: string): string[] {
+  const endpoints: string[] = [];
+  const stringLiteralMatcher = /(?:"([^"\n]+)"|'([^'\n]+)'|`([^`\n]+)`)/g;
+  for (const match of text.matchAll(stringLiteralMatcher)) {
+    const endpoint = normalizeApiEndpointHint(match[1] ?? match[2] ?? match[3]);
+    if (endpoint) {
+      endpoints.push(endpoint);
+    }
+  }
+  return endpoints;
+}
+
+function normalizeApiEndpointHint(value: string | undefined): string | undefined {
+  const endpoint = value?.trim().replace(/\$\{[^}]+\}/g, "*");
+  if (!endpoint || endpoint.length > 180 || !/^(?:https?:\/\/|\/)/i.test(endpoint)) {
+    return undefined;
+  }
+  if (!/(?:\/api(?:\/|$)|\/graphql(?:\/|$)|\/trpc(?:\/|$))/i.test(endpoint)) {
+    return undefined;
+  }
+  if (/[\s<>{}]/.test(endpoint)) {
+    return undefined;
+  }
+  return endpoint;
 }
 
 function isBackendImplementationFile(file: string): boolean {
@@ -4843,6 +4890,7 @@ function scenarioFixtureReadiness(
       status: "not-needed",
       reason: "No API, network, payment, or external-response dependency was detected for this scenario.",
       apiSignals: [],
+      apiEndpoints: [],
       backendSignals: [],
       mockSignals: [],
       nextActions: [],
@@ -4852,6 +4900,7 @@ function scenarioFixtureReadiness(
     status: "missing",
     reason: "This scenario has response or fixture setup hints, but no base flow fixture evidence was available.",
     apiSignals: setupHints.flatMap((hint) => hint.files).slice(0, maxFilesPerFlow),
+    apiEndpoints: [],
     backendSignals: [],
     mockSignals: [],
     nextActions: [
@@ -5241,6 +5290,7 @@ function buildFallbackFlow(plan: E2ePlanResult): E2eFlow {
       status: "not-needed",
       reason: "No API, network, payment, or external-response dependency was detected for this fallback flow.",
       apiSignals: [],
+      apiEndpoints: [],
       backendSignals: [],
       mockSignals: [],
       nextActions: [],
@@ -5389,16 +5439,21 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   appendFlowLanguageBriefComments(lines, flow.languageBrief, "  //");
   appendDraftPromotionComments(lines, flow, "  //");
   const routeEntrypoint = primaryRouteEntrypoint(flow);
-  const routeDraft = buildPlaywrightRouteDraft(routeEntrypoint?.value ?? "/");
+  const routeDraft = buildPlaywrightRouteDraft(routeEntrypoint?.value ?? "/", flow.entrypoints);
   if (routeDraft.params.length > 0) {
     lines.push("");
     lines.push("  const routeParams = {");
     for (const param of routeDraft.params) {
-      lines.push(`    ${playwrightRouteParamKey(param.name)}: "${quoteJs(routeParamPlaceholder(param.name))}",`);
+      lines.push(`    ${playwrightRouteParamKey(param.name)}: "${quoteJs(param.value ?? routeParamPlaceholder(param.name))}",`);
     }
     lines.push("  };");
-    lines.push("  // TODO: Replace routeParams with fixture ids, tabs, or slugs from the target environment.");
+    if (routeDraft.params.some((param) => param.value === undefined)) {
+      lines.push("  // TODO: Replace routeParams with fixture ids, tabs, or slugs from the target environment.");
+    } else {
+      lines.push("  // Route params were inferred from concrete route hints in the changed files.");
+    }
   }
+  appendPlaywrightMockRouteScaffold(lines, flow);
   appendPlaywrightTestStep(lines, flow.languageBrief.trigger, [
     `await page.goto(${routeDraft.expression});`,
   ]);
@@ -5830,8 +5885,8 @@ function buildHumanFixtureInputs(flow: E2eFlow, runner: E2eRunnerName): string[]
   }
   if (runner === "playwright") {
     const route = primaryRouteEntrypoint(flow)?.value;
-    const routeDraft = route ? buildPlaywrightRouteDraft(route) : undefined;
-    for (const param of routeDraft?.params ?? []) {
+    const routeDraft = route ? buildPlaywrightRouteDraft(route, flow.entrypoints) : undefined;
+    for (const param of routeDraft?.params.filter((item) => item.value === undefined) ?? []) {
       inputs.push(`Replace route param ${param.name} with a real fixture value for ${route}.`);
     }
   }
@@ -5869,6 +5924,38 @@ function humanFixtureInputForSetupHint(hint: E2eSetupHint): string {
     case "state":
       return "Reset persisted storage, cache, and provider state before each run.";
   }
+}
+
+function appendPlaywrightMockRouteScaffold(lines: string[], flow: E2eFlow): void {
+  if (flow.fixtureReadiness.status === "not-needed" || flow.fixtureReadiness.apiEndpoints.length === 0) {
+    return;
+  }
+  lines.push("");
+  lines.push("  const mockApiResponses = {");
+  for (const endpoint of flow.fixtureReadiness.apiEndpoints.slice(0, maxFilesPerFlow)) {
+    lines.push(`    "${quoteJs(playwrightMockRoutePattern(endpoint))}": {`);
+    lines.push("      status: 200,");
+    lines.push("      body: {");
+    lines.push('        ok: true,');
+    lines.push('        source: "codeward-draft",');
+    lines.push("      },");
+    lines.push("    },");
+  }
+  lines.push("  };");
+  lines.push("  // Replace sample responses with deterministic fixtures from the target domain before promoting this draft.");
+  lines.push("  for (const [urlPattern, response] of Object.entries(mockApiResponses)) {");
+  lines.push("    await page.route(urlPattern, async (route) => {");
+  lines.push("      await route.fulfill({");
+  lines.push("        status: response.status,");
+  lines.push('        contentType: "application/json",');
+  lines.push("        body: JSON.stringify(response.body),");
+  lines.push("      });");
+  lines.push("    });");
+  lines.push("  }");
+}
+
+function playwrightMockRoutePattern(endpoint: string): string {
+  return endpoint.startsWith("/") ? `**${endpoint}` : endpoint;
 }
 
 function formatFileSummary(files: string[]): string {
@@ -5955,12 +6042,13 @@ function primaryEntrypointLabel(flow: E2eFlow): string | undefined {
 
 interface PlaywrightRouteDraft {
   expression: string;
-  params: Array<{ name: string }>;
+  params: Array<{ name: string; value?: string }>;
 }
 
-function buildPlaywrightRouteDraft(route: string): PlaywrightRouteDraft {
+function buildPlaywrightRouteDraft(route: string, entrypoints: E2eEntrypoint[] = []): PlaywrightRouteDraft {
   const normalizedRoute = route || "/";
-  const params: Array<{ name: string }> = [];
+  const inferredValues = inferRouteParamValues(normalizedRoute, entrypoints);
+  const params: Array<{ name: string; value?: string }> = [];
   const seenParams = new Set<string>();
   const dynamicSegmentMatcher = /:([A-Za-z_$][A-Za-z0-9_$-]*)/g;
   let cursor = 0;
@@ -5973,7 +6061,7 @@ function buildPlaywrightRouteDraft(route: string): PlaywrightRouteDraft {
     }
     if (!seenParams.has(name)) {
       seenParams.add(name);
-      params.push({ name });
+      params.push({ name, value: inferredValues.get(name) });
     }
     template += quoteTemplateLiteralPart(normalizedRoute.slice(cursor, match.index));
     template += `\${${playwrightRouteParamAccess(name)}}`;
@@ -5986,6 +6074,47 @@ function buildPlaywrightRouteDraft(route: string): PlaywrightRouteDraft {
 
   template += quoteTemplateLiteralPart(normalizedRoute.slice(cursor));
   return { expression: `\`${template}\``, params };
+}
+
+function inferRouteParamValues(route: string, entrypoints: E2eEntrypoint[]): Map<string, string> {
+  const routeSegments = route.split("/").filter(Boolean);
+  const dynamicSegments = routeSegments
+    .map((segment, index) => ({ segment, index }))
+    .filter(({ segment }) => segment.startsWith(":"));
+  if (dynamicSegments.length === 0) {
+    return new Map();
+  }
+
+  for (const entrypoint of entrypoints) {
+    if (entrypoint.kind !== "route" || entrypoint.value === route || entrypoint.value.includes(":")) {
+      continue;
+    }
+    const candidateSegments = entrypoint.value.split("/").filter(Boolean);
+    if (candidateSegments.length !== routeSegments.length) {
+      continue;
+    }
+    const values = new Map<string, string>();
+    let matches = true;
+    for (let index = 0; index < routeSegments.length; index += 1) {
+      const routeSegment = routeSegments[index] ?? "";
+      const candidateSegment = candidateSegments[index] ?? "";
+      if (routeSegment.startsWith(":")) {
+        const name = routeSegment.slice(1);
+        if (!candidateSegment || candidateSegment.startsWith("[") || candidateSegment.includes(":")) {
+          matches = false;
+          break;
+        }
+        values.set(name, decodeURIComponent(candidateSegment));
+      } else if (routeSegment !== candidateSegment) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches && values.size === dynamicSegments.length) {
+      return values;
+    }
+  }
+  return new Map();
 }
 
 function playwrightRouteParamKey(name: string): string {
@@ -6026,6 +6155,9 @@ function formatFixtureReadiness(readiness: E2eFixtureReadiness): string {
   const evidence: string[] = [];
   if (readiness.apiSignals.length > 0) {
     evidence.push(`${readiness.apiSignals.length} API signal${readiness.apiSignals.length === 1 ? "" : "s"}`);
+  }
+  if (readiness.apiEndpoints.length > 0) {
+    evidence.push(`${readiness.apiEndpoints.length} endpoint hint${readiness.apiEndpoints.length === 1 ? "" : "s"}`);
   }
   if (readiness.backendSignals.length > 0) {
     evidence.push(`${readiness.backendSignals.length} backend signal${readiness.backendSignals.length === 1 ? "" : "s"}`);
@@ -6190,6 +6322,13 @@ function takeSelectorForStep(selectors: E2eSelector[], step: string): E2eSelecto
     const [selector] = selectors.splice(index, 1);
     return selector;
   }
+  if (isVerificationStep(step) && !isInteractionStep(step)) {
+    const assertionIndex = selectors.findIndex((selector) => selectorCanSupportAssertion(selector));
+    if (assertionIndex >= 0) {
+      const [selector] = selectors.splice(assertionIndex, 1);
+      return selector;
+    }
+  }
   if (canUsePrimarySelector(step)) {
     const fallbackIndex = selectors.findIndex((selector) => selectorCanDriveInteraction(selector));
     if (fallbackIndex >= 0) {
@@ -6206,14 +6345,18 @@ function selectorMatchesStep(selector: E2eSelector, step: string): boolean {
 }
 
 function canUsePrimarySelector(step: string): boolean {
-  return /\b(?:primary|action|submit|continue)\b/i.test(step) && !/^launch\b/i.test(step);
+  return /\b(?:primary|action|submit|continue|complete|fill|input|enter|upload)\b/i.test(step) && !/^launch\b/i.test(step);
 }
 
 function selectorCanDriveInteraction(selector: E2eSelector): boolean {
-  if (selector.kind === "visible-text" || selector.kind === "placeholder") {
+  if (selector.kind === "visible-text") {
     return false;
   }
   return !isPassiveControlLabel(selector.value);
+}
+
+function selectorCanSupportAssertion(selector: E2eSelector): boolean {
+  return selector.kind !== "placeholder" && !isPassiveControlLabel(selector.value);
 }
 
 function isPassiveControlLabel(value: string): boolean {

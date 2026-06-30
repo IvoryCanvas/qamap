@@ -154,6 +154,35 @@ Action summary:
 - recommended manifest: Promote durable product language
 ```
 
+## API-Dependent Client Flow
+
+When a client-side change calls an API path but the branch does not include backend or fixture evidence, CodeWard should name that as a readiness gap and still give the tester a concrete mock slot:
+
+```ts
+const mockApiResponses = {
+  "**/api/orders/fixture-order-id": {
+    status: 200,
+    body: {
+      ok: true,
+      source: "codeward-draft",
+    },
+  },
+};
+
+// Replace sample responses with deterministic fixtures from the target domain before promoting this draft.
+for (const [urlPattern, response] of Object.entries(mockApiResponses)) {
+  await page.route(urlPattern, async (route) => {
+    await route.fulfill({
+      status: response.status,
+      contentType: "application/json",
+      body: JSON.stringify(response.body),
+    });
+  });
+}
+```
+
+This is useful for PRs where the UI can be built against mockdata before the server implementation is available. The generated file should still report fixture readiness as missing or partial until a reviewer replaces the sample response with domain-correct success, empty, unauthorized, timeout, or server-error fixtures.
+
 ## Monorepo Package
 
 When run at the workspace root, CodeWard should identify changed package targets before asking the maintainer to choose a final runner:
