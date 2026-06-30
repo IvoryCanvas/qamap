@@ -203,6 +203,7 @@ export interface E2eDraftFile {
   status: "created" | "skipped";
   source?: "domain-language" | "core-flow" | "heuristic";
   languageBrief?: E2eFlowLanguageBrief;
+  actionItems?: E2eDraftActionItem[];
   promotionStatus?: E2eDraftPromotionStatus;
   promotionReason?: string;
   promotionAction?: string;
@@ -218,6 +219,16 @@ export interface E2eDraftFile {
   validationGapCount?: number;
   blockingValidationGapCount?: number;
   reason?: string;
+}
+
+export type E2eDraftActionKind = "assertion" | "fixture" | "manifest" | "runner" | "selector" | "setup" | "validation";
+export type E2eDraftActionPriority = "required" | "recommended";
+
+export interface E2eDraftActionItem {
+  kind: E2eDraftActionKind;
+  priority: E2eDraftActionPriority;
+  title: string;
+  detail: string;
 }
 
 export type E2eDraftPromotionStatus = "commit-candidate" | "needs-review" | "low-signal";
@@ -325,6 +336,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
     const displayPath = toDisplayPath(root, filePath);
     const validationSummary = summarizeDraftValidation(flow);
     const promotionGuidance = buildDraftPromotionGuidance(flow);
+    const actionItems = buildDraftActionItems(plan, flow, runner, validationSummary, promotionGuidance);
     if ((await exists(filePath)) && !options.force) {
       files.push({
         path: displayPath,
@@ -333,6 +345,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
         status: "skipped",
         source: draftFlowSource(flow),
         languageBrief: flow.languageBrief,
+        actionItems,
         promotionStatus: promotionGuidance.status,
         promotionReason: promotionGuidance.reason,
         promotionAction: promotionGuidance.action,
@@ -358,6 +371,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
       status: "created",
       source: draftFlowSource(flow),
       languageBrief: flow.languageBrief,
+      actionItems,
       promotionStatus: promotionGuidance.status,
       promotionReason: promotionGuidance.reason,
       promotionAction: promotionGuidance.action,
@@ -1214,6 +1228,139 @@ function buildDraftPromotionGuidance(flow: E2eFlow): E2eDraftPromotionGuidance {
   };
 }
 
+function buildDraftActionItems(
+  plan: E2ePlanResult,
+  flow: E2eFlow,
+  runner: E2eRunnerName,
+  validationSummary: ReturnType<typeof summarizeDraftValidation>,
+  promotionGuidance: E2eDraftPromotionGuidance,
+): E2eDraftActionItem[] {
+  const items: E2eDraftActionItem[] = [];
+  const runnerGap = runnerSetupGap(plan, runner);
+  if (runnerGap) {
+    items.push(draftActionItem(
+      "runner",
+      "required",
+      `Configure ${formatRunnerName(runner)} execution`,
+      runnerGap,
+    ));
+  }
+
+  const route = primaryRouteEntrypoint(flow);
+  if (runner === "playwright" && route) {
+    const routeDraft = buildPlaywrightRouteDraft(route.value);
+    if (routeDraft.params.length > 0) {
+      items.push(draftActionItem(
+        "fixture",
+        "required",
+        "Replace dynamic route parameters",
+        `Provide real fixture values for ${routeDraft.params.map((param) => param.name).join(", ")} before running ${route.value}.`,
+      ));
+    }
+  }
+
+  if (flow.fixtureReadiness.status === "missing") {
+    items.push(draftActionItem(
+      "fixture",
+      "required",
+      "Add deterministic fixture or mock data",
+      flow.fixtureReadiness.nextActions[0] ?? flow.fixtureReadiness.reason,
+    ));
+  } else if (flow.fixtureReadiness.status === "partial") {
+    items.push(draftActionItem(
+      "fixture",
+      "recommended",
+      "Confirm fixture coverage",
+      flow.fixtureReadiness.nextActions[0] ?? flow.fixtureReadiness.reason,
+    ));
+  }
+
+  if (flow.missingTestability.length > 0) {
+    items.push(draftActionItem(
+      "selector",
+      "required",
+      "Replace weak or missing selectors",
+      flow.missingTestability[0],
+    ));
+  } else if (flow.selectors.length === 0 && runner !== "manual") {
+    items.push(draftActionItem(
+      "selector",
+      "recommended",
+      "Confirm stable selectors",
+      "No stable selector hints were inferred, so review the generated locators before making this draft required.",
+    ));
+  }
+
+  if (flow.steps.length > 0) {
+    items.push(draftActionItem(
+      "assertion",
+      "required",
+      "Turn generated TODOs into runnable assertions",
+      `Preserve the success signal "${flow.languageBrief.successSignal}" while replacing placeholder interactions and expects.`,
+    ));
+  }
+
+  if (validationSummary.blockingGapCount > 0) {
+    items.push(draftActionItem(
+      "validation",
+      "required",
+      "Resolve missing validation evidence",
+      `${validationSummary.blockingGapCount} blocking validation gap${validationSummary.blockingGapCount === 1 ? "" : "s"} must be closed before using this draft as PR evidence.`,
+    ));
+  } else if (validationSummary.gapCount > 0) {
+    items.push(draftActionItem(
+      "validation",
+      "recommended",
+      "Close partial validation evidence",
+      `${validationSummary.gapCount} validation gap${validationSummary.gapCount === 1 ? "" : "s"} remain before this draft is stable regression coverage.`,
+    ));
+  }
+
+  if (promotionGuidance.status !== "commit-candidate") {
+    items.push(draftActionItem(
+      "manifest",
+      "recommended",
+      "Promote durable product language",
+      promotionGuidance.action,
+    ));
+  }
+
+  return uniqueDraftActionItems(items).slice(0, 8);
+}
+
+function runnerSetupGap(plan: E2ePlanResult, runner: E2eRunnerName): string | undefined {
+  if (runner === "playwright") {
+    return plan.missingTestability.find((gap) => /No Playwright config/i.test(gap));
+  }
+  if (runner === "maestro") {
+    return plan.missingTestability.find((gap) => /No \.maestro/i.test(gap));
+  }
+  return undefined;
+}
+
+function draftActionItem(
+  kind: E2eDraftActionKind,
+  priority: E2eDraftActionPriority,
+  title: string,
+  detail: string,
+): E2eDraftActionItem {
+  return { kind, priority, title, detail };
+}
+
+function uniqueDraftActionItems(items: E2eDraftActionItem[]): E2eDraftActionItem[] {
+  const seen = new Set<string>();
+  const uniqueItems: E2eDraftActionItem[] = [];
+  for (const item of items) {
+    const key = `${item.kind}:${item.priority}:${item.title}:${item.detail}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    uniqueItems.push(item);
+  }
+  return uniqueItems;
+}
+
 function buildFlowLanguageBrief(flow: Omit<E2eFlow, "languageBrief">): E2eFlowLanguageBrief {
   const actor = inferFlowActor(flow);
   const trigger = inferFlowTrigger(flow);
@@ -1621,6 +1768,21 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
     lines.push(`- ${file.status}: \`${escapeMarkdownInline(file.path)}\` (${escapeMarkdownInline(file.flowTitle)})${suffix}`);
   }
   lines.push("");
+
+  const filesWithActionItems = result.files.filter((file) => (file.actionItems?.length ?? 0) > 0);
+  if (filesWithActionItems.length > 0) {
+    lines.push("## Draft Action Items");
+    lines.push("");
+    for (const file of filesWithActionItems) {
+      lines.push(`- \`${escapeMarkdownInline(file.flowTitle)}\` (${escapeMarkdownInline(file.path)})`);
+      for (const item of file.actionItems ?? []) {
+        lines.push(
+          `  - [${item.priority}] ${item.kind}: ${escapeMarkdownInline(item.title)} - ${escapeMarkdownInline(item.detail)}`,
+        );
+      }
+    }
+    lines.push("");
+  }
 
   if (result.plan.missingTestability.length > 0) {
     lines.push("## Testability Gaps");
@@ -3878,6 +4040,9 @@ function formatDraftFileQuality(file: E2eDraftFile): string | undefined {
   }
   if (file.promotionStatus !== undefined) {
     details.push(`${file.promotionStatus} promotion`);
+  }
+  if (file.actionItems !== undefined && file.actionItems.length > 0) {
+    details.push(`${file.actionItems.length} action item${file.actionItems.length === 1 ? "" : "s"}`);
   }
   if (file.stability !== undefined) {
     details.push(file.stability);
