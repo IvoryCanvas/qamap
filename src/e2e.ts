@@ -1453,7 +1453,7 @@ function buildFlowLanguageBrief(flow: Omit<E2eFlow, "languageBrief">): E2eFlowLa
 
 function inferFlowActor(flow: Omit<E2eFlow, "languageBrief">): string {
   const haystack = `${flow.title} ${flow.reason} ${flow.files.join(" ")}`.toLowerCase();
-  if (/\b(api|service|webhook|endpoint|controller|mutation|query)\b/.test(haystack)) {
+  if (/\bapi contract\b/i.test(flow.title)) {
     return "API consumer or upstream service";
   }
   if (/\b(admin|dashboard|console|operator|settings|settlement|manage|moderation)\b/.test(haystack)) {
@@ -1465,7 +1465,23 @@ function inferFlowActor(flow: Omit<E2eFlow, "languageBrief">): string {
   if (/\b(checkout|purchase|payment|order|cart|offer|subscription|membership|billing)\b/.test(haystack)) {
     return "Customer";
   }
+  if (hasUserFacingEntrypointOrFile(flow)) {
+    return "User";
+  }
+  if (/\b(api|service|webhook|endpoint|controller|mutation|query)\b/.test(haystack)) {
+    return "API consumer or upstream service";
+  }
   return "User";
+}
+
+function hasUserFacingEntrypointOrFile(flow: Omit<E2eFlow, "languageBrief">): boolean {
+  if (flow.entrypoints.some((entrypoint) => entrypoint.kind === "route" || entrypoint.kind === "screen")) {
+    return true;
+  }
+  return flow.files.some((file) =>
+    /(?:^|\/)(?:app|pages?|screens?|routes?|components?|features?)\//i.test(file) &&
+    /\.(?:tsx|jsx|vue|svelte)$/i.test(file),
+  );
 }
 
 function inferFlowTrigger(flow: Omit<E2eFlow, "languageBrief">): string {

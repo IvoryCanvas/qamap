@@ -601,6 +601,7 @@ test("generateE2ePlan keeps service changes generic and avoids fixture-specific 
 
   const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
   const titles = plan.flows.map((flow) => flow.title);
+  const apiFlow = plan.flows.find((flow) => flow.title === "Audit API contract smoke checklist");
 
   assert.equal(plan.recommendedRunner.name, "manual");
   assert.ok(titles.includes("Audit API contract smoke checklist"));
@@ -612,6 +613,7 @@ test("generateE2ePlan keeps service changes generic and avoids fixture-specific 
       flow.coverage.some((target) => target.title === "Network and server failure handling"),
     ),
   );
+  assert.equal(apiFlow?.languageBrief.actor, "API consumer or upstream service");
   assert.ok(
     plan.flows.some((flow) =>
       flow.title === "Audit state transition flow" &&
@@ -629,6 +631,72 @@ test("generateE2ePlan keeps service changes generic and avoids fixture-specific 
   assert.match(manualDraft, /Why this flow matters:/);
   assert.match(manualDraft, /Human fixture inputs:/);
   assert.match(manualDraft, /Seed or mock success, empty, unauthorized, timeout, and server-error responses/);
+});
+
+test("generateE2ePlan keeps UI actors when API-adjacent screen files change", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/features/partners/components"), { recursive: true });
+  await mkdir(path.join(root, "src/features/partners/api"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      dependencies: {
+        "expo": "^54.0.0",
+        "react-native": "^0.81.0",
+      },
+      scripts: {
+        test: "jest",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/features/partners/components/PartnersScreen.tsx"),
+    [
+      "import { Pressable, Text } from 'react-native';",
+      "export function PartnersScreen() {",
+      "  return <Pressable testID=\"partner-open\"><Text>Open partner</Text></Pressable>;",
+      "}",
+    ].join("\n"),
+  );
+  await writeFile(path.join(root, "src/features/partners/api/partnerApi.ts"), "export const getPartner = () => '/partners';\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/partners-screen"]);
+  await writeFile(
+    path.join(root, "src/features/partners/components/PartnersScreen.tsx"),
+    [
+      "import { Pressable, Text } from 'react-native';",
+      "export function PartnersScreen() {",
+      "  return <Pressable testID=\"partner-open\"><Text>Open partner profile</Text></Pressable>;",
+      "}",
+    ].join("\n"),
+  );
+  await writeFile(path.join(root, "src/features/partners/api/partnerApi.ts"), "export const getPartner = () => '/partners/v2';\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update partners screen and api"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "maestro" });
+  const uiFlow = plan.flows.find((flow) => flow.title === "Partners UI smoke flow");
+  const apiFlow = plan.flows.find((flow) => flow.title === "Partners API contract smoke flow");
+
+  assert.ok(uiFlow);
+  assert.equal(uiFlow.languageBrief.actor, "User");
+  assert.match(uiFlow.languageBrief.trigger, /Partners/);
+  assert.ok(apiFlow);
+  assert.equal(apiFlow.languageBrief.actor, "API consumer or upstream service");
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    runner: "maestro",
+    output: ".maestro",
+  });
+  const draftFile = draft.files.find((file) => file.flowTitle === "Partners primary journey");
+  assert.ok(draftFile);
+  assert.equal(draftFile.languageBrief.actor, "User");
 });
 
 test("generateE2eDraft scopes entrypoint hints to each domain scenario", async () => {
