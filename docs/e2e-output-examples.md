@@ -51,6 +51,20 @@ test("Checkout purchase", async ({ page }) => {
 });
 ```
 
+When CodeWard can infer durable browser controls, the draft should prefer executable Playwright locators over placeholder text:
+
+```ts
+await test.step("Fill profile email.", async () => {
+  // Step intent: Fill profile email.
+  await page.getByPlaceholder("Profile email").fill("codeward@example.com");
+});
+
+await test.step("Save settings.", async () => {
+  // Step intent: Save settings.
+  await page.getByRole("button", { name: "Save settings" }).click();
+});
+```
+
 ## Expo / React Native Flow
 
 For an Expo or React Native change, CodeWard should recommend Maestro and carry mobile selectors into the draft:

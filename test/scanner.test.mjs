@@ -1634,6 +1634,96 @@ test("generateE2ePlan captures Playwright execution profile for runnable drafts"
   assert.match(spec, /Base URL: http:\/\/127\.0\.0\.1:4173/);
 });
 
+test("generateE2eDraft emits runnable Playwright role and input actions", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, ".codeward"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/settings"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      packageManager: "pnpm@10.32.1",
+      scripts: {
+        dev: "vite --host 127.0.0.1",
+        "test:e2e": "playwright test",
+      },
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        vite: "^7.0.0",
+        "react-dom": "^19.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "playwright.config.ts"),
+    "export default { use: { baseURL: 'http://127.0.0.1:4173' } };\n",
+  );
+  await writeFile(
+    path.join(root, ".codeward/flows.yml"),
+    [
+      "flows:",
+      "  - id: settings-profile",
+      "    name: Settings profile",
+      "    priority: critical",
+      "    domains:",
+      "      - settings",
+      "    files:",
+      "      - src/pages/settings/**",
+      "    routes:",
+      "      - /settings",
+      "    checks:",
+      "      - Fill profile email.",
+      "      - Save settings.",
+      "      - Confirm saved settings are visible.",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "src/pages/settings/SettingsPage.tsx"),
+    [
+      "export function SettingsPage() {",
+      "  return <main>",
+      "    <input placeholder=\"Profile email\" />",
+      "    <button>Save settings</button>",
+      "    <a href=\"/settings/history\">View history</a>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/settings-profile"]);
+  await writeFile(
+    path.join(root, "src/pages/settings/SettingsPage.tsx"),
+    [
+      "export function SettingsPage() {",
+      "  return <main>",
+      "    <input placeholder=\"Profile email\" />",
+      "    <button>Save settings</button>",
+      "    <a href=\"/settings/history\">View history</a>",
+      "    <p>Saved settings</p>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update settings profile"]);
+
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: "tests/e2e" });
+  const draftFile = draft.files.find((file) => file.flowTitle === "Settings profile");
+  assert.ok(draftFile);
+  const spec = await readFile(path.join(root, draftFile.path), "utf8");
+
+  assert.match(spec, /page\.getByPlaceholder\("Profile email"\)\.fill\("codeward@example.com"\)/);
+  assert.match(spec, /page\.getByRole\("button", \{ name: "Save settings" \}\)\.click\(\)/);
+  assert.match(spec, /role-button: Save settings/);
+  assert.match(spec, /role-link: View history/);
+  assert.doesNotMatch(spec, /page\.getByLabel\("Profile email"\)/);
+  assert.doesNotMatch(spec, /\/\/ TODO: Fill profile email/);
+  assert.doesNotMatch(spec, /\/\/ TODO: Save settings/);
+});
+
 test("generateE2eDraft normalizes dynamic routes without creating id domain scenarios", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
@@ -1797,7 +1887,8 @@ test("generateE2ePlan matches committed core flow definitions", async () => {
   assert.match(spec, /await test\.step\("Complete checkout with a valid payment method\.", async \(\) => \{/);
   assert.match(spec, /await test\.step\("Verify declined payment recovery\.", async \(\) => \{/);
   assert.match(spec, /page\.goto\("\/checkout"\)/);
-  assert.match(spec, /TODO: Complete checkout with a valid payment method\./);
+  assert.match(spec, /Step intent: Complete checkout with a valid payment method\./);
+  assert.match(spec, /page\.getByTestId\("checkout-submit"\)\.click\(\)/);
 });
 
 test("generateE2ePlan uses committed domain manifests for language and draft routes", async () => {
@@ -1894,7 +1985,8 @@ test("generateE2ePlan uses committed domain manifests for language and draft rou
   assert.match(spec, /await test\.step\("Open route \/membership\/renewal\.", async \(\) => \{/);
   assert.match(spec, /await test\.step\("Renew an active membership with realistic billing data\.", async \(\) => \{/);
   assert.match(spec, /page\.goto\("\/membership\/renewal"\)/);
-  assert.match(spec, /TODO: Renew an active membership with realistic billing data\./);
+  assert.match(spec, /Step intent: Renew an active membership with realistic billing data\./);
+  assert.match(spec, /page\.getByTestId\("renew-membership"\)\.click\(\)/);
 });
 
 test("generateE2ePlan suggests domain language from changed paths without core flows", async () => {
