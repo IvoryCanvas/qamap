@@ -1454,7 +1454,7 @@ function buildFlowLanguageBrief(flow: Omit<E2eFlow, "languageBrief">): E2eFlowLa
     trigger,
     goal,
     successSignal,
-    reviewQuestion: `Can a reviewer confirm that ${flow.title} still works from this entrypoint and that "${successSignal}" is asserted?`,
+    reviewQuestion: inferFlowReviewQuestion(flow, successSignal),
     edgeCases: inferFlowEdgeCases(flow),
   };
 }
@@ -1509,12 +1509,24 @@ function inferFlowTrigger(flow: Omit<E2eFlow, "languageBrief">): string {
     return `Run ${command.value}.`;
   }
   if (flow.files.length > 0) {
+    if (/\bapi contract\b/i.test(flow.title)) {
+      return `Call the endpoint, handler, or service path affected by ${flow.files[0]}.`;
+    }
+    if (/\bconfiguration verification\b/i.test(flow.title)) {
+      return `Run the build, startup, or release path affected by ${flow.files[0]}.`;
+    }
     return `Start from the product surface that owns ${flow.files[0]}.`;
   }
   return "Launch the app and wait for the first stable screen.";
 }
 
 function inferFlowGoal(flow: Omit<E2eFlow, "languageBrief">): string {
+  if (/\bapi contract\b/i.test(flow.title)) {
+    return `Protect ${flow.title} by verifying the changed request, response, auth, and failure contract.`;
+  }
+  if (/\bconfiguration verification\b/i.test(flow.title)) {
+    return `Protect ${flow.title} by verifying clean install, startup, and fallback configuration variants.`;
+  }
   const primaryStep = flow.steps.find((step) => !/^record\b|^run or open\b/i.test(step)) ?? flow.steps[0];
   if (primaryStep) {
     return `Protect ${flow.title} by ${lowercaseFirst(stripTerminalPunctuation(primaryStep))}.`;
@@ -1523,6 +1535,12 @@ function inferFlowGoal(flow: Omit<E2eFlow, "languageBrief">): string {
 }
 
 function inferFlowSuccessSignal(flow: Omit<E2eFlow, "languageBrief">): string {
+  if (/\bapi contract\b/i.test(flow.title)) {
+    return "the changed contract returns the expected status, response shape, auth behavior, and failure handling";
+  }
+  if (/\bconfiguration verification\b/i.test(flow.title)) {
+    return "the affected build or runtime variant starts cleanly and handles fallback values";
+  }
   const verificationStep = flow.steps.find((step) => isVerificationStep(step) && !isInteractionStep(step));
   if (verificationStep) {
     return stripTerminalPunctuation(verificationStep);
@@ -1532,6 +1550,16 @@ function inferFlowSuccessSignal(flow: Omit<E2eFlow, "languageBrief">): string {
     return stripTerminalPunctuation(coverageCheck);
   }
   return "the changed journey reaches a visible, stable success state";
+}
+
+function inferFlowReviewQuestion(flow: Omit<E2eFlow, "languageBrief">, successSignal: string): string {
+  if (/\bapi contract\b/i.test(flow.title)) {
+    return `Can a reviewer confirm that the changed endpoint, handler, or service contract is exercised and that "${successSignal}" is asserted?`;
+  }
+  if (/\bconfiguration verification\b/i.test(flow.title)) {
+    return `Can a reviewer confirm that the affected build, startup, or release variant is exercised and that "${successSignal}" is asserted?`;
+  }
+  return `Can a reviewer confirm that ${flow.title} still works from this entrypoint and that "${successSignal}" is asserted?`;
 }
 
 function inferFlowEdgeCases(flow: Omit<E2eFlow, "languageBrief">): string[] {

@@ -661,6 +661,9 @@ test("generateE2ePlan assigns configuration changes to release operators", async
   assert.equal(plan.project.type, "api-service");
   assert.ok(flow);
   assert.equal(flow.languageBrief.actor, "Maintainer or release operator");
+  assert.match(flow.languageBrief.trigger, /Run the build, startup, or release path/);
+  assert.match(flow.languageBrief.successSignal, /build or runtime variant/);
+  assert.match(flow.languageBrief.reviewQuestion, /affected build, startup, or release variant/);
 });
 
 test("generateE2ePlan treats API service source utilities as contract-impacting changes", async () => {
@@ -691,6 +694,10 @@ test("generateE2ePlan treats API service source utilities as contract-impacting 
   assert.equal(plan.project.type, "api-service");
   assert.ok(flow);
   assert.equal(flow.languageBrief.actor, "API consumer or upstream service");
+  assert.match(flow.languageBrief.trigger, /Call the endpoint, handler, or service path/);
+  assert.match(flow.languageBrief.goal, /request, response, auth, and failure contract/);
+  assert.match(flow.languageBrief.successSignal, /expected status, response shape, auth behavior/);
+  assert.match(flow.languageBrief.reviewQuestion, /endpoint, handler, or service contract/);
   assert.equal(plan.flows.some((item) => item.title === "Changed-file smoke checklist"), false);
 });
 
