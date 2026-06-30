@@ -218,6 +218,7 @@ The draft result is meant to be useful as a PR artifact, not only as generated f
 - `selfCheck`: static runner checks for generated draft structure, unresolved placeholders, TODO markers, and the execution profile
 - `actionItems`: required and recommended follow-up work, grouped by assertion, fixture, selector, runner, validation, and manifest
 - `actionSummary`: total required/recommended action counts, ready file count, and the most common action categories
+- `readinessSummary`: an overall 0-100 score, readiness level, self-check counts, TODO counts, execution blocker counts, and top blockers
 
 See [docs/e2e-output-examples.md](docs/e2e-output-examples.md) for compact examples of web, mobile, API/service, test-light, and monorepo output.
 
