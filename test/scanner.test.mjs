@@ -833,8 +833,10 @@ test("generateE2ePlan detects design token packages and suggests artifact valida
   assert.equal(flow.fixtureReadiness.status, "not-needed");
   assert.equal(flow.languageBrief.actor, "Design system consumer or maintainer");
   assert.match(flow.languageBrief.successSignal, /token schema, generated artifacts, semantic aliases/);
+  assert.deepEqual(flow.setupHints.map((hint) => hint.kind), []);
   assert.ok(flow.coverage.some((target) => target.title === "Token schema and generated artifact compatibility"));
   assert.ok(flow.coverage.some((target) => target.title === "Downstream consumer visual fixture"));
+  assert.equal(draftFile.setupHintCount, 0);
   assert.equal(testabilityRow.status, "ready");
   assert.doesNotMatch(testabilityRow.requiredEvidence, /selector|entrypoint/i);
   assert.match(testabilityRow.currentEvidence, /token validation commands/);
@@ -861,6 +863,15 @@ test("generateE2ePlan detects data catalog repositories and suggests catalog ver
       "    description: Tracks creator registration completion.",
     ].join("\n"),
   );
+  await writeFile(
+    path.join(root, "catalog/user_properties.yaml"),
+    [
+      "properties:",
+      "  - name: creator_id",
+      "    owner: growth",
+      "    description: Identifies the creator for analytics consumers.",
+    ].join("\n"),
+  );
   await writeFile(path.join(root, "tools/build_catalog.py"), "print('build catalog')\n");
   await writeFile(path.join(root, "site/index.html"), "<main>Catalog</main>\n");
   await git(root, ["add", "."]);
@@ -878,6 +889,16 @@ test("generateE2ePlan detects data catalog repositories and suggests catalog ver
       "    properties:",
       "      - name: source",
       "        type: string",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "catalog/user_properties.yaml"),
+    [
+      "properties:",
+      "  - name: creator_id",
+      "    owner: growth",
+      "    description: Identifies the creator for analytics consumers.",
+      "    type: string",
     ].join("\n"),
   );
   await git(root, ["add", "."]);
@@ -907,8 +928,15 @@ test("generateE2ePlan detects data catalog repositories and suggests catalog ver
   assert.equal(flow.fixtureReadiness.status, "not-needed");
   assert.equal(flow.languageBrief.actor, "Data catalog consumer or maintainer");
   assert.match(flow.languageBrief.successSignal, /catalog schema, generated output/);
+  assert.deepEqual(flow.setupHints.map((hint) => hint.kind), []);
   assert.ok(flow.coverage.some((target) => target.title === "Catalog schema and generated output compatibility"));
   assert.ok(flow.coverage.some((target) => target.title === "Consumer fixture and migration coverage"));
+  assert.equal(draftFile.setupHintCount, 0);
+  assert.equal(new Set(draft.files.map((item) => item.path)).size, draft.files.length);
+  assert.equal(
+    draft.files.filter((item) => /taxonomy catalog verification checklist/.test(item.flowTitle)).length,
+    1,
+  );
   assert.equal(testabilityRow.status, "ready");
   assert.doesNotMatch(testabilityRow.requiredEvidence, /selector|entrypoint/i);
   assert.match(testabilityRow.currentEvidence, /catalog validation commands/);
@@ -918,6 +946,7 @@ test("generateE2ePlan detects data catalog repositories and suggests catalog ver
   assert.match(draftMarkdown, /catalog validation command, generation command/);
   assert.match(draftText, /catalog validation command and the generation command/);
   assert.match(draftText, /analytics, documentation, ingestion, or migration fixture/);
+  assert.doesNotMatch(draftText, /Payment sandbox|Network response|Fixture data|State reset/);
 });
 
 test("generateE2ePlan does not classify generic package schemas as data catalogs", async () => {
