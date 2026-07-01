@@ -137,7 +137,7 @@ Last verified on 2026-07-01 on PR #70 after adding the verification manifest bas
 | `pnpm scan` | 0 findings. |
 | `git diff --check` | Passed. |
 | `pnpm pack --dry-run` | Passed; tarball includes `dist`, `docs`, `schema`, `README.md`, `CHANGELOG.md`, `LICENSE`, and `package.json`. |
-| Coverage threshold | Passed the 80% line, branch, and function gates; latest runs report 85.33% lines, 82.25% branches, and 93.73% functions. |
+| Coverage threshold | Passed the 80% line, branch, and function gates; latest runs remain above 85% line, 82% branch, and 93% function coverage. |
 | `pnpm run release:check` | Passed as the single local release gate for this PR state. |
 | `npm publish --dry-run --access public` | Passed for `@ivorycanvas/codeward@0.2.0`; tarball includes `schema/codeward-manifest.schema.json` and `docs/manifest.md`. |
 
