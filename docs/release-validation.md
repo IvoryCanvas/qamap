@@ -9,6 +9,7 @@ CodeWard is ready for `0.1.0` when the commands below produce useful, reviewable
 - web app with Playwright-compatible routes and components
 - mobile or Expo/React Native app with Maestro-compatible screens
 - API or backend service repo with contract-oriented checklist output
+- CLI package with command-oriented checklist output
 - monorepo package scanned with `--workspace-root`
 - monorepo root that points reviewers to changed app/package targets
 - test-light project with little or no existing E2E coverage
@@ -24,7 +25,7 @@ For each target, record:
 - draft readiness summary
 - draft self-check status and blockers
 - required and recommended draft action items
-- generated file paths
+- previewed or generated file paths
 - manual notes about false positives, missing context, or weak selectors
 
 ## Required Commands
@@ -37,11 +38,18 @@ pnpm run release:check
 
 `release:check` expands to the required local suite: `pnpm test`, `pnpm scan`, `git diff --check`, coverage thresholds, and `pnpm pack --dry-run`. If a release candidate fails, run the individual command directly to inspect the failure.
 
+Run the npm publish preview after the local release gate passes:
+
+```sh
+npm publish --dry-run --access public
+```
+
 Run these against every representative target repository:
 
 ```sh
 node dist/cli.js e2e plan <target> --base <base> --head <head> --format markdown
 node dist/cli.js e2e plan <target> --base <base> --head <head> --format json
+node dist/cli.js e2e draft <target> --base <base> --head <head> --output <tmp-output-dir> --dry-run
 node dist/cli.js e2e draft <target> --base <base> --head <head> --output <tmp-output-dir>
 node dist/cli.js e2e draft <target> --base <base> --head <head> --output <tmp-output-dir> --force --json
 ```
@@ -50,6 +58,7 @@ For monorepos, include:
 
 ```sh
 node dist/cli.js e2e plan <package> --workspace-root <repo-root> --base <base> --head <head> --format markdown
+node dist/cli.js e2e draft <package> --workspace-root <repo-root> --base <base> --head <head> --output <tmp-output-dir> --dry-run
 node dist/cli.js e2e draft <package> --workspace-root <repo-root> --base <base> --head <head> --output <tmp-output-dir>
 ```
 
@@ -68,7 +77,8 @@ The E2E plan should show:
 
 The E2E draft should show:
 
-- generated Maestro, Playwright, or manual draft files
+- previewed or generated Maestro, Playwright, or manual draft files
+- `dryRun` mode and `preview` file status when `--dry-run` is used
 - `languageBrief` for each draft file
 - `promotionStatus` for each draft file
 - `runnableStatus` and execution blockers for each draft file
@@ -84,9 +94,10 @@ The matrix below is public, fixture-backed evidence from the repository test sui
 
 | Target | Fixture-backed coverage | Expected output |
 | --- | --- | --- |
-| Web app with Playwright routes | `generateE2ePlan matches committed core flow definitions`; `generateE2eDraft uses web selectors in Playwright specs`; `generateE2eDraft asserts changed HTML success copy in Playwright specs`; `generateE2ePlan captures Playwright execution profile and self-check blockers`; `generateE2ePlan infers Playwright base URLs from dev scripts`; `generateE2eDraft supports Next app router route groups and concrete route hints`; `generateE2ePlan reads React Router object route paths`; `generateE2eDraft fills dynamic route params from concrete route hints`; `generateE2eDraft emits runnable Playwright role and input actions` | `Web` project profile, `playwright` runner, core-flow names such as `Checkout purchase`, route-aware Playwright drafts, stable selector hints, changed HTML success copy assertions, execution profile, dev-script base URL hints, opt-in Playwright setup proposal, Next App Router route groups, React Router object paths, dynamic route params, draft self-check status, action items, and validation gaps. |
+| Web app with Playwright routes | `generateE2ePlan matches committed core flow definitions`; `generateE2eDraft uses web selectors in Playwright specs`; `generateE2eDraft dry run previews files without writing drafts`; `generateE2eDraft asserts changed HTML success copy in Playwright specs`; `generateE2ePlan captures Playwright execution profile and self-check blockers`; `generateE2ePlan infers Playwright base URLs from dev scripts`; `generateE2eDraft supports Next app router route groups and concrete route hints`; `generateE2ePlan reads React Router object route paths`; `generateE2eDraft fills dynamic route params from concrete route hints`; `generateE2eDraft emits runnable Playwright role and input actions` | `Web` project profile, `playwright` runner, core-flow names such as `Checkout purchase`, route-aware Playwright drafts, dry-run preview status without filesystem writes, stable selector hints, changed HTML success copy assertions, execution profile, dev-script base URL hints, opt-in Playwright setup proposal, Next App Router route groups, React Router object paths, dynamic route params, draft self-check status, action items, and validation gaps. |
 | Expo / React Native mobile app | `generateE2ePlan recommends mobile flows for Expo changes`; `generateE2ePlan detects Maestro app ids from app config files`; `generateE2eDraft scopes entrypoint hints to each domain scenario`; `generateE2eDraft names changed component actions before generic primary journeys` | `Expo / React Native` project profile, `maestro` runner, app id and launch command hints from `app.json` or `app.config.*`, Maestro YAML drafts, `testID`/`accessibilityLabel` selector hints, action-specific scenario names such as `Offer Content URL Submit`, and mobile setup actions. |
 | API or backend service | `generateE2ePlan detects API service projects and suggests contract checklists`; `generateE2ePlan detects Django service apps from a workspace root`; `generateE2ePlan names versioned API service paths with domain language`; `generateE2ePlan uses matched core flow names for API service contracts` | `API / service` project profile, manual contract checklist, Django/FastAPI-style service signals when present, domain-aware titles such as `Offer API contract`, API consumer actor, endpoint/handler/service-path trigger, service start/test command hints, and contract failure coverage. |
+| CLI package | `generateE2ePlan detects CLI packages and suggests command verification checklists` | `CLI` project profile from `package.json` bin entries, manual command verification checklist, CLI user or maintainer actor language, command invocation trigger, stdout/stderr/generated-file/exit-code success signal, valid and invalid argument coverage, and no required API fixture action unless the changed command path explicitly exposes network or fixture evidence. |
 | Design tokens and data catalogs | `generateE2ePlan detects design token packages and suggests artifact validation`; `generateE2ePlan detects data catalog repositories and suggests catalog verification` | `Design tokens` and `Data catalog` project profiles, manual artifact/catalog checklist, token or catalog actor language, schema/generated output/consumer fixture coverage, fixture readiness marked not needed for API mocks, and validation matrix rows that do not require browser/device selectors. |
 | Monorepo root and package targeting | `generateE2ePlan surfaces package-scoped targets for monorepo root changes`; `generateE2ePlan matches workspace core flows for package scans`; `generateTestPlan scopes monorepo changes to the requested package` | Root plans list changed app/package targets with package names, project type, runner, and scoped commands; package scans keep package-local changed files, workspace-level `.codeward/flows.yml` matches, package-local generated drafts, and no leaked workspace path prefixes in package drafts. |
 | Release and package metadata | `generateE2ePlan avoids turning release metadata into domain journeys`; `generateE2ePlan keeps package release metadata out of product workflows`; `generateE2ePlan treats agent and repo metadata as configuration, not product journeys` | Changelog, changeset, release manifest, package version, and repo metadata changes produce maintainer/release-operator configuration verification flows instead of product journeys or user-facing E2E drafts. |
@@ -99,15 +110,16 @@ See [E2E output examples](e2e-output-examples.md) for the kind of plan and draft
 
 ## Latest PR Validation Snapshot
 
-Last verified on 2026-07-01 on PR #67 after adding action-specific E2E generation, input-aware actions, opt-in setup scaffolding that creates the first changed-flow draft, redundant entrypoint TODO reduction, evidence-only change demotion, and changed HTML success copy assertions:
+Last verified on 2026-07-01 on PR #67 after adding action-specific E2E generation, input-aware actions, opt-in setup scaffolding that creates the first changed-flow draft, redundant entrypoint TODO reduction, evidence-only change demotion, changed HTML success copy assertions, dry-run draft previews, and CLI command verification checklists:
 
 | Check | Result |
 | --- | --- |
-| `pnpm test` | 78 tests passed. |
+| `pnpm test` | 80 tests passed. |
 | `pnpm scan` | 0 findings. |
 | `git diff --check` | Passed. |
 | `pnpm pack --dry-run` | Passed; tarball includes `dist`, `docs`, `schema`, `README.md`, `CHANGELOG.md`, `LICENSE`, and `package.json`. |
-| Coverage threshold | Passed the 80% line, branch, and function gates; latest runs report about 85.22% lines, 83.11% branches, and 93.52% functions. |
+| `npm publish --dry-run --access public` | Passed; package metadata no longer requires npm autocorrection. |
+| Coverage threshold | Passed the 80% line, branch, and function gates; latest runs report 85.36% lines, 83.48% branches, and 93.48% functions. |
 | `pnpm run release:check` | Passed as the single local release gate for this PR state. |
 
 ## Real Repository Smoke Snapshot
@@ -158,5 +170,6 @@ Before publishing, update:
 - `README.md` install section
 - README and adoption docs for the working-base / verification-base positioning
 - `CHANGELOG.md`
+- [release runbook](releasing.md)
 - GitHub Action release tag notes, if the action is versioned with the package
 - package provenance or npm publishing notes

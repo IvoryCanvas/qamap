@@ -25,6 +25,7 @@ export type E2eProjectType =
   | "api-service"
   | "design-tokens"
   | "data-catalog"
+  | "cli"
   | "unknown";
 export type E2eRunnerName = "maestro" | "playwright" | "manual";
 export type E2eEntrypointKind = "route" | "screen" | "command";
@@ -68,6 +69,7 @@ export interface E2eDraftOptions extends E2ePlanOptions {
   output?: string;
   force?: boolean;
   maxDrafts?: number;
+  dryRun?: boolean;
 }
 
 export interface E2eProjectProfile {
@@ -258,7 +260,7 @@ export interface E2eDraftFile {
   path: string;
   flowTitle: string;
   runner: E2eRunnerName;
-  status: "created" | "skipped";
+  status: "created" | "skipped" | "preview";
   source?: "domain-language" | "core-flow" | "heuristic";
   languageBrief?: E2eFlowLanguageBrief;
   actionItems?: E2eDraftActionItem[];
@@ -353,6 +355,7 @@ export interface E2eDraftResult {
   generatedAt: string;
   runner: E2eRunnerName;
   outputDirectory: string;
+  dryRun: boolean;
   plan: E2ePlanResult;
   files: E2eDraftFile[];
   actionSummary: E2eDraftActionSummary;
@@ -388,6 +391,7 @@ interface PackageJson {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   scripts?: Record<string, string>;
+  bin?: string | Record<string, string>;
 }
 
 const maxFilesPerFlow = 8;
@@ -505,8 +509,11 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
   const outputDirectory = path.resolve(root, options.output ?? defaultDraftOutputDirectory(runner));
   const draftLimit = options.maxDrafts && options.maxDrafts > 0 ? Math.floor(options.maxDrafts) : undefined;
   const flows = (await buildDraftFlows(plan)).slice(0, draftLimit);
+  const dryRun = options.dryRun ?? false;
 
-  await fs.mkdir(outputDirectory, { recursive: true });
+  if (!dryRun) {
+    await fs.mkdir(outputDirectory, { recursive: true });
+  }
 
   const files: E2eDraftFile[] = [];
   for (const flow of flows) {
@@ -514,13 +521,44 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
     const displayPath = toDisplayPath(root, filePath);
     const validationSummary = summarizeDraftValidation(flow);
     const promotionGuidance = buildDraftPromotionGuidance(flow);
-    const shouldSkip = (await exists(filePath)) && !options.force;
+    const fileAlreadyExists = await exists(filePath);
+    const shouldSkip = fileAlreadyExists && !options.force && !dryRun;
     const content = shouldSkip ? ((await readTextIfExists(filePath)) ?? "") : draftContentForFlow(plan, flow, runner);
     const todoCount = countTodos(content);
     const selfCheck = evaluateDraftSelfCheck(plan, flow, runner, content, todoCount);
     const actionItems = buildDraftActionItems(plan, flow, runner, validationSummary, promotionGuidance, selfCheck);
     const executionBlockers = draftExecutionBlockers(plan, flow, runner, validationSummary, selfCheck);
     const runnableStatus = draftRunnableStatus(plan, flow, runner, validationSummary, executionBlockers, selfCheck);
+    if (dryRun) {
+      files.push({
+        path: displayPath,
+        flowTitle: flow.title,
+        runner,
+        status: "preview",
+        source: draftFlowSource(flow),
+        languageBrief: flow.languageBrief,
+        actionItems,
+        promotionStatus: promotionGuidance.status,
+        promotionReason: promotionGuidance.reason,
+        promotionAction: promotionGuidance.action,
+        stability: draftStability(plan, flow),
+        runnableStatus,
+        executionBlockers,
+        selfCheck,
+        todoCount,
+        entrypointCount: flow.entrypoints.length,
+        primaryEntrypoint: primaryEntrypointLabel(flow),
+        setupHintCount: flow.setupHints.length,
+        fixtureReadinessStatus: flow.fixtureReadiness.status,
+        inferredSelectorCount: flow.selectors.length,
+        coverageTargetCount: flow.coverage.length,
+        validationStatus: validationSummary.status,
+        validationGapCount: validationSummary.gapCount,
+        blockingValidationGapCount: validationSummary.blockingGapCount,
+        reason: dryRunPreviewReason(fileAlreadyExists, options.force ?? false),
+      });
+      continue;
+    }
     if (shouldSkip) {
       files.push({
         path: displayPath,
@@ -589,6 +627,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
     generatedAt: new Date().toISOString(),
     runner,
     outputDirectory: toDisplayPath(root, outputDirectory),
+    dryRun,
     plan,
     files,
     actionSummary,
@@ -749,6 +788,30 @@ function buildCoverageTargets(kind: E2eFlowKind, files: string[], runner: E2eRun
         [
           "Run one analytics, documentation, ingestion, or SDK fixture that reads the changed catalog.",
           "Check renamed, removed, deprecated, or newly-required fields with realistic sample data.",
+        ],
+      ),
+    );
+  }
+
+  if (kind === "command") {
+    targets.push(
+      coverageTarget(
+        "CLI command contract",
+        "critical",
+        "CLI changes should protect the command contract that users automate in scripts and CI.",
+        [
+          "Run the changed command with a valid argument set.",
+          "Verify stdout, stderr, exit code, and any generated files.",
+          "Keep command examples aligned with README or help output.",
+        ],
+      ),
+      coverageTarget(
+        "CLI failure and usage paths",
+        "critical",
+        "Command-line tools need explicit invalid input coverage because silent success or unclear errors break automation.",
+        [
+          "Run missing-argument, invalid-option, and unsupported-input cases when relevant.",
+          "Verify the failure message, exit code, and absence of partial generated output.",
         ],
       ),
     );
@@ -1302,6 +1365,9 @@ function manualBootstrapTitle(projectType: E2eProjectType): string {
   if (projectType === "data-catalog") {
     return "Start with catalog artifact validation";
   }
+  if (projectType === "cli") {
+    return "Start with CLI command validation";
+  }
   return "Choose the first runnable E2E runner";
 }
 
@@ -1315,6 +1381,9 @@ function manualBootstrapReason(projectType: E2eProjectType): string {
   if (projectType === "data-catalog") {
     return "CodeWard detected taxonomy or catalog artifacts, so generated output should verify schema, generated outputs, and downstream consumers before assuming a browser journey.";
   }
+  if (projectType === "cli") {
+    return "CodeWard detected package executable commands, so generated output should verify command behavior, arguments, output, and exit codes before assuming a browser or device journey.";
+  }
   return "CodeWard could not detect a web, Expo, React Native, or API service surface, so generated output should start as a manual checklist.";
 }
 
@@ -1327,6 +1396,9 @@ function manualBootstrapAction(projectType: E2eProjectType): string {
   }
   if (projectType === "data-catalog") {
     return "Document the catalog validation command, generation command, and one downstream consumer or migration fixture before making the checklist required in CI.";
+  }
+  if (projectType === "cli") {
+    return "Document the changed command path, valid and invalid argument examples, expected stdout/stderr, exit codes, and fixture files before making the checklist required in CI.";
   }
   return "Document the app entrypoint and pick Playwright, Maestro, or a project-specific runner before requiring generated drafts in CI.";
 }
@@ -2063,6 +2135,9 @@ function inferFlowActor(flow: Omit<E2eFlow, "languageBrief">): string {
   if (isGeneratedArtifactFocusedFlow(flow)) {
     return "Maintainer or build owner";
   }
+  if (isCliCommandFocusedFlow(flow)) {
+    return "CLI user or maintainer";
+  }
   if (/\b(configuration|dependency|build|runtime|environment|feature[- ]?flag|package\.json|tsconfig|docker|serverless|deploy)\b/.test(haystack)) {
     return "Maintainer or release operator";
   }
@@ -2126,6 +2201,9 @@ function inferFlowTrigger(flow: Omit<E2eFlow, "languageBrief">): string {
     if (isGeneratedArtifactFocusedFlow(flow)) {
       return `Regenerate the artifact affected by ${flow.files[0]}.`;
     }
+    if (isCliCommandFocusedFlow(flow)) {
+      return `Run the CLI command path affected by ${flow.files[0]}.`;
+    }
     if (/\bconfiguration verification\b/i.test(flow.title)) {
       return `Run the build, startup, or release path affected by ${flow.files[0]}.`;
     }
@@ -2152,6 +2230,9 @@ function inferFlowGoal(flow: Omit<E2eFlow, "languageBrief">): string {
   }
   if (isGeneratedArtifactFocusedFlow(flow)) {
     return `Protect ${flow.title} by proving generated output is reproducible and accepted by consumers.`;
+  }
+  if (isCliCommandFocusedFlow(flow)) {
+    return `Protect ${flow.title} by verifying command invocation, output, generated files, exit codes, and invalid input behavior.`;
   }
   if (/\bconfiguration verification\b/i.test(flow.title)) {
     return `Protect ${flow.title} by verifying clean install, startup, and fallback configuration variants.`;
@@ -2186,6 +2267,9 @@ function inferFlowSuccessSignal(flow: Omit<E2eFlow, "languageBrief">): string {
   if (isGeneratedArtifactFocusedFlow(flow)) {
     return "the generated output can be reproduced from source-of-truth inputs and accepted by consumers";
   }
+  if (isCliCommandFocusedFlow(flow)) {
+    return "the command returns the expected stdout, stderr, generated files, and exit code for valid and invalid inputs";
+  }
   if (/\bconfiguration verification\b/i.test(flow.title)) {
     return "the affected build or runtime variant starts cleanly and handles fallback values";
   }
@@ -2218,6 +2302,9 @@ function inferFlowReviewQuestion(flow: Omit<E2eFlow, "languageBrief">, successSi
   }
   if (isGeneratedArtifactFocusedFlow(flow)) {
     return `Can a reviewer confirm that the artifact was regenerated and that "${successSignal}" is true?`;
+  }
+  if (isCliCommandFocusedFlow(flow)) {
+    return `Can a reviewer confirm that the changed command path is run and that "${successSignal}" is asserted?`;
   }
   if (/\bconfiguration verification\b/i.test(flow.title)) {
     return `Can a reviewer confirm that the affected build, startup, or release variant is exercised and that "${successSignal}" is asserted?`;
@@ -2254,6 +2341,10 @@ function isDocumentationFocusedFlow(flow: Omit<E2eFlow, "languageBrief">): boole
 
 function isGeneratedArtifactFocusedFlow(flow: Omit<E2eFlow, "languageBrief">): boolean {
   return /\bgenerated artifact verification\b/i.test(flow.title) || (flow.files.length > 0 && flow.files.every(isGeneratedOutputFile));
+}
+
+function isCliCommandFocusedFlow(flow: Omit<E2eFlow, "languageBrief">): boolean {
+  return /\bCLI command verification\b/i.test(flow.title);
 }
 
 function inferFlowEdgeCases(flow: Omit<E2eFlow, "languageBrief">): string[] {
@@ -2604,7 +2695,12 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
   lines.push(`- Root: \`${escapeMarkdownInline(result.root)}\``);
   lines.push(`- Runner: ${formatRunnerName(result.runner)}`);
   lines.push(`- Output directory: \`${escapeMarkdownInline(result.outputDirectory)}\``);
-  lines.push(`- Files: ${result.files.filter((file) => file.status === "created").length} created, ${result.files.filter((file) => file.status === "skipped").length} skipped`);
+  if (result.dryRun) {
+    lines.push("- Mode: dry run (no files were written)");
+  }
+  lines.push(
+    `- Files: ${result.files.filter((file) => file.status === "created").length} created, ${result.files.filter((file) => file.status === "preview").length} previewed, ${result.files.filter((file) => file.status === "skipped").length} skipped`,
+  );
   lines.push("");
 
   lines.push("## Draft Readiness Summary");
@@ -2864,6 +2960,7 @@ async function detectProjectProfile(root: string, workspaceRoot?: string): Promi
   const projectFilePaths = (await collectProjectFiles(root, 2000)).map((file) => file.path);
   const hasDesignTokenProject = projectFilePaths.some(isDesignTokenFile);
   const hasDataCatalogProject = projectFilePaths.some(isCatalogDataFile);
+  const hasCliBin = packageJsonHasCliBin(packageJson);
 
   if (hasExpoDependency) {
     evidence.push("package.json dependency: expo");
@@ -2907,6 +3004,9 @@ async function detectProjectProfile(root: string, workspaceRoot?: string): Promi
   if (hasDataCatalogProject) {
     evidence.push("Catalog or taxonomy files found");
   }
+  if (hasCliBin) {
+    evidence.push("package.json bin entry found");
+  }
 
   if (hasExpoDependency || (hasExpoConfig && hasReactNativeDependency)) {
     return { type: "expo-react-native", evidence };
@@ -2926,10 +3026,23 @@ async function detectProjectProfile(root: string, workspaceRoot?: string): Promi
   if (hasDataCatalogProject) {
     return { type: "data-catalog", evidence };
   }
+  if (hasCliBin) {
+    return { type: "cli", evidence };
+  }
   return {
     type: "unknown",
     evidence,
   };
+}
+
+function packageJsonHasCliBin(packageJson: PackageJson | undefined): boolean {
+  if (!packageJson?.bin) {
+    return false;
+  }
+  if (typeof packageJson.bin === "string") {
+    return packageJson.bin.trim().length > 0;
+  }
+  return Object.keys(packageJson.bin).length > 0;
 }
 
 function profileSearchRoots(root: string, workspaceRoot: string | undefined): string[] {
@@ -3006,6 +3119,13 @@ function recommendRunner(project: E2eProjectProfile): E2eRunnerRecommendation {
       name: "manual",
       reason:
         "Use a catalog verification checklist because this looks like a taxonomy or data catalog, where schema, generated output, and downstream consumers matter more than a browser journey.",
+    };
+  }
+  if (project.type === "cli") {
+    return {
+      name: "manual",
+      reason:
+        "Use a CLI command verification checklist because this package exposes executable commands rather than a browser or device surface.",
     };
   }
   return {
@@ -3794,7 +3914,7 @@ function executionProfileBlockers(input: {
 }
 
 function manualChecklistIsExpected(projectType: E2eProjectType): boolean {
-  return projectType === "api-service" || projectType === "design-tokens" || projectType === "data-catalog";
+  return projectType === "api-service" || projectType === "design-tokens" || projectType === "data-catalog" || projectType === "cli";
 }
 
 function executionProfileConfidence(
@@ -3967,6 +4087,7 @@ type E2eFlowKind =
   | "generated-artifact"
   | "artifact"
   | "catalog"
+  | "command"
   | "domain"
   | "changed-file";
 type FlowCandidate = Omit<
@@ -4029,6 +4150,10 @@ function buildFlowCandidates(
       ? candidateFiles.filter(
           (file) => !apiFiles.includes(file) && !isConfigLikeFile(file) && isServiceSourceFile(file),
         )
+      : [];
+  const cliCommandFiles =
+    projectType === "cli"
+      ? candidateFiles.filter((file) => !isConfigLikeFile(file) && !isTestLikeFile(file) && isServiceSourceFile(file))
       : [];
   const contractFiles = uniqueStrings([...apiFiles, ...apiServiceSourceFiles]);
   const stateFiles = candidateFiles.filter(isStateLikeFile);
@@ -4151,6 +4276,23 @@ function buildFlowCandidates(
     });
   }
 
+  if (cliCommandFiles.length > 0) {
+    const subject = summarizeFlowSubject(cliCommandFiles, "CLI", domainLanguage);
+    candidates.push({
+      kind: "command",
+      title: cliCommandChecklistTitle(subject),
+      reason:
+        "CLI command source changed, so the draft should verify command invocation, output, exit code, and failure behavior instead of inventing a browser or device journey.",
+      files: cliCommandFiles,
+      steps: [
+        "Build or install the package in a clean local environment.",
+        "Run the changed command with a representative valid argument set.",
+        "Verify stdout, stderr, generated files, and exit code match the intended behavior.",
+        "Run one invalid, missing-argument, or unsupported-input path and verify the failure message and exit code.",
+      ],
+    });
+  }
+
   if (configFiles.length > 0) {
     const subject = isReleaseMetadataOnlyChange(configFiles)
       ? "Release metadata"
@@ -4177,6 +4319,7 @@ function buildFlowCandidates(
       !isContentOrStyleFile(file) &&
       !isDesignTokenFile(file) &&
       !isCatalogDataFile(file) &&
+      !cliCommandFiles.includes(file) &&
       !isReleaseMetadataFile(file),
   );
   if (remainingDomainFiles.length > 0) {
@@ -4211,6 +4354,13 @@ function buildFlowCandidates(
   }
 
   return candidates;
+}
+
+function cliCommandChecklistTitle(subject: string): string {
+  if (/^cli$/i.test(subject.trim())) {
+    return "CLI command verification checklist";
+  }
+  return `${subject} CLI command verification checklist`;
 }
 
 function buildLowSignalChangeCandidate(files: string[]): FlowCandidate | undefined {
@@ -4396,7 +4546,7 @@ async function inferFlowSetupHints(root: string, files: string[], kind: E2eFlowK
 
   const filesText = files.join("\n");
   const combinedText = `${filesText}\n${fileTexts.map((item) => item.text).join("\n")}`;
-  const shouldUseContentSignals = kind !== "config" && kind !== "content";
+  const shouldUseContentSignals = kind !== "config" && kind !== "content" && kind !== "command";
   const signalText = shouldUseContentSignals ? combinedText : filesText;
   const matchingFiles = (pattern: RegExp) =>
     uniqueStrings([
@@ -4551,6 +4701,20 @@ async function inferFlowFixtureReadiness(
     return {
       status: "not-needed",
       reason: "This verification flow targets configuration, release, documentation, or content changes where clean validation evidence matters more than API fixture responses.",
+      apiSignals: [],
+      apiEndpoints: [],
+      backendSignals: [],
+      mockSignals: [],
+      nextActions: [],
+    };
+  }
+  if (
+    kind === "command" &&
+    !setupHints.some((hint) => hint.kind === "network" || hint.kind === "payment" || hint.kind === "fixture")
+  ) {
+    return {
+      status: "not-needed",
+      reason: "This verification flow targets CLI command behavior; command arguments, output, exit code, and generated files matter more than API fixture responses unless the command path explicitly depends on network data.",
       apiSignals: [],
       apiEndpoints: [],
       backendSignals: [],
@@ -5108,6 +5272,12 @@ async function buildSetupNotes(
       project.evidence.some((item) => /Playwright/.test(item))
         ? "Playwright is already present in package.json."
         : "Add @playwright/test before making generated browser specs required in CI.",
+    ];
+  }
+  if (project.type === "cli") {
+    return [
+      "Generated CLI checklists should verify valid invocation, invalid arguments, stdout, stderr, exit code, and generated files.",
+      "Prefer one documented example command plus one failure-path command before treating the checklist as PR evidence.",
     ];
   }
   return ["Choose an E2E runner after documenting the primary user-facing entry point for this project."];
@@ -5669,6 +5839,7 @@ function isImportantBaseDraftFlow(flow: E2eFlow): boolean {
     isApiContractFocusedFlow(flow) ||
     isDesignTokenFocusedFlow(flow) ||
     isCatalogFocusedFlow(flow) ||
+    isCliCommandFocusedFlow(flow) ||
     isEvidenceVerificationFocusedFlow(flow)
   );
 }
@@ -5818,6 +5989,14 @@ function specializedDomainScenarioDraft(
     return {
       title: baseFlow.title,
       reason: baseFlow.reason,
+      steps: baseFlow.steps,
+    };
+  }
+  if (isCliCommandFocusedFlow(baseFlow)) {
+    const subject = scenario.title.replace(/\s+primary journey$/i, "");
+    return {
+      title: cliCommandChecklistTitle(subject),
+      reason: `Verify "${subject}" through command invocation, output, exit code, and failure behavior instead of assuming a browser or device journey.`,
       steps: baseFlow.steps,
     };
   }
@@ -6269,6 +6448,16 @@ function defaultDraftOutputDirectory(runner: E2eRunnerName): string {
     return "tests/e2e";
   }
   return "docs/e2e";
+}
+
+function dryRunPreviewReason(fileAlreadyExists: boolean, force: boolean): string {
+  if (!fileAlreadyExists) {
+    return "Dry run only; no file was written.";
+  }
+  if (force) {
+    return "Dry run only; no file was written. Existing file would be overwritten because --force is set.";
+  }
+  return "Dry run only; no file was written. Existing file would be skipped unless --force is set.";
 }
 
 function draftExtension(runner: E2eRunnerName): string {
@@ -7324,6 +7513,9 @@ function manualDraftNextStep(projectType: E2eProjectType): string {
   if (projectType === "data-catalog") {
     return "Document the catalog validation command, generation command, and downstream consumer or migration fixture before treating the checklist as PR evidence.";
   }
+  if (projectType === "cli") {
+    return "Document the CLI command, representative arguments, expected stdout/stderr, generated files, exit codes, and at least one failure case before treating the checklist as PR evidence.";
+  }
   return "Choose a runnable E2E framework once the primary app surface is documented.";
 }
 
@@ -7951,6 +8143,9 @@ function formatProjectType(type: E2eProjectType): string {
   }
   if (type === "data-catalog") {
     return "Data catalog";
+  }
+  if (type === "cli") {
+    return "CLI";
   }
   return "Unknown";
 }

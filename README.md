@@ -103,15 +103,25 @@ HIGH
 
 ## Install
 
-The package metadata is ready for the first public `0.1.0` release. See [0.1.0 release validation](docs/release-validation.md) and [E2E output examples](docs/e2e-output-examples.md) for the current release bar and verified output shape.
-
-After the npm package is published:
+Run CodeWard directly with your package manager:
 
 ```sh
 pnpm dlx @ivorycanvas/codeward scan .
 ```
 
-Until then, or when developing from source:
+For PR verification, start with:
+
+```sh
+pnpm dlx @ivorycanvas/codeward verify . --base origin/main --head HEAD --pr-body-file pr-body.md
+```
+
+For E2E draft preview, inspect the plan before writing files:
+
+```sh
+pnpm dlx @ivorycanvas/codeward e2e draft . --base origin/main --head HEAD --dry-run
+```
+
+When developing CodeWard from source:
 
 ```sh
 git clone https://github.com/IvoryCanvas/codeward.git
@@ -128,7 +138,7 @@ CodeWard `0.1.0` is a local-first PR verification planner, not a finished automa
 On a changed branch, CodeWard tries to produce reviewable verification artifacts instead of only saying "write more tests":
 
 - a branch-aware verification plan that names the changed domain, actor, trigger, goal, success signal, and edge cases
-- draft Playwright, Maestro, or manual checklist files when the repository shape supports them
+- draft Playwright, Maestro, CLI command, or manual checklist files when the repository shape supports them
 - a runner setup proposal that explains why Playwright or Maestro fits the changed surface and which files/commands would be created if the team accepts it
 - readiness evidence that explains missing runner config, selectors, fixture data, assertions, validation commands, or flow manifests
 - repo-local suggestions for `.codeward/domains.yml`, `.codeward/flows.yml`, and ignored `.codeward/runs/` history so teams can improve the next run without spending LLM tokens
@@ -153,7 +163,8 @@ That means CodeWard is most valuable when it becomes the team's verification bas
 | `codeward e2e plan . --base origin/main --head HEAD` | Suggest E2E runner, bootstrap steps, user flows, coverage targets, existing test evidence, and missing testability hooks for changed files. |
 | `codeward e2e plan . --base origin/main --head HEAD --record-history` | Save a compact local run snapshot under `.codeward/runs/` while keeping JSON/Markdown output usable. |
 | `codeward e2e setup . --runner playwright` | Explicitly apply the accepted runner setup and create the first changed-flow E2E draft without overwriting existing files. |
-| `codeward e2e draft . --base origin/main --head HEAD` | Generate Maestro or Playwright E2E drafts with flow language, readiness summaries, and action items. |
+| `codeward e2e draft . --base origin/main --head HEAD --dry-run` | Preview generated Maestro, Playwright, or manual E2E drafts without writing files. |
+| `codeward e2e draft . --base origin/main --head HEAD` | Write generated Maestro, Playwright, or manual E2E drafts with flow language, readiness summaries, and action items. |
 | `codeward flows init .` | Create a starter `.codeward/flows.yml` for team-approved core flow definitions. |
 | `codeward flows suggest . --base origin/main --head HEAD` | Generate suggested `.codeward/flows.yml` entries with commit-readiness guidance from changed files and E2E plan context. |
 | `codeward domains init .` | Create a starter `.codeward/domains.yml` for shared product/domain language. |
@@ -171,7 +182,7 @@ For monorepos, pass `--workspace-root` when scanning a package. Package-local ch
 
 `codeward test-plan` turns changed file paths into a review-ready domain test checklist. It also discovers common validation commands from `package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`, Gradle files, and Maven `pom.xml`. Add `--include-working-tree` for local, uncommitted changes while iterating.
 
-`codeward e2e plan` turns changed file paths into a first-pass E2E testing plan. It detects whether a project looks like Expo/React Native, web, or an API/service repo, recommends a runner such as Maestro or Playwright, starts backend services with an API contract checklist, suggests bootstrap steps for repos with little or no test history, suggests domain language for the changed behavior, suggests candidate user flows, adds coverage targets, compares those targets with existing test-suite evidence when tests are present, flags API-dependent flows that need mock or fixture responses, and points out missing stable selectors such as `testID` or `data-testid` before anyone starts writing tests from a blank file.
+`codeward e2e plan` turns changed file paths into a first-pass E2E testing plan. It detects whether a project looks like Expo/React Native, web, API/service, or CLI package, recommends a runner such as Maestro or Playwright, starts backend services with an API contract checklist, starts executable packages with a CLI command verification checklist, suggests bootstrap steps for repos with little or no test history, suggests domain language for the changed behavior, suggests candidate user flows, adds coverage targets, compares those targets with existing test-suite evidence when tests are present, flags API-dependent flows that need mock or fixture responses, and points out missing stable selectors such as `testID` or `data-testid` before anyone starts writing tests from a blank file.
 
 The plan also includes an execution profile: detected start command, test command, Playwright `baseURL`, mobile app id, runner config files, env fixture files, confidence, and blockers. This keeps generated E2E drafts honest about whether they are runnable candidates or still review-only scaffolds.
 
@@ -232,7 +243,9 @@ Run `codeward flows init .` to create a starter manifest. Run `codeward flows su
 
 Pass `--record-history` when you want CodeWard to keep a compact local snapshot of an E2E plan under `.codeward/runs/`. CodeWard automatically protects `.codeward/runs/`, `.codeward/cache/`, `.codeward/tmp/`, and `.codeward/*.local.json` with `.gitignore` so generated history stays local by default. Shared project policy, such as `codeward.config.json`, `.codeward/domains.yml`, and `.codeward/flows.yml`, remains commit-friendly.
 
-`codeward e2e draft` writes draft files from that plan. Expo and React Native projects get Maestro YAML flows under `.maestro/` by default, web projects get Playwright specs under `tests/e2e/`, and API/service projects get contract checklist drafts until a project-specific API runner is documented. For web apps, CodeWard recognizes common Next.js, React Router, Vite, Vue/Nuxt, Svelte, Remix, Astro, and Angular signals. It can infer routes from Next Pages Router files, Next App Router files such as `src/app/(group)/products/[id]/page.tsx`, React Router `path` objects, links, and imperative navigation calls. Drafts infer stable selectors such as `testID`, `accessibilityLabel`, `data-testid`, `aria-label`, placeholder text, role-based buttons or links, and visible text where possible. They also carry fixture/mock readiness notes, inferred API endpoint hints, and Playwright route-fulfillment scaffolds so client flows can be tested with deterministic data before a real server path exists. They keep `TODO` placeholders where selectors, fixtures, assertions, or project-specific launch details are still needed, and existing files are not overwritten unless `--force` is passed.
+`codeward e2e draft --dry-run` previews the same draft analysis without creating directories or files. Use it first when evaluating a new repository or PR. The output still includes planned file paths, self-checks, readiness status, action items, TODO counts, and execution blockers.
+
+`codeward e2e draft` writes draft files from that plan. Expo and React Native projects get Maestro YAML flows under `.maestro/` by default, web projects get Playwright specs under `tests/e2e/`, API/service projects get contract checklist drafts, and CLI packages get command verification checklists until a project-specific runner is documented. For web apps, CodeWard recognizes common Next.js, React Router, Vite, Vue/Nuxt, Svelte, Remix, Astro, and Angular signals. It can infer routes from Next Pages Router files, Next App Router files such as `src/app/(group)/products/[id]/page.tsx`, React Router `path` objects, links, and imperative navigation calls. Drafts infer stable selectors such as `testID`, `accessibilityLabel`, `data-testid`, `aria-label`, placeholder text, role-based buttons or links, and visible text where possible. They also carry fixture/mock readiness notes, inferred API endpoint hints, and Playwright route-fulfillment scaffolds so client flows can be tested with deterministic data before a real server path exists. They keep `TODO` placeholders where selectors, fixtures, assertions, or project-specific launch details are still needed, and existing files are not overwritten unless `--force` is passed.
 
 The draft result is meant to be useful as a PR artifact, not only as generated files. Markdown and JSON output include:
 
@@ -240,11 +253,12 @@ The draft result is meant to be useful as a PR artifact, not only as generated f
 - `promotionStatus`: whether the draft is a `commit-candidate`, `needs-review`, or `low-signal`
 - `runnableStatus`: whether the draft is a `runnable-candidate`, `near-runnable`, or `review-only`
 - `selfCheck`: static runner checks for generated draft structure, unresolved placeholders, TODO markers, and the execution profile
+- `status`: whether the file was `preview`ed by `--dry-run`, `created`, or `skipped`
 - `actionItems`: required and recommended follow-up work, grouped by assertion, fixture, selector, runner, validation, and manifest
 - `actionSummary`: total required/recommended action counts, ready file count, and the most common action categories
 - `readinessSummary`: an overall 0-100 score, readiness level, self-check counts, TODO counts, execution blocker counts, and top blockers
 
-See [docs/e2e-output-examples.md](docs/e2e-output-examples.md) for compact examples of web, mobile, API/service, test-light, and monorepo output.
+See [docs/e2e-output-examples.md](docs/e2e-output-examples.md) for compact examples of web, mobile, API/service, CLI, test-light, and monorepo output.
 
 Generated Playwright drafts use the flow language as `test.step()` names so the file reads like the user journey it protects:
 
@@ -293,6 +307,7 @@ See [docs/ecosystem.md](docs/ecosystem.md) for the agent ecosystem surfaces Code
 See [docs/api-contracts.md](docs/api-contracts.md) for the API contract source-of-truth check.
 See [docs/verify.md](docs/verify.md) for the combined PR verification report.
 See [docs/eval.md](docs/eval.md) for the change readiness evaluation.
+See [docs/releasing.md](docs/releasing.md) for the npm release runbook.
 
 ## Configuration
 
@@ -362,7 +377,8 @@ CodeWard starts as a local CLI and should stay small enough that maintainers can
 
 Near-term priorities:
 
-- finish the [0.1.0 release validation](docs/release-validation.md) checklist across representative web, mobile, API/service, monorepo, and test-light repositories
+- finish the [0.1.0 release validation](docs/release-validation.md) checklist across representative web, mobile, API/service, CLI, monorepo, and test-light repositories
+- keep the [release runbook](docs/releasing.md) aligned with the npm package and GitHub Action release process
 - publish a versioned GitHub Action release tag after the first public package is ready
 - improve branch-aware `review` changed-line locations
 - improve generated domain test plans with framework-specific test skeletons
