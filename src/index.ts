@@ -8,7 +8,14 @@ export {
   writeDefaultDomainManifest,
 } from "./domains.js";
 export { buildDoctorResult, formatDoctorReport, formatMarkdownDoctorReport } from "./doctor.js";
-export { formatMarkdownE2eDraft, formatMarkdownE2ePlan, generateE2eDraft, generateE2ePlan } from "./e2e.js";
+export {
+  formatMarkdownE2eDraft,
+  formatMarkdownE2ePlan,
+  formatMarkdownE2eSetup,
+  generateE2eDraft,
+  generateE2ePlan,
+  setupE2eRunner,
+} from "./e2e.js";
 export { evaluateChangeReadiness, formatEvalReport, formatMarkdownEvalReport } from "./eval.js";
 export {
   defaultFlowManifestPath,
@@ -96,6 +103,10 @@ export type {
   E2eProjectType,
   E2eRunnerName,
   E2eRunnerRecommendation,
+  E2eRunnerSetupProposal,
+  E2eRunnerSetupStatus,
+  E2eSetupOptions,
+  E2eSetupResult,
 } from "./e2e.js";
 export type { EvalCheck, EvalCheckStatus, EvalOptions, EvalRating, EvalResult } from "./eval.js";
 export type {

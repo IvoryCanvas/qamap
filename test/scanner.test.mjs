@@ -31,6 +31,7 @@ import {
   localHistoryGitignorePatterns,
   reviewProject,
   scanProject,
+  setupE2eRunner,
   verifyChange,
   writeDefaultConfig,
 } from "../dist/index.js";
@@ -1859,6 +1860,9 @@ test("generateE2ePlan builds a bootstrap plan for projects without tests", async
 
   assert.equal(plan.testSuite.hasTestSuite, false);
   assert.equal(plan.recommendedRunner.name, "playwright");
+  assert.equal(plan.runnerSetup.status, "proposed");
+  assert.equal(plan.runnerSetup.setupCommand, "codeward e2e setup . --runner playwright");
+  assert.ok(plan.runnerSetup.installCommands.some((command) => /@playwright\/test/.test(command)));
   assert.ok(plan.bootstrap.counts.required >= 4);
   assert.ok(plan.bootstrap.steps.some((step) => step.category === "runner" && step.status === "required"));
   assert.ok(plan.bootstrap.steps.some((step) => step.category === "draft" && step.status === "required"));
@@ -1870,10 +1874,18 @@ test("generateE2ePlan builds a bootstrap plan for projects without tests", async
   assert.ok(plan.bootstrap.steps.some((step) => step.commands.includes("codeward flows suggest . --base main --head HEAD")));
   assert.match(plan.bootstrap.summary, /required bootstrap step/);
   assert.match(markdown, /## Bootstrap Plan/);
+  assert.match(markdown, /## Runner Setup Proposal/);
+  assert.match(markdown, /Accept setup with: `codeward e2e setup \. --runner playwright`/);
   assert.match(markdown, /Create the first changed-flow E2E draft/);
   assert.match(markdown, /Add deterministic fixture or mock responses/);
   assert.match(markdown, /codeward e2e draft \. --base main --head HEAD/);
-  assert.match(formatMarkdownE2eDraft(draft), /Resolve required bootstrap steps/);
+  const draftMarkdown = formatMarkdownE2eDraft(draft);
+  assert.match(draftMarkdown, /Resolve required bootstrap steps/);
+  const draftFile = draft.files[0];
+  assert.ok(draftFile);
+  const generatedSpec = await readFile(path.join(root, draftFile.path), "utf8");
+  assert.match(generatedSpec, /Runner setup proposal:/);
+  assert.match(generatedSpec, /Accept with: codeward e2e setup \. --runner playwright/);
 });
 
 test("generateE2eDraft uses web selectors in Playwright specs", async () => {
@@ -2076,16 +2088,38 @@ test("generateE2ePlan infers Playwright base URLs from dev scripts", async () =>
   assert.equal(plan.executionProfile.startCommand, "pnpm run dev");
   assert.equal(plan.executionProfile.testCommand, "npx playwright test");
   assert.equal(plan.executionProfile.baseUrl, "http://localhost:3004");
+  assert.equal(plan.runnerSetup.status, "proposed");
+  assert.equal(plan.runnerSetup.setupCommand, "codeward e2e setup . --runner playwright");
+  assert.deepEqual(plan.runnerSetup.installCommands, ["pnpm add -D @playwright/test"]);
+  assert.ok(plan.runnerSetup.filesToCreate.includes("playwright.config.ts"));
   assert.ok(plan.executionProfile.blockers.some((blocker) => /Playwright config/.test(blocker)));
   assert.equal(plan.executionProfile.blockers.some((blocker) => /baseURL|base URL/.test(blocker)), false);
   assert.ok(runnerStep);
   assert.match(runnerStep.action, /playwright\.config\.ts/);
   assert.match(runnerStep.action, /webServer\.command "pnpm run dev"/);
   assert.match(runnerStep.action, /use\.baseURL "http:\/\/localhost:3004"/);
-  assert.deepEqual(runnerStep.commands, ["pnpm run dev", "npx playwright test"]);
+  assert.ok(runnerStep.commands.includes("pnpm add -D @playwright/test"));
+  assert.ok(runnerStep.commands.includes("codeward e2e setup . --runner playwright"));
+  assert.ok(runnerStep.commands.includes("pnpm run dev"));
+  assert.ok(runnerStep.commands.includes("npx playwright test"));
   assert.ok(runnerAction);
   assert.match(runnerAction.detail, /playwright\.config\.ts/);
   assert.match(runnerAction.detail, /http:\/\/localhost:3004/);
+  assert.match(runnerAction.detail, /codeward e2e setup \. --runner playwright/);
+
+  const setup = await setupE2eRunner(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  const configText = await readFile(path.join(root, "playwright.config.ts"), "utf8");
+
+  assert.equal(setup.runner, "playwright");
+  assert.ok(setup.createdFiles.includes("playwright.config.ts"));
+  assert.ok(setup.createdFiles.includes("tests/e2e/"));
+  assert.ok(setup.updatedFiles.includes("package.json"));
+  assert.deepEqual(setup.installCommands, ["pnpm add -D @playwright/test"]);
+  assert.equal(packageJson.scripts["test:e2e"], "playwright test");
+  assert.match(configText, /testDir: "\.\/tests\/e2e"/);
+  assert.match(configText, /http:\/\/localhost:3004/);
+  assert.match(configText, /command: "pnpm run dev"/);
 });
 
 test("generateE2eDraft supports Next app router route groups and concrete route hints", async () => {
