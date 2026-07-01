@@ -5,7 +5,14 @@ import { loadConfig, writeDefaultConfig } from "./config.js";
 import { generateAgentContext } from "./context.js";
 import { defaultDomainManifestPath, writeDefaultDomainManifest } from "./domains.js";
 import { buildDoctorResult, formatDoctorReport, formatMarkdownDoctorReport } from "./doctor.js";
-import { formatMarkdownE2eDraft, formatMarkdownE2ePlan, generateE2eDraft, generateE2ePlan } from "./e2e.js";
+import {
+  formatMarkdownE2eDraft,
+  formatMarkdownE2ePlan,
+  formatMarkdownE2eSetup,
+  generateE2eDraft,
+  generateE2ePlan,
+  setupE2eRunner,
+} from "./e2e.js";
 import { evaluateChangeReadiness, formatEvalReport, formatMarkdownEvalReport } from "./eval.js";
 import { defaultFlowManifestPath, writeDefaultCoreFlowManifest } from "./flows.js";
 import { runGitHubAction } from "./github.js";
@@ -198,7 +205,7 @@ async function main(argv: string[]): Promise<number> {
       printE2eHelp();
       return 0;
     }
-    if (subcommand !== "plan" && subcommand !== "draft") {
+    if (subcommand !== "plan" && subcommand !== "draft" && subcommand !== "setup") {
       throw new Error(`Unknown e2e subcommand: ${subcommand}`);
     }
     const options = parseOptions(subcommandRest);
@@ -217,6 +224,15 @@ async function main(argv: string[]): Promise<number> {
         result.localHistory = await recordE2ePlanHistory(options.workspaceRoot ?? options.path, result);
       }
       const output = formatE2ePlanOutput(result, options.format ?? (options.json ? "json" : "markdown"));
+      await printOrWrite(output, options.output);
+      return 0;
+    }
+    if (subcommand === "setup") {
+      const result = await setupE2eRunner(options.path, {
+        ...e2eOptions,
+        force: options.force,
+      });
+      const output = formatE2eSetupOutput(result, options.format ?? (options.json ? "json" : "markdown"));
       await printOrWrite(output, options.output);
       return 0;
     }
@@ -664,6 +680,16 @@ function formatE2eDraftOutput(result: Awaited<ReturnType<typeof generateE2eDraft
   return formatMarkdownE2eDraft(result);
 }
 
+function formatE2eSetupOutput(result: Awaited<ReturnType<typeof setupE2eRunner>>, format: OutputFormat): string {
+  if (format === "json") {
+    return `${JSON.stringify(result, null, 2)}\n`;
+  }
+  if (format !== "markdown" && format !== "text") {
+    throw new Error(`E2E setup supports text, json, or markdown output, not ${format}`);
+  }
+  return formatMarkdownE2eSetup(result);
+}
+
 function manifestSuggestionFormat(format: OutputFormat, command: "domains" | "flows"): "text" | "json" | "markdown" {
   if (format === "sarif") {
     throw new Error(`${command} suggest supports text, json, or markdown output, not sarif`);
@@ -746,6 +772,7 @@ Usage:
   codeward github-action [path] [--mode auto|scan|review] [--base <ref>] [--head <ref>] [--fail-on <severity>]
   codeward test-plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--format <format>] [--output <file>]
   codeward e2e plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--record-history] [--format <format>]
+  codeward e2e setup [path] [--workspace-root <path>] [--runner maestro|playwright] [--force]
   codeward e2e draft [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--runner maestro|playwright|manual] [--output <dir>] [--force]
   codeward flows init [path] [--write <file>] [--force]
   codeward flows suggest [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--format <format>] [--output <file>] [--write <file>] [--force]
@@ -775,6 +802,7 @@ Examples:
   codeward test-plan . --base origin/main --head HEAD
   codeward e2e plan . --base origin/main --head HEAD
   codeward e2e plan . --base origin/main --head HEAD --record-history
+  codeward e2e setup . --runner playwright
   codeward e2e draft . --base origin/main --head HEAD
   codeward flows init .
   codeward flows suggest . --base origin/main --head HEAD
@@ -794,11 +822,14 @@ E2E planning for AI-assisted changes.
 
 Usage:
   codeward e2e plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--record-history] [--format <format>] [--output <file>]
+  codeward e2e setup [path] [--workspace-root <path>] [--runner maestro|playwright] [--force] [--format <format>] [--output <file>]
   codeward e2e draft [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--runner maestro|playwright|manual] [--output <dir>] [--force]
 
 Examples:
   codeward e2e plan . --base origin/main --head HEAD
   codeward e2e plan . --base origin/main --head HEAD --record-history
+  codeward e2e setup . --runner playwright
+  codeward e2e setup apps/mobile --workspace-root . --runner maestro
   codeward e2e draft . --base origin/main --head HEAD
   codeward e2e plan apps/mobile --workspace-root . --include-working-tree
 `);

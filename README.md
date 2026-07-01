@@ -129,6 +129,7 @@ On a changed branch, CodeWard tries to produce reviewable verification artifacts
 
 - a branch-aware verification plan that names the changed domain, actor, trigger, goal, success signal, and edge cases
 - draft Playwright, Maestro, or manual checklist files when the repository shape supports them
+- a runner setup proposal that explains why Playwright or Maestro fits the changed surface and which files/commands would be created if the team accepts it
 - readiness evidence that explains missing runner config, selectors, fixture data, assertions, validation commands, or flow manifests
 - repo-local suggestions for `.codeward/domains.yml`, `.codeward/flows.yml`, and ignored `.codeward/runs/` history so teams can improve the next run without spending LLM tokens
 
@@ -151,6 +152,7 @@ That means CodeWard is most valuable when it becomes the team's verification bas
 | `codeward test-plan . --base origin/main --head HEAD --include-working-tree` | Suggest domain test scenarios for changed files. |
 | `codeward e2e plan . --base origin/main --head HEAD` | Suggest E2E runner, bootstrap steps, user flows, coverage targets, existing test evidence, and missing testability hooks for changed files. |
 | `codeward e2e plan . --base origin/main --head HEAD --record-history` | Save a compact local run snapshot under `.codeward/runs/` while keeping JSON/Markdown output usable. |
+| `codeward e2e setup . --runner playwright` | Explicitly apply the accepted runner setup by creating minimal config/script files for generated E2E drafts. |
 | `codeward e2e draft . --base origin/main --head HEAD` | Generate Maestro or Playwright E2E drafts with flow language, readiness summaries, and action items. |
 | `codeward flows init .` | Create a starter `.codeward/flows.yml` for team-approved core flow definitions. |
 | `codeward flows suggest . --base origin/main --head HEAD` | Generate suggested `.codeward/flows.yml` entries with commit-readiness guidance from changed files and E2E plan context. |
@@ -172,6 +174,10 @@ For monorepos, pass `--workspace-root` when scanning a package. Package-local ch
 `codeward e2e plan` turns changed file paths into a first-pass E2E testing plan. It detects whether a project looks like Expo/React Native, web, or an API/service repo, recommends a runner such as Maestro or Playwright, starts backend services with an API contract checklist, suggests bootstrap steps for repos with little or no test history, suggests domain language for the changed behavior, suggests candidate user flows, adds coverage targets, compares those targets with existing test-suite evidence when tests are present, flags API-dependent flows that need mock or fixture responses, and points out missing stable selectors such as `testID` or `data-testid` before anyone starts writing tests from a blank file.
 
 The plan also includes an execution profile: detected start command, test command, Playwright `baseURL`, mobile app id, runner config files, env fixture files, confidence, and blockers. This keeps generated E2E drafts honest about whether they are runnable candidates or still review-only scaffolds.
+
+When a repository does not already have the selected E2E runner, the plan includes a runner setup proposal instead of silently changing the project. The proposal explains why the runner fits the changed surface, which package command installs the library, which config/script files would be created, and the explicit acceptance command such as `codeward e2e setup . --runner playwright`.
+
+`codeward e2e setup` is the opt-in apply step. For Playwright it can create `playwright.config.ts`, `tests/e2e/`, and a `test:e2e` script. For Maestro it can create `.maestro/`, `.maestro/README.md`, and a `test:e2e` script. It does not run package installation automatically; it prints the install command so teams can keep dependency policy under review.
 
 When run at a monorepo root, the E2E plan also reports changed app/package targets. This helps a maintainer move from a broad workspace diff to scoped commands such as `codeward e2e plan services/offer --workspace-root . --base origin/main --head HEAD`, where package-specific runner detection and flow naming are usually sharper.
 

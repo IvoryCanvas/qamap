@@ -58,6 +58,7 @@ The E2E plan should show:
 
 - runner recommendation with clear evidence
 - execution profile with start command, test command, base URL or app id when discoverable, confidence, and blockers
+- runner setup proposal with install commands, explicit `codeward e2e setup` acceptance command, files to create/update, and next commands when the repo lacks an E2E runner
 - bootstrap steps when the project lacks E2E setup
 - domain language and candidate user scenarios
 - matched `.codeward/domains.yml` or `.codeward/flows.yml` entries when present
@@ -81,13 +82,13 @@ The matrix below is public, fixture-backed evidence from the repository test sui
 
 | Target | Fixture-backed coverage | Expected output |
 | --- | --- | --- |
-| Web app with Playwright routes | `generateE2ePlan matches committed core flow definitions`; `generateE2eDraft uses web selectors in Playwright specs`; `generateE2ePlan captures Playwright execution profile and self-check blockers`; `generateE2ePlan infers Playwright base URLs from dev scripts`; `generateE2eDraft supports Next app router route groups and concrete route hints`; `generateE2ePlan reads React Router object route paths`; `generateE2eDraft fills dynamic route params from concrete route hints`; `generateE2eDraft emits runnable Playwright role and input actions` | `Web` project profile, `playwright` runner, core-flow names such as `Checkout purchase`, route-aware Playwright drafts, stable selector hints, execution profile, dev-script base URL hints, Next App Router route groups, React Router object paths, dynamic route params, draft self-check status, action items, and validation gaps. |
+| Web app with Playwright routes | `generateE2ePlan matches committed core flow definitions`; `generateE2eDraft uses web selectors in Playwright specs`; `generateE2ePlan captures Playwright execution profile and self-check blockers`; `generateE2ePlan infers Playwright base URLs from dev scripts`; `generateE2eDraft supports Next app router route groups and concrete route hints`; `generateE2ePlan reads React Router object route paths`; `generateE2eDraft fills dynamic route params from concrete route hints`; `generateE2eDraft emits runnable Playwright role and input actions` | `Web` project profile, `playwright` runner, core-flow names such as `Checkout purchase`, route-aware Playwright drafts, stable selector hints, execution profile, dev-script base URL hints, opt-in Playwright setup proposal, Next App Router route groups, React Router object paths, dynamic route params, draft self-check status, action items, and validation gaps. |
 | Expo / React Native mobile app | `generateE2ePlan recommends mobile flows for Expo changes`; `generateE2ePlan detects Maestro app ids from app config files`; `generateE2eDraft scopes entrypoint hints to each domain scenario` | `Expo / React Native` project profile, `maestro` runner, app id and launch command hints from `app.json` or `app.config.*`, Maestro YAML drafts, `testID`/`accessibilityLabel` selector hints, and mobile setup actions. |
 | API or backend service | `generateE2ePlan detects API service projects and suggests contract checklists`; `generateE2ePlan detects Django service apps from a workspace root`; `generateE2ePlan names versioned API service paths with domain language`; `generateE2ePlan uses matched core flow names for API service contracts` | `API / service` project profile, manual contract checklist, Django/FastAPI-style service signals when present, domain-aware titles such as `Offer API contract`, API consumer actor, endpoint/handler/service-path trigger, service start/test command hints, and contract failure coverage. |
 | Design tokens and data catalogs | `generateE2ePlan detects design token packages and suggests artifact validation`; `generateE2ePlan detects data catalog repositories and suggests catalog verification` | `Design tokens` and `Data catalog` project profiles, manual artifact/catalog checklist, token or catalog actor language, schema/generated output/consumer fixture coverage, fixture readiness marked not needed for API mocks, and validation matrix rows that do not require browser/device selectors. |
 | Monorepo root and package targeting | `generateE2ePlan surfaces package-scoped targets for monorepo root changes`; `generateE2ePlan matches workspace core flows for package scans`; `generateTestPlan scopes monorepo changes to the requested package` | Root plans list changed app/package targets with package names, project type, runner, and scoped commands; package scans keep package-local changed files, workspace-level `.codeward/flows.yml` matches, package-local generated drafts, and no leaked workspace path prefixes in package drafts. |
 | Release and package metadata | `generateE2ePlan avoids turning release metadata into domain journeys`; `generateE2ePlan keeps package release metadata out of product workflows`; `generateE2ePlan treats agent and repo metadata as configuration, not product journeys` | Changelog, changeset, release manifest, package version, and repo metadata changes produce maintainer/release-operator configuration verification flows instead of product journeys or user-facing E2E drafts. |
-| Test-light project | `generateE2ePlan builds a bootstrap plan for projects without tests`; `generateE2eDraft creates a fallback smoke draft without changed files` | Required bootstrap steps for runner setup, first draft generation, fixture/mock data, testability, and validation evidence before generated drafts are treated as regression coverage. |
+| Test-light project | `generateE2ePlan builds a bootstrap plan for projects without tests`; `generateE2eDraft creates a fallback smoke draft without changed files` | Required bootstrap steps for runner setup, opt-in `codeward e2e setup`, first draft generation, fixture/mock data, testability, and validation evidence before generated drafts are treated as regression coverage. |
 | API-dependent UI flow | `generateE2ePlan flags missing mock fixtures for API-dependent UI flows` | Playwright-compatible UI flow plus fixture/mock readiness actions, inferred endpoint hints, and route-fulfillment scaffold slots for success, empty, unauthorized, timeout, and server-error responses. |
 | Existing test evidence | `generateE2ePlan evaluates existing test suite coverage evidence`; `generateE2ePlan keeps generic test filenames from overmatching unrelated services` | Coverage evidence rows that distinguish covered, partial, and missing targets without matching unrelated generic test filenames. |
 
@@ -95,7 +96,7 @@ See [E2E output examples](e2e-output-examples.md) for the kind of plan and draft
 
 ## Latest Main Validation Snapshot
 
-Last verified on 2026-07-01 after adding the single local release gate, verification-base positioning, and non-app false-positive guards:
+Last verified on 2026-07-01 after adding the single local release gate, verification-base positioning, non-app false-positive guards, and opt-in E2E runner setup proposals:
 
 | Check | Result |
 | --- | --- |
@@ -103,7 +104,7 @@ Last verified on 2026-07-01 after adding the single local release gate, verifica
 | `pnpm scan` | 0 findings. |
 | `git diff --check` | Passed. |
 | `pnpm pack --dry-run` | Passed; tarball includes `dist`, `docs`, `schema`, `README.md`, `CHANGELOG.md`, `LICENSE`, and `package.json`. |
-| Coverage threshold | Passed the 80% line, branch, and function gates; latest runs report about 84.8% lines, 82.2% branches, and 93.31% functions. |
+| Coverage threshold | Passed the 80% line, branch, and function gates; latest runs report about 84.05% lines, 81.96% branches, and 92.90% functions. |
 | `pnpm run release:check` | Passed as the single local release gate for future candidates. |
 
 ## Real Repository Smoke Snapshot
