@@ -26,6 +26,11 @@ import {
   generateFlowManifestSuggestion,
   writeSuggestedManifest,
 } from "./manifest-suggestions.js";
+import {
+  defaultVerificationManifestPath,
+  formatVerificationManifestInitResult,
+  writeVerificationManifestBaseline,
+} from "./manifest.js";
 import { formatMarkdownReport, formatSarifReport, formatTextReport, hasFindingsAtOrAbove } from "./report.js";
 import { formatMarkdownReviewReport, formatReviewReport, reviewProject } from "./review.js";
 import { scanProject } from "./scanner.js";
@@ -365,6 +370,30 @@ async function main(argv: string[]): Promise<number> {
         `Wrote ${outputPath}\nCommit this file when the domain definitions should become team policy.\n`,
         options.output,
       );
+    }
+    return 0;
+  }
+
+  if (command === "manifest") {
+    const [subcommand, ...subcommandRest] = rest;
+    if (!subcommand || subcommand === "--help" || subcommand === "-h") {
+      printManifestHelp();
+      return 0;
+    }
+    if (subcommand !== "init") {
+      throw new Error(`Unknown manifest subcommand: ${subcommand}`);
+    }
+    const options = parseOptions(subcommandRest);
+    const result = await writeVerificationManifestBaseline(options.path, {
+      workspaceRoot: options.workspaceRoot,
+      write: options.write ?? defaultVerificationManifestPath,
+      force: options.force,
+      maxFiles: options.maxFiles,
+    });
+    if (options.json || options.format === "json") {
+      await printOrWrite(`${JSON.stringify(result, null, 2)}\n`, options.output);
+    } else {
+      await printOrWrite(formatVerificationManifestInitResult(result), options.output);
     }
     return 0;
   }
@@ -781,6 +810,7 @@ Usage:
   codeward e2e plan [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--record-history] [--format <format>]
   codeward e2e setup [path] [--workspace-root <path>] [--runner maestro|playwright] [--force]
   codeward e2e draft [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--runner maestro|playwright|manual] [--output <dir>] [--dry-run] [--force]
+  codeward manifest init [path] [--workspace-root <path>] [--write <file>] [--max-files <n>] [--force]
   codeward flows init [path] [--write <file>] [--force]
   codeward flows suggest [path] [--workspace-root <path>] [--base <ref>] [--head <ref>] [--include-working-tree] [--format <format>] [--output <file>] [--write <file>] [--force]
   codeward domains init [path] [--write <file>] [--force]
@@ -811,6 +841,7 @@ Examples:
   codeward e2e plan . --base origin/main --head HEAD --record-history
   codeward e2e setup . --runner playwright
   codeward e2e draft . --base origin/main --head HEAD --dry-run
+  codeward manifest init .
   codeward flows init .
   codeward flows suggest . --base origin/main --head HEAD
   codeward domains init .
@@ -819,6 +850,21 @@ Examples:
   codeward test-plan services/offer --workspace-root . --base origin/main --head HEAD --include-working-tree
   codeward context . --write AGENTS.md
   codeward init .
+`);
+}
+
+function printManifestHelp(): void {
+  console.log(`CodeWard ${VERSION}
+
+Repository-level verification manifest.
+
+Usage:
+  codeward manifest init [path] [--workspace-root <path>] [--write <file>] [--max-files <n>] [--force] [--format json] [--output <file>]
+
+Examples:
+  codeward manifest init .
+  codeward manifest init services/offer --workspace-root .
+  codeward manifest init . --write .codeward/manifest.yaml --force
 `);
 }
 

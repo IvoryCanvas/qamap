@@ -27,6 +27,7 @@ import {
   generateDomainManifestSuggestion,
   generateFlowManifestSuggestion,
   generateTestPlan,
+  loadVerificationManifest,
   initializeLocalHistory,
   loadConfig,
   localHistoryGitignorePatterns,
@@ -35,6 +36,7 @@ import {
   setupE2eRunner,
   verifyChange,
   writeDefaultConfig,
+  writeVerificationManifestBaseline,
 } from "../dist/index.js";
 
 const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
@@ -3960,6 +3962,141 @@ test("domains init creates a commit-friendly domain manifest", async () => {
   assert.match(cliOutput.stdout, /team policy/);
   assert.match(manifest, /domains:/);
   assert.match(manifest, /Billing primary journey/);
+});
+
+test("manifest init creates a baseline verification manifest", async () => {
+  const root = await makeTempRepo();
+  await mkdir(path.join(root, "src/app/(shop)/products/[productId]"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      dependencies: {
+        next: "^15.0.0",
+        react: "^19.0.0",
+      },
+      scripts: {
+        dev: "next dev",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/app/(shop)/products/[productId]/page.tsx"),
+    [
+      "export default async function ProductPage() {",
+      "  const product = await fetch('/api/products/1');",
+      "  return <button data-testid=\"buy-product\">Buy</button>;",
+      "}",
+    ].join("\n"),
+  );
+
+  const result = await writeVerificationManifestBaseline(root);
+  const manifestText = await readFile(path.join(root, ".codeward/manifest.yaml"), "utf8");
+  const manifest = await loadVerificationManifest(root);
+
+  assert.equal(result.summary.domains > 0, true);
+  assert.equal(result.summary.flows > 0, true);
+  assert.match(manifestText, /version: 1/);
+  assert.match(manifestText, /src\/app\/\(shop\)\/products\/\[productId\]\/page\.tsx/);
+  assert.ok(manifest.flows.some((flow) => flow.entry?.route === "/products/:productId"));
+  assert.ok(manifest.flows.some((flow) => flow.checks.some((check) => check.id === "api-failure-fixture")));
+
+  const cliOutput = await execFileAsync(process.execPath, [cliPath, "manifest", "init", root, "--force"]);
+  assert.match(cliOutput.stdout, /Review and commit this file/);
+});
+
+test("manifest matches explain e2e and verify recommendations", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, ".codeward"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/campaign/official"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      dependencies: {
+        "@playwright/test": "^1.54.0",
+        react: "^19.0.0",
+      },
+      scripts: {
+        test: "node --test",
+        "test:e2e": "playwright test",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, ".codeward/manifest.yaml"),
+    [
+      "version: 1",
+      "domains:",
+      "  - id: campaign",
+      "    name: Campaign",
+      "    paths:",
+      "      - src/pages/campaign/**",
+      "    criticality: medium",
+      "    source:",
+      "      kind: declared",
+      "      confidence: high",
+      "      from:",
+      "        - human-reviewed",
+      "flows:",
+      "  - id: campaign-application-complete",
+      "    domain: campaign",
+      "    name: Campaign Application Complete",
+      "    entry:",
+      "      route: /campaign/official/applicationComplete",
+      "      source: declared",
+      "    runner: playwright",
+      "    anchors:",
+      "      - kind: route",
+      "        path: src/pages/campaign/official/applicationComplete.tsx",
+      "        route: /campaign/official/applicationComplete",
+      "        source: declared",
+      "        confidence: high",
+      "    checks:",
+      "      - id: happy-path",
+      "        title: Submit content URL successfully",
+      "        type: success",
+      "      - id: invalid-input",
+      "        title: Show validation error for invalid content URL",
+      "        type: failure",
+      "    source:",
+      "      kind: declared",
+      "      confidence: high",
+      "      from:",
+      "        - product-qa",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "src/pages/campaign/official/applicationComplete.tsx"),
+    "export default function Page() { return <button data-testid=\"submit-url\">Submit</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/campaign-complete-copy"]);
+  await writeFile(
+    path.join(root, "src/pages/campaign/official/applicationComplete.tsx"),
+    "export default function Page() { return <button data-testid=\"submit-url\">Submit content URL</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update application complete"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const planMarkdown = formatMarkdownE2ePlan(plan);
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", dryRun: true, runner: "playwright" });
+  const draftMarkdown = formatMarkdownE2eDraft(draft);
+  const verify = await verifyChange(root, { base: "main", head: "HEAD" });
+  const verifyMarkdown = formatMarkdownVerifyReport(verify);
+
+  assert.equal(plan.verificationManifestPath, ".codeward/manifest.yaml");
+  assert.ok(plan.verificationManifestMatches.some((match) => match.kind === "flow"));
+  assert.ok(plan.verificationManifestMatches.some((match) => match.kind === "check"));
+  assert.match(planMarkdown, /## Manifest Recommendations/);
+  assert.match(planMarkdown, /Why this was recommended/);
+  assert.match(planMarkdown, /If this is wrong: update `\.codeward\/manifest\.yaml > flows\.campaign-application-complete\.anchors`/);
+  assert.match(draftMarkdown, /## Manifest Recommendations/);
+  assert.match(verifyMarkdown, /## Manifest Recommendations/);
+  assert.equal(verify.verificationManifestMatches.length > 0, true);
 });
 
 test("domains and flows suggest changed-file manifests for package scopes", async () => {

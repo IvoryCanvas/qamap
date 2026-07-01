@@ -53,6 +53,7 @@ CodeWard separates shared project policy from generated local history.
 Commit-friendly files:
 
 - `codeward.config.json`
+- `.codeward/manifest.yaml` when a project wants one repo-level verification baseline
 - `.codeward/flows.yml` when a project chooses to define durable core flows
 - `.codeward/domains.yml` when a project chooses to define durable domain mappings
 
@@ -74,6 +75,74 @@ Use `--record-history` when an analysis should leave a compact local snapshot fo
 ```sh
 codeward e2e plan . --base origin/main --head HEAD --record-history
 ```
+
+## Verification Manifest
+
+Create a baseline repo-level verification manifest:
+
+```sh
+codeward manifest init .
+codeward manifest init services/offer --workspace-root .
+```
+
+`.codeward/manifest.yaml` is meant to start the feedback loop. CodeWard infers a baseline from routes, pages, components, API calls, package signals, and testable UI surfaces. A maintainer can then correct the manifest when recommendations are wrong, and future `verify`, `e2e plan`, and `e2e draft` output will use the corrected context.
+
+```yaml
+version: 1
+
+domains:
+  - id: campaign
+    name: Campaign
+    paths:
+      - src/pages/campaign/**
+    criticality: medium
+    source:
+      kind: inferred
+      confidence: medium
+      from:
+        - pages
+
+flows:
+  - id: campaign-application-complete
+    domain: campaign
+    name: Campaign Application Complete
+    entry:
+      route: /campaign/official/applicationComplete
+      source: inferred
+    runner: playwright
+    anchors:
+      - kind: route
+        path: src/pages/campaign/official/applicationComplete.tsx
+        route: /campaign/official/applicationComplete
+        source: inferred
+        confidence: high
+    checks:
+      - id: happy-path
+        title: Campaign Application Complete happy path works
+        type: success
+      - id: api-failure-fixture
+        title: Campaign Application Complete handles failed, empty, or unauthorized responses
+        type: failure
+    source:
+      kind: inferred
+      confidence: medium
+      from:
+        - route-file
+```
+
+Supported manifest concepts:
+
+| Field | Description |
+| --- | --- |
+| `domains[].paths` | Glob-like path patterns that map changed files to product areas. |
+| `domains[].criticality` | `low`, `medium`, or `high` signal for reviewer attention. |
+| `flows[].entry.route` | User-facing route used as an E2E entry hint. |
+| `flows[].anchors` | Route, component, file, API, or test anchors that connect changed code to a flow. |
+| `flows[].checks` | Success, failure, edge, contract, or visual checks that should shape generated E2E drafts. |
+| `source.kind` | `inferred` for CodeWard-generated baseline entries or `declared` after human review. |
+| `source.confidence` | `low`, `medium`, or `high` confidence for how strongly CodeWard should trust the entry. |
+
+When a recommendation is wrong, update the manifest path printed by CodeWard instead of trying to make static analysis perfect. That turns one bad suggestion into durable repo-local knowledge.
 
 ## Domain Manifest
 

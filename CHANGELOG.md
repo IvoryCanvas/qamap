@@ -2,7 +2,10 @@
 
 ## Unreleased
 
-No changes yet.
+### Added
+
+- Added `codeward manifest init` to create a baseline `.codeward/manifest.yaml` with inferred domains, flows, anchors, checks, runner hints, source, and confidence.
+- Added verification manifest matches to `e2e plan`, `e2e draft`, and `verify` output so recommendations explain why they were made and which manifest path to update when they are wrong.
 
 ## 0.1.1 - 2026-07-01
 

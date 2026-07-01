@@ -233,6 +233,7 @@ That means CodeWard is most valuable when it becomes the team's verification bas
 | `codeward e2e setup . --runner playwright` | Explicitly apply the accepted runner setup and create the first changed-flow E2E draft without overwriting existing files. |
 | `codeward e2e draft . --base origin/main --head HEAD --dry-run` | Preview generated Maestro, Playwright, or manual E2E drafts without writing files. |
 | `codeward e2e draft . --base origin/main --head HEAD` | Write generated Maestro, Playwright, or manual E2E drafts with flow language, readiness summaries, and action items. |
+| `codeward manifest init .` | Create a baseline `.codeward/manifest.yaml` with inferred domains, flows, anchors, checks, source, and confidence. |
 | `codeward flows init .` | Create a starter `.codeward/flows.yml` for team-approved core flow definitions. |
 | `codeward flows suggest . --base origin/main --head HEAD` | Generate suggested `.codeward/flows.yml` entries with commit-readiness guidance from changed files and E2E plan context. |
 | `codeward domains init .` | Create a starter `.codeward/domains.yml` for shared product/domain language. |
@@ -262,7 +263,22 @@ When run at a monorepo root, the E2E plan also reports changed app/package targe
 
 Each candidate flow also includes a flow language brief: actor, trigger, goal, success signal, reviewer question, and edge cases. The brief keeps generated tests tied to product behavior rather than only changed file names.
 
-The bootstrap section answers what must happen before generated drafts can be treated as real regression coverage. For example, a testless web project can get required steps for Playwright setup, first draft generation, stable selector work, fixture/mock data, and missing validation evidence, plus recommended steps for `.codeward/domains.yml`, `.codeward/flows.yml`, and local history recording.
+The bootstrap section answers what must happen before generated drafts can be treated as real regression coverage. For example, a testless web project can get required steps for Playwright setup, first draft generation, stable selector work, fixture/mock data, and missing validation evidence, plus recommended steps for `.codeward/manifest.yaml`, `.codeward/domains.yml`, `.codeward/flows.yml`, and local history recording.
+
+Run `codeward manifest init .` to create a baseline verification manifest. CodeWard infers domains, flows, route/component anchors, checks, runner hints, source, and confidence from the repository. The manifest is not meant to be perfect on the first run. It is meant to start the feedback loop: CodeWard recommends E2E work from the manifest, shows why a recommendation happened, and points to the manifest path to edit when the recommendation is wrong.
+
+When `.codeward/manifest.yaml` exists, `codeward verify`, `codeward e2e plan`, and `codeward e2e draft` include a Manifest Recommendations section:
+
+```txt
+Why this was recommended:
+- Changed files match anchors for the Campaign Application Complete flow.
+
+Manifest evidence:
+- .codeward/manifest.yaml > flows.campaign-application-complete.anchors
+
+If this is wrong:
+- Update .codeward/manifest.yaml > flows.campaign-application-complete.anchors
+```
 
 The domain language section is intentionally less implementation-oriented than the raw file list. For example, changes under `src/features/in-app-purchase/` become terms such as `In App Purchase` and scenarios such as `In App Purchase primary journey`. When a changed component or service file names a concrete behavior, CodeWard should prefer that behavior before the generic primary journey: `src/features/offer/components/ContentUrlSubmitModal.tsx` can become `Offer Content URL Submit`, and the generated draft file can become `.maestro/offer-content-url-submit.yaml`. When `.codeward/domains.yml` exists, declared product terms and routes receive higher confidence. When `.codeward/flows.yml` exists, team-approved flow names appear as preferred scenario names.
 

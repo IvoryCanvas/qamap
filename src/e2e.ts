@@ -4,6 +4,7 @@ import { buildDomainLanguageSummary } from "./domain-language.js";
 import { defaultDomainManifestPath, loadDomainManifest, matchDomains } from "./domains.js";
 import { collectProjectFiles } from "./fs.js";
 import { loadCoreFlowManifest, matchCoreFlows } from "./flows.js";
+import { loadVerificationManifest, matchVerificationManifest } from "./manifest.js";
 import {
   collectTestSuiteInventory,
   evaluateFlowCoverageEvidence,
@@ -14,6 +15,7 @@ import type { TestPlanChangedFile, TestPlanOptions, TestPlanResult } from "./tes
 import type { DomainLanguageSummary, DomainScenarioSuggestion } from "./domain-language.js";
 import type { MatchedDomain } from "./domains.js";
 import type { MatchedCoreFlow } from "./flows.js";
+import type { VerificationManifestMatch } from "./manifest.js";
 import type { LocalHistoryReference } from "./history.js";
 import type { CoverageEvidence, TestSuiteInventory, TestSuiteSummary } from "./test-evidence.js";
 import { TOOL_NAME, VERSION } from "./version.js";
@@ -229,6 +231,8 @@ export interface E2ePlanResult {
   coreFlows: MatchedCoreFlow[];
   domainManifestPath?: string;
   domains: MatchedDomain[];
+  verificationManifestPath?: string;
+  verificationManifestMatches: VerificationManifestMatch[];
   domainLanguage: DomainLanguageSummary;
   changedFiles: TestPlanChangedFile[];
   suggestedCommands: string[];
@@ -424,6 +428,8 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
   const coreFlows = matchCoreFlows(coreFlowManifest, coreFlowChangedFiles);
   const domainManifest = await loadDomainManifest(coreFlowRoot);
   const domains = matchDomains(domainManifest, coreFlowChangedFiles);
+  const verificationManifest = await loadVerificationManifest(coreFlowRoot);
+  const verificationManifestMatches = matchVerificationManifest(verificationManifest, coreFlowChangedFiles);
   const domainLanguage = await buildDomainLanguageSummary(root, testPlan.changedFiles, coreFlows, domains);
   const workspaceTargets = await buildWorkspaceTargets(root, testPlan);
   const flows = await buildFlows(
@@ -490,6 +496,8 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
     coreFlows,
     domainManifestPath: domainManifest.path,
     domains,
+    verificationManifestPath: verificationManifest.path,
+    verificationManifestMatches,
     domainLanguage,
     changedFiles: testPlan.changedFiles,
     suggestedCommands: testPlan.suggestedCommands,
@@ -2410,8 +2418,12 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
   if (result.domainManifestPath) {
     lines.push(`- Domain manifest: \`${escapeMarkdownInline(result.domainManifestPath)}\``);
   }
+  if (result.verificationManifestPath) {
+    lines.push(`- Verification manifest: \`${escapeMarkdownInline(result.verificationManifestPath)}\``);
+  }
   lines.push(`- Matched core flows: ${result.coreFlows.length}`);
   lines.push(`- Matched domains: ${result.domains.length}`);
+  lines.push(`- Manifest recommendations: ${result.verificationManifestMatches.length}`);
   if (result.workspaceTargets.length > 0) {
     lines.push(`- Changed app/package targets: ${result.workspaceTargets.length}`);
   }
@@ -2498,6 +2510,8 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
       lines.push("");
     }
   }
+
+  appendVerificationManifestMatchesMarkdown(lines, result.verificationManifestMatches);
 
   if (result.coreFlows.length > 0) {
     lines.push("## Matched Core Flows");
@@ -2692,6 +2706,36 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
   return lines.join("\n");
 }
 
+function appendVerificationManifestMatchesMarkdown(lines: string[], matches: VerificationManifestMatch[]): void {
+  if (matches.length === 0) {
+    return;
+  }
+
+  lines.push("## Manifest Recommendations");
+  lines.push("");
+  lines.push(
+    "These recommendations come from `.codeward/manifest.yaml`. If they are wrong, update the manifest path shown below so the next PR gets better suggestions.",
+  );
+  lines.push("");
+
+  for (const match of matches.slice(0, 10)) {
+    lines.push(`### ${escapeMarkdownInline(match.name)} \`${escapeMarkdownInline(match.id)}\``);
+    lines.push("");
+    lines.push(`- Kind: ${match.kind}`);
+    lines.push(`- Confidence: ${match.confidence}`);
+    lines.push(`- Why this was recommended: ${escapeMarkdownInline(match.reason)}`);
+    lines.push(`- Manifest evidence: \`${escapeMarkdownInline(match.manifestPath)}\``);
+    lines.push(`- If this is wrong: update \`${escapeMarkdownInline(match.updatePath)}\``);
+    if (match.matchedFiles.length > 0) {
+      lines.push("- Matched files:");
+      for (const file of match.matchedFiles.slice(0, maxFilesPerFlow)) {
+        lines.push(`  - \`${escapeMarkdownInline(file)}\``);
+      }
+    }
+    lines.push("");
+  }
+}
+
 export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
   const lines: string[] = [];
   lines.push("# CodeWard E2E Draft");
@@ -2736,6 +2780,8 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
     lines.push(`- Action categories: ${formatDraftActionKindSummary(result.actionSummary.byKind)}`);
   }
   lines.push("");
+
+  appendVerificationManifestMatchesMarkdown(lines, result.plan.verificationManifestMatches);
 
   lines.push("## Files");
   lines.push("");

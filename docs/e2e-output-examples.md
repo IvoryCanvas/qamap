@@ -2,6 +2,23 @@
 
 These examples show the shape of CodeWard output that should be good enough for the first public release. They are intentionally short snippets, not full generated files. The important property is that they are derived from repository structure, git changes, manifests, and test evidence without an LLM call.
 
+## Verification Manifest Feedback
+
+When a repository has `.codeward/manifest.yaml`, CodeWard should explain why a recommendation happened and how a maintainer can correct it:
+
+```txt
+Manifest recommendations: 3
+
+Campaign Application Complete `campaign-application-complete`
+- Kind: flow
+- Confidence: high
+- Why this was recommended: Changed files match anchors for the Campaign Application Complete flow.
+- Manifest evidence: .codeward/manifest.yaml > flows.campaign-application-complete.anchors
+- If this is wrong: update .codeward/manifest.yaml > flows.campaign-application-complete.anchors
+```
+
+This is the feedback loop: static analysis proposes a baseline, humans correct durable manifest entries, and future E2E recommendations become more specific.
+
 ## Web Core Flow
 
 When a web app declares a core flow:
