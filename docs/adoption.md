@@ -20,6 +20,19 @@ After the package is published:
 pnpm dlx @ivorycanvas/codeward scan .
 ```
 
+## Build A Verification Base
+
+CodeWard works best when the repository becomes the source of truth for verification language, not when every PR starts with a fresh prompt to an external agent.
+
+Start with generated output, then promote only durable knowledge:
+
+- keep generated run history local with `codeward history init .` and `--record-history`
+- commit `.codeward/domains.yml` when the team agrees on product/domain names
+- commit `.codeward/flows.yml` when the team agrees a journey is important enough to protect repeatedly
+- keep draft E2E files reviewable until selectors, fixtures, assertions, and runner config make them real regression coverage
+
+This gives teams a small lifecycle: observe a branch, review the proposed language and flows, promote the stable parts, then let the next branch reuse that context without another LLM call.
+
 ## Recommended Rollout
 
 Start advisory, then tighten the gate once the findings are understood.

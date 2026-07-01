@@ -31,12 +31,10 @@ For each target, record:
 Run these from a clean checkout of CodeWard before any release candidate:
 
 ```sh
-pnpm test
-pnpm scan
-git diff --check
-pnpm pack --dry-run
-node --test --experimental-test-coverage --test-coverage-include='dist/**/*.js' --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 test/*.test.mjs
+pnpm run release:check
 ```
+
+`release:check` expands to the required local suite: `pnpm test`, `pnpm scan`, `git diff --check`, coverage thresholds, and `pnpm pack --dry-run`. If a release candidate fails, run the individual command directly to inspect the failure.
 
 Run these against every representative target repository:
 
@@ -97,15 +95,16 @@ See [E2E output examples](e2e-output-examples.md) for the kind of plan and draft
 
 ## Latest Main Validation Snapshot
 
-Last verified on 2026-07-01 after merging the E2E mock scaffold and route inference work:
+Last verified on 2026-07-01 after adding the single local release gate, verification-base positioning, and non-app false-positive guards:
 
 | Check | Result |
 | --- | --- |
-| `pnpm test` | 69 tests passed. |
+| `pnpm test` | 70 tests passed. |
 | `pnpm scan` | 0 findings. |
 | `git diff --check` | Passed. |
 | `pnpm pack --dry-run` | Passed; tarball includes `dist`, `docs`, `schema`, `README.md`, `CHANGELOG.md`, `LICENSE`, and `package.json`. |
-| Coverage threshold | Passed with lines 84.79%, branches 82.19%, functions 93.31%. |
+| Coverage threshold | Passed the 80% line, branch, and function gates; latest runs report about 84.8% lines, 82.2% branches, and 93.31% functions. |
+| `pnpm run release:check` | Passed as the single local release gate for future candidates. |
 
 ## Real Repository Smoke Snapshot
 
@@ -151,6 +150,7 @@ Do not publish `0.1.0` if any representative target shows one of these problems:
 Before publishing, update:
 
 - `README.md` install section
+- README and adoption docs for the working-base / verification-base positioning
 - `CHANGELOG.md`
 - GitHub Action release tag notes, if the action is versioned with the package
 - package provenance or npm publishing notes

@@ -20,8 +20,10 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "prepack": "pnpm build",
     "test": "pnpm build && node --test test/*.test.mjs",
+    "coverage": "pnpm build && node --test --experimental-test-coverage --test-coverage-include=\"dist/**/*.js\" --test-coverage-lines=80 --test-coverage-branches=80 --test-coverage-functions=80 test/*.test.mjs",
     "scan": "pnpm build && node dist/cli.js scan .",
-    "report": "pnpm build && node dist/cli.js report . --output CODEWARD_REPORT.md"
+    "report": "pnpm build && node dist/cli.js report . --output CODEWARD_REPORT.md",
+    "release:check": "pnpm test && pnpm scan && git diff --check && pnpm run coverage && pnpm pack --dry-run"
   },
   "keywords": [
     "ai",

@@ -22,3 +22,6 @@ Working scope for the first public `0.1.0` release.
 - Next.js App Router, Next Pages Router, React Router route-object, link, and navigation route inference, including dynamic route parameter placeholders or concrete route hints when available.
 - Design token and data catalog project profiles that produce artifact/catalog validation checklists instead of browser or device journeys.
 - Local E2E run history snapshots protected by generated `.gitignore` entries.
+- `coverage` and `release:check` scripts for the final local release gate.
+- README and adoption guidance for repo-local verification bases, shared domain/flow manifests, and ignored generated run history.
+- More conservative data-catalog and config/content E2E planning heuristics so generic package schemas or release docs do not create catalog journeys or API fixture blockers.

@@ -920,6 +920,77 @@ test("generateE2ePlan detects data catalog repositories and suggests catalog ver
   assert.match(draftText, /analytics, documentation, ingestion, or migration fixture/);
 });
 
+test("generateE2ePlan does not classify generic package schemas as data catalogs", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "schema"), { recursive: true });
+  await mkdir(path.join(root, "docs"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      name: "@example/tool",
+      version: "1.0.0",
+      scripts: {
+        test: "node --test",
+      },
+      devDependencies: {
+        typescript: "^5.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "schema/tool.schema.json"),
+    JSON.stringify({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        enabled: { type: "boolean" },
+      },
+    }),
+  );
+  await writeFile(path.join(root, "docs/release-validation.md"), "# Release Validation\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/release-readiness"]);
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      name: "@example/tool",
+      version: "1.0.1",
+      scripts: {
+        test: "node --test",
+      },
+      devDependencies: {
+        typescript: "^5.0.0",
+      },
+    }),
+  );
+  await writeFile(path.join(root, "docs/release-validation.md"), "# Release Validation\n\n- Run the release check.\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update release readiness"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const flow = plan.flows.find((item) => /configuration verification/.test(item.title));
+
+  assert.notEqual(plan.project.type, "data-catalog");
+  assert.equal(plan.project.evidence.includes("Catalog or taxonomy files found"), false);
+  assert.equal(/taxonomy or data catalog/i.test(plan.recommendedRunner.reason), false);
+  assert.equal(
+    plan.bootstrap.steps.some((step) => step.title === "Start with catalog artifact validation"),
+    false,
+  );
+  assert.ok(flow);
+  assert.equal(flow.fixtureReadiness.status, "not-needed");
+  assert.deepEqual(flow.setupHints.map((hint) => hint.kind), []);
+  assert.ok(plan.flows.every((flow) => flow.languageBrief.actor === "Maintainer or release operator"));
+  assert.equal(
+    plan.bootstrap.steps.some((step) => step.title === "Add deterministic fixture or mock responses"),
+    false,
+  );
+});
+
 test("generateE2ePlan detects Nuxt and Vue projects as web before API service dependencies", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);

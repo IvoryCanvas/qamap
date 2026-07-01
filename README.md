@@ -9,7 +9,9 @@ CodeWard is a no-token preflight and workspace hygiene layer for AI coding agent
 
 It is built around a simple idea: teams should not spend the first 30 minutes of every AI coding session re-explaining project context, safe commands, missing guardrails, and review expectations. CodeWard turns those repeated setup checks into one CLI and GitHub Action.
 
-It is built for teams using Codex, Claude Code, Cursor, GitHub Copilot coding agent, MCP-powered tools, or any workflow where an agent can read, edit, test, commit, or open pull requests.
+For PR verification, CodeWard treats the repository itself as the working base: committed manifests hold durable team language, ignored local history holds generated run observations, and the current branch diff supplies what changed now.
+
+It is built for teams using AI coding agents, MCP-powered tools, or any workflow where an agent can read, edit, test, commit, or open pull requests.
 
 CodeWard is intentionally small:
 
@@ -18,6 +20,7 @@ CodeWard is intentionally small:
 - no-token by default: it does not call an LLM API
 - verification-focused: it tells reviewers what evidence is missing, not how to style code
 - domain-aware E2E drafting: it turns branch changes into flow language, draft specs, readiness summaries, and action items
+- repo-local verification base: shared manifests can be committed, while generated run history stays ignored by default
 - ecosystem-aware: it suggests validation commands for JavaScript/TypeScript, Python, Go, Rust, Gradle, and Maven projects
 - CI-friendly: text, JSON, Markdown, and SARIF output are supported
 - explainable: every finding includes a concrete fix
@@ -29,7 +32,7 @@ CodeWard는 AI 코딩 에이전트에게 레포지토리를 맡기기 전에 빠
 
 누락된 에이전트 지침, 위험한 MCP 설정, 커밋된 로컬 환경 파일, 위험한 자동화 스크립트, 과도한 GitHub Actions 권한, 약한 검증 신호를 찾아냅니다.
 
-목표는 거대한 보안 플랫폼이 아니라, 유지보수자가 매번 에이전트에게 프로젝트 맥락과 안전한 검증 방법을 설명하느라 쓰는 시간을 줄여주는 작고 선명한 도구입니다.
+목표는 거대한 보안 플랫폼이 아니라, 유지보수자가 매번 에이전트에게 프로젝트 맥락과 안전한 검증 방법을 설명하느라 쓰는 시간을 줄여주는 작고 선명한 도구입니다. PR 변경사항을 팀의 도메인 언어, 핵심 플로우, 필요한 E2E/fixture/selector 작업으로 바꿔 검증의 빈 화면을 줄이는 것이 0.1.0의 중심입니다.
 
 </details>
 
@@ -100,13 +103,15 @@ HIGH
 
 ## Install
 
-The package metadata is ready for the first public `0.1.0` release. Until the npm package is published, run CodeWard from source. See [0.1.0 release validation](docs/release-validation.md) and [E2E output examples](docs/e2e-output-examples.md) for the current release bar and verified output shape.
+The package metadata is ready for the first public `0.1.0` release. See [0.1.0 release validation](docs/release-validation.md) and [E2E output examples](docs/e2e-output-examples.md) for the current release bar and verified output shape.
+
+After the npm package is published:
 
 ```sh
 pnpm dlx @ivorycanvas/codeward scan .
 ```
 
-Source install:
+Until then, or when developing from source:
 
 ```sh
 git clone https://github.com/IvoryCanvas/codeward.git
@@ -117,6 +122,17 @@ node dist/cli.js scan /path/to/repo
 ```
 
 CodeWard `0.1.0` is a local-first PR verification planner, not a finished automatic QA bot. A good first result is a clear answer to "what should this branch prove before merge?", plus draft E2E, fixture, selector, and validation work that a developer can turn into real regression coverage. Many first drafts will correctly report `review-only` or `near-runnable` until the project adds runner config, stable selectors, deterministic fixtures, or team-owned flow manifests.
+
+## What CodeWard Produces
+
+On a changed branch, CodeWard tries to produce reviewable verification artifacts instead of only saying "write more tests":
+
+- a branch-aware verification plan that names the changed domain, actor, trigger, goal, success signal, and edge cases
+- draft Playwright, Maestro, or manual checklist files when the repository shape supports them
+- readiness evidence that explains missing runner config, selectors, fixture data, assertions, validation commands, or flow manifests
+- repo-local suggestions for `.codeward/domains.yml`, `.codeward/flows.yml`, and ignored `.codeward/runs/` history so teams can improve the next run without spending LLM tokens
+
+That means CodeWard is most valuable when it becomes the team's verification base: humans define the durable language and critical flows once, CodeWard reuses that base on each PR, and generated observations stay local unless the team intentionally promotes them into shared policy.
 
 ## Commands
 

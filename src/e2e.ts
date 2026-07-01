@@ -1040,8 +1040,12 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
         missingFixtureRows.length > 0 ? "required" : "recommended",
         "Add deterministic fixture or mock responses",
         missingFixtureRows.length > 0
-          ? `${missingFixtureRows.length} API-dependent flow${missingFixtureRows.length === 1 ? "" : "s"} lack fixture evidence.`
-          : `${partialFixtureRows.length} API-dependent flow${partialFixtureRows.length === 1 ? "" : "s"} have only partial fixture evidence.`,
+          ? missingFixtureRows.length === 1
+            ? "1 API-dependent flow lacks fixture evidence."
+            : `${missingFixtureRows.length} API-dependent flows lack fixture evidence.`
+          : partialFixtureRows.length === 1
+            ? "1 API-dependent flow has only partial fixture evidence."
+            : `${partialFixtureRows.length} API-dependent flows have only partial fixture evidence.`,
         "Cover success plus one empty, unauthorized, timeout, rejected, or server-error response before requiring the generated draft.",
         [],
         uniqueStrings([...missingFixtureRows, ...partialFixtureRows].flatMap((row) => row.files)).slice(0, maxFilesPerFlow),
@@ -1082,7 +1086,9 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
         "validation",
         "required",
         "Close missing validation matrix rows",
-        `${input.validationMatrix.summary.missing} validation row${input.validationMatrix.summary.missing === 1 ? "" : "s"} are missing evidence.`,
+        input.validationMatrix.summary.missing === 1
+          ? "1 validation row is missing evidence."
+          : `${input.validationMatrix.summary.missing} validation rows are missing evidence.`,
         "Resolve missing coverage, fixture, setup, and testability rows before calling generated E2E coverage sufficient.",
         [],
         input.validationMatrix.rows.filter((row) => row.status === "missing").flatMap((row) => row.files).slice(0, maxFilesPerFlow),
@@ -1094,7 +1100,9 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
         "validation",
         "recommended",
         "Strengthen partial validation evidence",
-        `${input.validationMatrix.summary.partial} validation row${input.validationMatrix.summary.partial === 1 ? "" : "s"} are only partial.`,
+        input.validationMatrix.summary.partial === 1
+          ? "1 validation row is only partial."
+          : `${input.validationMatrix.summary.partial} validation rows are only partial.`,
         "Expand the generated draft or existing tests until the critical rows have concrete evidence.",
         [],
         input.validationMatrix.rows.filter((row) => row.status === "partial").flatMap((row) => row.files).slice(0, maxFilesPerFlow),
@@ -3661,13 +3669,17 @@ async function inferFlowSetupHints(root: string, files: string[], kind: E2eFlowK
 
   const filesText = files.join("\n");
   const combinedText = `${filesText}\n${fileTexts.map((item) => item.text).join("\n")}`;
+  const shouldUseContentSignals = kind !== "config" && kind !== "content";
+  const signalText = shouldUseContentSignals ? combinedText : filesText;
   const matchingFiles = (pattern: RegExp) =>
     uniqueStrings([
       ...files.filter((file) => pattern.test(file)),
-      ...fileTexts.filter((item) => pattern.test(item.text)).map((item) => item.file),
+      ...(shouldUseContentSignals
+        ? fileTexts.filter((item) => pattern.test(item.text)).map((item) => item.file)
+        : []),
     ]).slice(0, maxFilesPerFlow);
 
-  if (/(?:^|\/|[-_])(auth|session|login|logout|permission|permissions|guard|guards|token|jwt)(?:\/|[-_.]|$)/i.test(combinedText)) {
+  if (/(?:^|\/|[-_])(auth|session|login|logout|permission|permissions|guard|guards|token|jwt)(?:\/|[-_.]|$)/i.test(signalText)) {
     const authFiles = matchingFiles(/auth|session|login|logout|permission|guard|token|jwt/i);
     hints.push(
       setupHint(
@@ -3680,7 +3692,7 @@ async function inferFlowSetupHints(root: string, files: string[], kind: E2eFlowK
     );
   }
 
-  if (kind === "api" || /(?:fetch|axios|graphql|trpc|rpc|client|endpoint|request|response|msw|nock|mock|\/api\/)/i.test(combinedText)) {
+  if (kind === "api" || /(?:fetch|axios|graphql|trpc|rpc|client|endpoint|request|response|msw|nock|mock|\/api\/)/i.test(signalText)) {
     const networkFiles = matchingFiles(/api|client|endpoint|request|response|graphql|trpc|rpc|fetch|axios|msw|nock|mock/i);
     hints.push(
       setupHint(
@@ -3693,7 +3705,7 @@ async function inferFlowSetupHints(root: string, files: string[], kind: E2eFlowK
     );
   }
 
-  if (/(?:fixture|fixtures|factory|factories|seed|seeds|mock|mocks|faker|test-data|testData)/i.test(combinedText)) {
+  if (/(?:fixture|fixtures|factory|factories|seed|seeds|mock|mocks|faker|test-data|testData)/i.test(signalText)) {
     const fixtureFiles = matchingFiles(/fixture|factory|seed|mock|faker|test-data|testData/i);
     hints.push(
       setupHint(
@@ -3706,7 +3718,7 @@ async function inferFlowSetupHints(root: string, files: string[], kind: E2eFlowK
     );
   }
 
-  if (/(?:\.env|environment|process\.env|feature-?flag|experiments?|remoteConfig|config|eas\.json|app\.config)/i.test(combinedText)) {
+  if (/(?:\.env|environment|process\.env|feature-?flag|experiments?|remoteConfig|config|eas\.json|app\.config)/i.test(signalText)) {
     const environmentFiles = matchingFiles(/\.env|environment|process\.env|feature-?flag|experiment|remoteConfig|config|eas\.json|app\.config/i);
     hints.push(
       setupHint(
@@ -3719,7 +3731,7 @@ async function inferFlowSetupHints(root: string, files: string[], kind: E2eFlowK
     );
   }
 
-  if (/(?:payment|billing|checkout|purchase|subscription|invoice|settlement|stripe|iap|in-app-purchase|storekit|revenuecat)/i.test(combinedText)) {
+  if (/(?:payment|billing|checkout|purchase|subscription|invoice|settlement|stripe|iap|in-app-purchase|storekit|revenuecat)/i.test(signalText)) {
     const paymentFiles = matchingFiles(/payment|billing|checkout|purchase|subscription|invoice|settlement|stripe|iap|in-app-purchase|storekit|revenuecat/i);
     hints.push(
       setupHint(
@@ -3732,7 +3744,7 @@ async function inferFlowSetupHints(root: string, files: string[], kind: E2eFlowK
     );
   }
 
-  if (kind === "state" || /(?:store|state|cache|provider|context|atom|selector|reducer|storage|localStorage|AsyncStorage)/i.test(combinedText)) {
+  if (kind === "state" || /(?:store|state|cache|provider|context|atom|selector|reducer|storage|localStorage|AsyncStorage)/i.test(signalText)) {
     const stateFiles = matchingFiles(/store|state|cache|provider|context|atom|selector|reducer|storage|localStorage|AsyncStorage/i);
     hints.push(
       setupHint(
@@ -3790,6 +3802,17 @@ async function inferFlowFixtureReadiness(
     return {
       status: "not-needed",
       reason: "This verification flow targets generated artifacts, schema, catalog output, or consumer fixtures rather than API response data.",
+      apiSignals: [],
+      apiEndpoints: [],
+      backendSignals: [],
+      mockSignals: [],
+      nextActions: [],
+    };
+  }
+  if (kind === "config" || kind === "content") {
+    return {
+      status: "not-needed",
+      reason: "This verification flow targets configuration, release, documentation, or content changes where clean validation evidence matters more than API fixture responses.",
       apiSignals: [],
       apiEndpoints: [],
       backendSignals: [],
@@ -4410,10 +4433,15 @@ function isDesignTokenFile(file: string): boolean {
 }
 
 function isCatalogDataFile(file: string): boolean {
-  return /(?:^|\/)(?:catalog|taxonomy|schema|schemas)\/.+\.(?:json|ya?ml|csv|tsv|xlsx?)$/i.test(file) ||
-    /(?:^|\/)(?:source|sources)\/.+\.(?:csv|tsv|xlsx?)$/i.test(file) ||
-    /(?:^|\/)tools\/(?:build|generate|validate)[-_]?(?:catalog|taxonomy|site)?\.(?:py|[cm]?[jt]s)$/i.test(file) ||
-    /(?:^|\/)site\/index\.html$/i.test(file);
+  return /(?:^|\/)(?:catalog|taxonomy)\/.+\.(?:json|ya?ml|csv|tsv|xlsx?)$/i.test(file) ||
+    /(?:^|\/)(?:schema|schemas)\/.*(?:catalog|taxonomy|events?|properties|metrics?|tracking|analytics).*\.(?:json|ya?ml|csv|tsv|xlsx?)$/i.test(
+      file,
+    ) ||
+    /(?:^|\/)(?:source|sources)\/.*(?:catalog|taxonomy|events?|properties|metrics?|tracking|analytics).*\.(?:csv|tsv|xlsx?)$/i.test(
+      file,
+    ) ||
+    /(?:^|\/)tools\/(?:build|generate|validate)[-_]?(?:catalog|taxonomy|catalog[-_]site)\.(?:py|[cm]?[jt]s)$/i.test(file) ||
+    /(?:^|\/)(?:catalog|taxonomy)-site\/index\.html$/i.test(file);
 }
 
 function isConfigLikeFile(file: string): boolean {
