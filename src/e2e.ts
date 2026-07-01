@@ -3658,6 +3658,10 @@ async function inferFlowEntrypoints(root: string, files: string[], runner: E2eRu
 }
 
 async function inferFlowSetupHints(root: string, files: string[], kind: E2eFlowKind): Promise<E2eSetupHint[]> {
+  if (kind === "artifact" || kind === "catalog") {
+    return [];
+  }
+
   const hints: E2eSetupHint[] = [];
   const fileTexts: Array<{ file: string; text: string }> = [];
   for (const file of files.slice(0, 12)) {
@@ -4847,11 +4851,60 @@ async function buildDraftFlows(plan: E2ePlanResult): Promise<DraftE2eFlow[]> {
     }));
   }
 
-  const combined = dedupeFlows([...scenarioFlows, ...baseFlows]).slice(0, 4);
+  const combined = dedupeDraftFlowsByOutputPath(
+    dedupeFlows([...scenarioFlows, ...baseFlows]),
+    plan.recommendedRunner.name,
+  ).slice(0, 4);
   return combined.map((flow) => ({
     ...flow,
     draftSource: draftFlowSource(flow),
   }));
+}
+
+function dedupeDraftFlowsByOutputPath(flows: DraftE2eFlow[], runner: E2eRunnerName): DraftE2eFlow[] {
+  const flowsByOutput = new Map<string, DraftE2eFlow>();
+  for (const flow of flows) {
+    const outputKey = `${slugify(flow.title)}${draftExtension(runner)}`;
+    const existing = flowsByOutput.get(outputKey);
+    flowsByOutput.set(outputKey, existing ? mergeDraftFlows(existing, flow) : flow);
+  }
+  return [...flowsByOutput.values()];
+}
+
+function mergeDraftFlows(left: DraftE2eFlow, right: DraftE2eFlow): DraftE2eFlow {
+  const mergedFlow: Omit<DraftE2eFlow, "languageBrief"> = {
+    ...left,
+    files: uniqueStrings([...left.files, ...right.files]).slice(0, 20),
+    steps: uniqueStrings([...left.steps, ...right.steps]).slice(0, 8),
+    coverage: uniqueCoverageTargets([...left.coverage, ...right.coverage]).slice(0, 7),
+    coverageEvidence: left.coverageEvidence.length > 0 ? left.coverageEvidence : right.coverageEvidence,
+    entrypoints: uniqueEntrypoints([...left.entrypoints, ...right.entrypoints]).slice(0, 6),
+    setupHints: uniqueSetupHints([...left.setupHints, ...right.setupHints]).slice(0, 6),
+    selectors: uniqueSelectors([...left.selectors, ...right.selectors]).slice(0, 12),
+    missingTestability: uniqueStrings([...left.missingTestability, ...right.missingTestability]),
+    draftSource: preferredDraftSource(left.draftSource, right.draftSource),
+    domainScenario: left.domainScenario ?? right.domainScenario,
+    coreFlow: left.coreFlow ?? right.coreFlow,
+  };
+  return {
+    ...mergedFlow,
+    languageBrief: buildFlowLanguageBrief(mergedFlow),
+  };
+}
+
+function preferredDraftSource(left: DraftFlowSource | undefined, right: DraftFlowSource | undefined): DraftFlowSource | undefined {
+  const ranks: Record<DraftFlowSource, number> = {
+    "core-flow": 0,
+    "domain-language": 1,
+    heuristic: 2,
+  };
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  return ranks[right] < ranks[left] ? right : left;
 }
 
 async function buildDomainScenarioDraftFlow(
@@ -4889,7 +4942,7 @@ async function buildDomainScenarioDraftFlow(
   ]);
   const setupHints = uniqueSetupHints([
     ...filterSetupHintsForFiles(baseFlows.flatMap((flow) => flow.setupHints), files),
-    ...(await inferFlowSetupHints(plan.root, files, "domain")),
+    ...(shouldInferDomainScenarioSetupHints(baseFlow) ? await inferFlowSetupHints(plan.root, files, "domain") : []),
   ]);
   const flow: Omit<DraftE2eFlow, "languageBrief"> = {
     title,
@@ -4911,6 +4964,10 @@ async function buildDomainScenarioDraftFlow(
     ...flow,
     languageBrief: buildFlowLanguageBrief(flow),
   };
+}
+
+function shouldInferDomainScenarioSetupHints(baseFlow: E2eFlow | undefined): boolean {
+  return !baseFlow || (!isDesignTokenFocusedFlow(baseFlow) && !isCatalogFocusedFlow(baseFlow));
 }
 
 interface SpecializedDomainScenarioDraft {
