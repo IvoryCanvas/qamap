@@ -1657,6 +1657,7 @@ test("generateE2ePlan flags missing mock fixtures for API-dependent UI flows", a
   assert.ok(flow);
   assert.equal(flow.fixtureReadiness.status, "missing");
   assert.ok(flow.fixtureReadiness.apiSignals.includes("src/pages/orders/OrderSummaryPage.tsx"));
+  assert.deepEqual(flow.fixtureReadiness.apiEndpoints, ["/api/orders/fixture-order-id"]);
   assert.equal(plan.validationMatrix.summary.missing > 0, true);
   assert.ok(
     plan.validationMatrix.rows.some(
@@ -1669,6 +1670,7 @@ test("generateE2ePlan flags missing mock fixtures for API-dependent UI flows", a
   );
   assert.match(markdown, /## E2E Validation Matrix/);
   assert.match(markdown, /Fixture\/mock readiness/);
+  assert.match(markdown, /1 endpoint hint/);
   assert.match(markdown, /no changed backend, mock, or fixture evidence was detected/);
 
   const draft = await generateE2eDraft(root, {
@@ -1702,6 +1704,10 @@ test("generateE2ePlan flags missing mock fixtures for API-dependent UI flows", a
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
   assert.match(spec, /Fixture\/mock readiness/);
   assert.match(spec, /Add a deterministic mock or fixture response/);
+  assert.match(spec, /const mockApiResponses/);
+  assert.match(spec, /\*\*\/api\/orders\/fixture-order-id/);
+  assert.match(spec, /page\.route\(urlPattern/);
+  assert.match(spec, /route\.fulfill/);
   assert.match(spec, /Validation gaps before this draft can be required/);
   assert.match(spec, /\[missing\].*fixture\/mock readiness/);
 });
@@ -1921,6 +1927,8 @@ test("generateE2ePlan captures Playwright execution profile and self-check block
   assert.match(spec, /Start command: pnpm run dev/);
   assert.match(spec, /Test command: pnpm run test:e2e/);
   assert.match(spec, /Base URL: http:\/\/127\.0\.0\.1:4173/);
+  assert.match(spec, /page\.getByTestId\("profile-save"\)\.click\(\)/);
+  assert.doesNotMatch(spec, /\/\/ TODO: Complete the main Profile action/);
 });
 
 test("generateE2ePlan infers Playwright base URLs from dev scripts", async () => {
@@ -1978,6 +1986,145 @@ test("generateE2ePlan infers Playwright base URLs from dev scripts", async () =>
   assert.ok(runnerAction);
   assert.match(runnerAction.detail, /playwright\.config\.ts/);
   assert.match(runnerAction.detail, /http:\/\/localhost:3004/);
+});
+
+test("generateE2eDraft supports Next app router route groups and concrete route hints", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/app/(shop)/products/[productId]"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      packageManager: "pnpm@10.32.1",
+      scripts: {
+        dev: "next dev",
+        test: "playwright test",
+      },
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        next: "^15.0.0",
+        react: "^19.0.0",
+        "react-dom": "^19.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/app/(shop)/products/[productId]/page.tsx"),
+    [
+      "import Link from 'next/link';",
+      "export default function ProductPage() {",
+      "  return <main>",
+      "    <Link href=\"/products/demo-product\">Demo product</Link>",
+      "    <button aria-label=\"Buy product\">Buy</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/product-page"]);
+  await writeFile(
+    path.join(root, "src/app/(shop)/products/[productId]/page.tsx"),
+    [
+      "import Link from 'next/link';",
+      "export default function ProductPage() {",
+      "  return <main>",
+      "    <Link href=\"/products/demo-product\">Demo product</Link>",
+      "    <button aria-label=\"Buy product\">Buy product</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update product page"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const draftFile = draft.files.find((file) => /route \/products\/:productId/.test(file.primaryEntrypoint ?? ""));
+  assert.ok(draftFile);
+  const spec = await readFile(path.join(root, draftFile.path), "utf8");
+
+  assert.equal(draft.plan.project.type, "web");
+  assert.match(spec, /route \/products\/:productId \[high\]/);
+  assert.match(spec, /route \/products\/demo-product \[medium\]/);
+  assert.match(spec, /productId: "demo-product"/);
+  assert.match(spec, /page\.goto\(`\/products\/\$\{routeParams\.productId\}`\)/);
+  assert.match(spec, /page\.getByLabel\("Buy product"\)\.click\(\)/);
+  assert.doesNotMatch(spec, /route \/\(shop\)/);
+  assert.doesNotMatch(spec, /page\.goto\(`\/\(shop\)\//);
+  assert.doesNotMatch(spec, /TODO-productId/);
+});
+
+test("generateE2ePlan reads React Router object route paths", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        dev: "vite",
+        test: "playwright test",
+      },
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        react: "^19.0.0",
+        "react-dom": "^19.0.0",
+        "react-router-dom": "^7.0.0",
+        vite: "^7.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/AppRoutes.tsx"),
+    [
+      "import { createBrowserRouter } from 'react-router-dom';",
+      "export const router = createBrowserRouter([",
+      "  { path: '/reports/:reportId', element: <div>Report</div> },",
+      "]);",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/report-route"]);
+  await writeFile(
+    path.join(root, "src/AppRoutes.tsx"),
+    [
+      "import { createBrowserRouter } from 'react-router-dom';",
+      "export const router = createBrowserRouter([",
+      "  { path: '/reports/:reportId', element: <button data-testid=\"refresh-report\">Refresh report</button> },",
+      "]);",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update report route"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const routeEntrypoints = draft.plan.flows.flatMap((flow) => flow.entrypoints.filter((entrypoint) => entrypoint.kind === "route"));
+  const draftFile = draft.files.find((file) => /route \/reports\/:reportId/.test(file.primaryEntrypoint ?? ""));
+  assert.ok(draftFile);
+  const spec = await readFile(path.join(root, draftFile.path), "utf8");
+
+  assert.equal(draft.plan.project.type, "web");
+  assert.ok(routeEntrypoints.some((entrypoint) => entrypoint.value === "/reports/:reportId"));
+  assert.equal(routeEntrypoints.some((entrypoint) => entrypoint.value === "/app-routes"), false);
+  assert.match(spec, /route \/reports\/:reportId \[medium\]/);
+  assert.match(spec, /reportId: "TODO-report-id"/);
+  assert.match(spec, /page\.goto\(`\/reports\/\$\{routeParams\.reportId\}`\)/);
+  assert.match(spec, /page\.getByTestId\("refresh-report"\)\.click\(\)/);
 });
 
 test("generateE2eDraft emits runnable Playwright role and input actions", async () => {
@@ -2132,6 +2279,63 @@ test("generateE2eDraft normalizes dynamic routes without creating id domain scen
   assert.doesNotMatch(spec, /page\.goto\("\/campaign\/official\/:id"\)/);
 });
 
+test("generateE2eDraft fills dynamic route params from concrete route hints", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/pages/myapplications"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        test: "playwright test",
+      },
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        "react-dom": "^19.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/pages/myapplications/[tab].tsx"),
+    "export default function MyApplicationsPage() { return <a href=\"/myapplications/applied\">Applied</a>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/myapplications-route"]);
+  await writeFile(
+    path.join(root, "src/pages/myapplications/[tab].tsx"),
+    [
+      "export default function MyApplicationsPage() {",
+      "  return <main>",
+      "    <a href=\"/myapplications/applied\">Applied</a>",
+      "    <button data-testid=\"submit-application\">Submit</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "update myapplications route"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const draftFile = draft.files.find((file) => file.flowTitle === "Myapplications primary journey");
+  assert.ok(draftFile);
+  const spec = await readFile(path.join(root, draftFile.path), "utf8");
+
+  assert.match(spec, /route \/myapplications\/:tab \[high\]/);
+  assert.match(spec, /route \/myapplications\/applied \[medium\]/);
+  assert.match(spec, /tab: "applied"/);
+  assert.match(spec, /Route params were inferred from concrete route hints/);
+  assert.doesNotMatch(spec, /TODO-tab/);
+  assert.doesNotMatch(spec, /Replace route param tab/);
+});
+
 test("generateE2ePlan matches committed core flow definitions", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
@@ -2218,14 +2422,13 @@ test("generateE2ePlan matches committed core flow definitions", async () => {
   assert.equal(draftFile.source, "core-flow");
   assert.equal(draftFile.promotionStatus, "commit-candidate");
   assert.match(draftFile.promotionReason, /Team-approved core flow already exists/);
-  assert.ok(draftFile.actionItems.some((item) => item.kind === "assertion" && item.priority === "required"));
   assert.ok(draftFile.actionItems.some((item) => item.kind === "validation"));
   assert.equal(draft.actionSummary.required > 0, true);
-  assert.ok(draft.actionSummary.byKind.some((item) => item.kind === "assertion" && item.required > 0));
+  assert.ok(draft.actionSummary.byKind.some((item) => item.kind === "validation" && item.required > 0));
   assert.ok((draftFile.validationGapCount ?? 0) > 0);
   assert.match(draftFile.primaryEntrypoint ?? "", /route \/checkout \[high\] \(\.codeward\/flows\.yml\)/);
   assert.match(formatMarkdownE2eDraft(draft), /## Draft Action Items/);
-  assert.match(formatMarkdownE2eDraft(draft), /\[required\] assertion: Turn generated TODOs into runnable assertions/);
+  assert.doesNotMatch(formatMarkdownE2eDraft(draft), /\[required\] assertion: Turn generated TODOs into runnable assertions/);
   assert.match(formatMarkdownE2eDraft(draft), /## Manifest Promotion Guidance/);
   assert.match(formatMarkdownE2eDraft(draft), /commit-candidate: `Checkout purchase`/);
   const spec = await readFile(path.join(root, draftFile.path), "utf8");

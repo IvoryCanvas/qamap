@@ -89,7 +89,7 @@ The matrix below is public, fixture-backed evidence from the repository test sui
 | Monorepo root and package targeting | `generateE2ePlan surfaces package-scoped targets for monorepo root changes`; `generateE2ePlan matches workspace core flows for package scans`; `generateTestPlan scopes monorepo changes to the requested package` | Root plans list changed app/package targets with package names, project type, runner, and scoped commands; package scans keep package-local changed files, workspace-level `.codeward/flows.yml` matches, package-local generated drafts, and no leaked workspace path prefixes in package drafts. |
 | Release and package metadata | `generateE2ePlan avoids turning release metadata into domain journeys`; `generateE2ePlan keeps package release metadata out of product workflows`; `generateE2ePlan treats agent and repo metadata as configuration, not product journeys` | Changelog, changeset, release manifest, package version, and repo metadata changes produce maintainer/release-operator configuration verification flows instead of product journeys or user-facing E2E drafts. |
 | Test-light project | `generateE2ePlan builds a bootstrap plan for projects without tests`; `generateE2eDraft creates a fallback smoke draft without changed files` | Required bootstrap steps for runner setup, first draft generation, fixture/mock data, testability, and validation evidence before generated drafts are treated as regression coverage. |
-| API-dependent UI flow | `generateE2ePlan flags missing mock fixtures for API-dependent UI flows` | Playwright-compatible UI flow plus fixture/mock readiness actions for success, empty, unauthorized, timeout, and server-error responses. |
+| API-dependent UI flow | `generateE2ePlan flags missing mock fixtures for API-dependent UI flows` | Playwright-compatible UI flow plus fixture/mock readiness actions, inferred endpoint hints, and route-fulfillment scaffold slots for success, empty, unauthorized, timeout, and server-error responses. |
 | Existing test evidence | `generateE2ePlan evaluates existing test suite coverage evidence`; `generateE2ePlan keeps generic test filenames from overmatching unrelated services` | Coverage evidence rows that distinguish covered, partial, and missing targets without matching unrelated generic test filenames. |
 
 See [E2E output examples](e2e-output-examples.md) for the kind of plan and draft snippets users should see before `0.1.0`.
@@ -113,7 +113,7 @@ Do not publish `0.1.0` if any representative target shows one of these problems:
 - draft self-checks fail to report unresolved placeholder locators, route params, missing runner structure, or TODO-heavy generated files
 - monorepo package scans report workspace-root paths in generated package-local drafts
 - Playwright drafts cannot express dynamic route parameters with fixture placeholders
-- API-dependent flows fail to produce fixture or mock readiness actions
+- API-dependent flows fail to produce fixture or mock readiness actions or concrete endpoint-based mock scaffold slots
 - draft Markdown or JSON omits required action items for selector, fixture, setup, or validation gaps
 - generated files overwrite existing files without `--force`
 - `pnpm pack --dry-run` excludes required runtime files

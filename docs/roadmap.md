@@ -2,6 +2,10 @@
 
 CodeWard starts as a local CLI for repo-level AI agent readiness. The project can grow in layers without becoming heavy.
 
+## North Star
+
+CodeWard should become a local-first PR verification designer: it understands a repository's domain language, remembers durable core flows, reads the current branch or PR diff, and drafts the E2E, fixture, selector, and validation work needed to prove the changed product behavior. The goal is not to replace reviewers or QA. The goal is to remove the repeated blank-page work that makes developers skip good verification.
+
 ## Now
 
 - Keep the scanner fast, static, and easy to understand.
