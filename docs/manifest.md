@@ -209,6 +209,8 @@ This command answers:
 - which flow anchors matched the branch
 - which checks are now relevant
 - why the match happened
+- which next verification actions are worth spending time on
+- which repair hints can improve future recommendations
 - which manifest path to edit when the recommendation is wrong
 
 ## Draft Impact
@@ -222,6 +224,12 @@ When a matched manifest flow has an entry route and checks, `codeward e2e draft`
 - promotion guidance that treats strong manifest matches as commit candidates
 
 This keeps generated tests explainable. A draft is not promoted because CodeWard guessed well once; it is promoted because the repo has durable verification context.
+
+Manifest-backed output should reduce repeat reviewer labor. A recommendation is useful only when it answers three questions:
+
+- why did this PR touch this product flow?
+- what should a developer verify now?
+- what repo-local manifest or context entry should be repaired if the recommendation is noisy?
 
 ## Adoption Guidance
 

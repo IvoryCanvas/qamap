@@ -13,11 +13,18 @@ Campaign Application Complete `campaign-application-complete`
 - Kind: flow
 - Confidence: high
 - Why this was recommended: Changed files match anchors for the Campaign Application Complete flow.
+- Evidence sources: product-qa
 - Manifest evidence: .codeward/manifest.yaml > flows.campaign-application-complete.anchors
 - If this is wrong: update .codeward/manifest.yaml > flows.campaign-application-complete.anchors
+- Next actions:
+  - Draft or review E2E coverage for the Campaign Application Complete flow.
+  - Cover the declared checks: Submit content URL successfully; Show validation error for invalid content URL.
+- Repair hints:
+  - If these files do not belong to this flow, update .codeward/manifest.yaml > flows.campaign-application-complete.anchors.
+  - If the recommended assertions feel vague, rewrite .codeward/manifest.yaml > flows.campaign-application-complete.checks in team language.
 ```
 
-This is the feedback loop: static analysis proposes a baseline, humans correct durable manifest entries, and future E2E recommendations become more specific.
+This is the feedback loop: static analysis proposes a baseline, humans correct durable manifest entries, and future E2E recommendations become more specific without spending another LLM prompt on the same explanation.
 
 `codeward manifest validate .` checks whether that repo-local knowledge is usable:
 

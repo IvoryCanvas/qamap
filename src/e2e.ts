@@ -2744,8 +2744,23 @@ function appendVerificationManifestMatchesMarkdown(lines: string[], matches: Ver
     lines.push(`- Kind: ${match.kind}`);
     lines.push(`- Confidence: ${match.confidence}`);
     lines.push(`- Why this was recommended: ${escapeMarkdownInline(match.reason)}`);
+    if (match.evidenceSources.length > 0) {
+      lines.push(`- Evidence sources: ${match.evidenceSources.map(escapeMarkdownInline).join(", ")}`);
+    }
     lines.push(`- Manifest evidence: \`${escapeMarkdownInline(match.manifestPath)}\``);
     lines.push(`- If this is wrong: update \`${escapeMarkdownInline(match.updatePath)}\``);
+    if (match.nextActions.length > 0) {
+      lines.push("- Next actions:");
+      for (const action of match.nextActions.slice(0, 4)) {
+        lines.push(`  - ${escapeMarkdownInline(action)}`);
+      }
+    }
+    if (match.repairHints.length > 0) {
+      lines.push("- Repair hints:");
+      for (const hint of match.repairHints.slice(0, 4)) {
+        lines.push(`  - ${escapeMarkdownInline(hint)}`);
+      }
+    }
     if (match.matchedFiles.length > 0) {
       lines.push("- Matched files:");
       for (const file of match.matchedFiles.slice(0, maxFilesPerFlow)) {
@@ -5995,7 +6010,7 @@ async function buildManifestDraftFlow(
   checkMatches: VerificationManifestMatch[],
   baseFlows: E2eFlow[],
 ): Promise<DraftE2eFlow> {
-  const relatedChecks = checkMatches.filter((check) => check.id.startsWith(`${match.id}:`));
+  const relatedChecks = checkMatches.filter((check) => check.id.startsWith(`${match.id}.`));
   const manifestFiles = normalizeScenarioFilesForRoot(plan, match.matchedFiles);
   const baseFlow = bestBaseFlowForManifestMatch(manifestFiles, baseFlows);
   const files = uniqueStrings(manifestFiles.length > 0 ? manifestFiles : (baseFlow?.files ?? [])).slice(0, 20);

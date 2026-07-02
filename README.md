@@ -298,8 +298,16 @@ Why this was recommended:
 Manifest evidence:
 - .codeward/manifest.yaml > flows.campaign-application-complete.anchors
 
+Next actions:
+- Draft or review E2E coverage for the Campaign Application Complete flow.
+- Cover the declared checks: Submit content URL successfully; Show validation error for invalid content URL.
+
 If this is wrong:
 - Update .codeward/manifest.yaml > flows.campaign-application-complete.anchors
+
+Repair hints:
+- If these files do not belong to this flow, update .codeward/manifest.yaml > flows.campaign-application-complete.anchors.
+- If the recommended assertions feel vague, rewrite .codeward/manifest.yaml > flows.campaign-application-complete.checks in team language.
 ```
 
 When a matched manifest flow has an entry route and checks, `codeward e2e draft` promotes it ahead of heuristic candidates. The generated Playwright, Maestro, or manual draft carries the manifest evidence, uses the manifest route as an entrypoint when possible, and turns manifest checks into draft steps and required coverage notes. This is the core cost-saving loop: humans fix durable QA context once, then future PRs start from a stronger draft instead of a blank test file.

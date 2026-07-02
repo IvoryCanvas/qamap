@@ -110,8 +110,23 @@ export function formatVerifyReport(result: VerifyResult): string {
     lines.push("Manifest recommendations:");
     for (const match of result.verificationManifestMatches.slice(0, 8)) {
       lines.push(`- ${match.name}: ${match.reason}`);
+      if (match.evidenceSources.length > 0) {
+        lines.push(`  Evidence sources: ${match.evidenceSources.join(", ")}`);
+      }
       lines.push(`  Evidence: ${match.manifestPath}`);
       lines.push(`  If wrong: update ${match.updatePath}`);
+      if (match.nextActions.length > 0) {
+        lines.push("  Next actions:");
+        for (const action of match.nextActions.slice(0, 4)) {
+          lines.push(`  - ${action}`);
+        }
+      }
+      if (match.repairHints.length > 0) {
+        lines.push("  Repair hints:");
+        for (const hint of match.repairHints.slice(0, 4)) {
+          lines.push(`  - ${hint}`);
+        }
+      }
     }
   }
 
@@ -213,8 +228,23 @@ export function formatMarkdownVerifyReport(result: VerifyResult): string {
       lines.push(`- Kind: ${match.kind}`);
       lines.push(`- Confidence: ${match.confidence}`);
       lines.push(`- Why this was recommended: ${escapeMarkdownInline(match.reason)}`);
+      if (match.evidenceSources.length > 0) {
+        lines.push(`- Evidence sources: ${match.evidenceSources.map(escapeMarkdownInline).join(", ")}`);
+      }
       lines.push(`- Manifest evidence: \`${escapeMarkdownInline(match.manifestPath)}\``);
       lines.push(`- If this is wrong: update \`${escapeMarkdownInline(match.updatePath)}\``);
+      if (match.nextActions.length > 0) {
+        lines.push("- Next actions:");
+        for (const action of match.nextActions.slice(0, 4)) {
+          lines.push(`  - ${escapeMarkdownInline(action)}`);
+        }
+      }
+      if (match.repairHints.length > 0) {
+        lines.push("- Repair hints:");
+        for (const hint of match.repairHints.slice(0, 4)) {
+          lines.push(`  - ${escapeMarkdownInline(hint)}`);
+        }
+      }
       if (match.matchedFiles.length > 0) {
         lines.push("- Matched files:");
         for (const file of match.matchedFiles.slice(0, 8)) {

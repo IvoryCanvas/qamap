@@ -4211,19 +4211,27 @@ test("manifest matches explain e2e and verify recommendations", async () => {
   assert.match(validationMarkdown, /CodeWard Manifest Validate/);
   assert.match(explainMarkdown, /CodeWard Manifest Explain/);
   assert.match(explainMarkdown, /Campaign Application Complete/);
+  assert.match(explainMarkdown, /Evidence sources: product-qa/);
+  assert.match(explainMarkdown, /Next actions/);
+  assert.match(explainMarkdown, /Repair hints/);
   assert.match(explainMarkdown, /If this is wrong: update `\.codeward\/manifest\.yaml > flows\.campaign-application-complete\.anchors`/);
   assert.match(planMarkdown, /## Manifest Recommendations/);
   assert.match(planMarkdown, /Why this was recommended/);
+  assert.match(planMarkdown, /Draft or review E2E coverage for the Campaign Application Complete flow/);
+  assert.match(planMarkdown, /rewrite \.codeward\/manifest\.yaml > flows\.campaign-application-complete\.checks in team language/);
   assert.match(planMarkdown, /If this is wrong: update `\.codeward\/manifest\.yaml > flows\.campaign-application-complete\.anchors`/);
   assert.ok(draft.files.some((file) => file.source === "verification-manifest"));
   assert.ok(draft.files.some((file) => file.flowTitle === "Campaign Application Complete"));
   assert.match(draftMarkdown, /## Manifest Recommendations/);
+  assert.match(draftMarkdown, /Evidence sources: product-qa/);
   assert.match(draftMarkdown, /commit-candidate/);
   assert.match(writtenDraftText, /Verification manifest evidence/);
   assert.match(writtenDraftText, /Submit content URL successfully/);
   assert.match(writtenDraftText, /Show validation error for invalid content URL/);
   assert.match(writtenDraftText, /page\.goto\("\/campaign\/official\/applicationComplete"\)/);
   assert.match(verifyMarkdown, /## Manifest Recommendations/);
+  assert.match(verifyMarkdown, /Next actions/);
+  assert.match(verifyMarkdown, /Repair hints/);
   assert.equal(verify.verificationManifestMatches.length > 0, true);
 
   const cliValidate = await execFileAsync(process.execPath, [cliPath, "manifest", "validate", root, "--format", "markdown"]);

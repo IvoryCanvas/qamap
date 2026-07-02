@@ -135,6 +135,9 @@ export interface VerificationManifestMatch {
   manifestPath: string;
   updatePath: string;
   reason: string;
+  evidenceSources: string[];
+  nextActions: string[];
+  repairHints: string[];
   matchedFiles: string[];
   confidence: VerificationManifestConfidence;
   criticality?: VerificationManifestCriticality;
@@ -266,7 +269,10 @@ export function matchVerificationManifest(
       name: domain.name,
       manifestPath: `${manifest.path} > domains.${domain.id}.paths`,
       updatePath: `${manifest.path} > domains.${domain.id}.paths`,
-      reason: `Changed files match the declared ${domain.name} domain paths.`,
+      reason: `Changed files match the manifest ${domain.name} domain paths.`,
+      evidenceSources: domain.source.from,
+      nextActions: domainNextActions(domain),
+      repairHints: domainRepairHints(manifest.path, domain),
       matchedFiles: matchedFiles.slice(0, 12),
       confidence: domain.source.confidence,
       criticality: domain.criticality,
@@ -285,6 +291,9 @@ export function matchVerificationManifest(
       manifestPath: `${manifest.path} > flows.${flow.id}.anchors`,
       updatePath: `${manifest.path} > flows.${flow.id}.anchors`,
       reason: `Changed files match anchors for the ${flow.name} flow.`,
+      evidenceSources: flow.source.from,
+      nextActions: flowNextActions(flow),
+      repairHints: flowRepairHints(manifest.path, flow),
       matchedFiles: anchorMatches.slice(0, 12),
       confidence: flow.source.confidence,
       runner: flow.runner,
@@ -299,6 +308,9 @@ export function matchVerificationManifest(
         manifestPath: `${manifest.path} > flows.${flow.id}.checks.${check.id}`,
         updatePath: `${manifest.path} > flows.${flow.id}.checks`,
         reason: `The ${flow.name} flow declares this ${check.type} verification check.`,
+        evidenceSources: flow.source.from,
+        nextActions: checkNextActions(flow, check),
+        repairHints: checkRepairHints(manifest.path, flow, check),
         matchedFiles: anchorMatches.slice(0, 12),
         confidence: flow.source.confidence,
         runner: flow.runner,
@@ -708,8 +720,13 @@ function appendExplainMatches(
         lines.push(`- Entry route: \`${escapeMarkdownInline(match.entryRoute)}\``);
       }
       lines.push(`- Why this was recommended: ${escapeMarkdownInline(match.reason)}`);
+      if (match.evidenceSources.length > 0) {
+        lines.push(`- Evidence sources: ${match.evidenceSources.map(escapeMarkdownInline).join(", ")}`);
+      }
       lines.push(`- Manifest evidence: \`${escapeMarkdownInline(match.manifestPath)}\``);
       lines.push(`- If this is wrong: update \`${escapeMarkdownInline(match.updatePath)}\``);
+      appendGuidanceList(lines, "Next actions", match.nextActions, "markdown");
+      appendGuidanceList(lines, "Repair hints", match.repairHints, "markdown");
       if (match.checks && match.checks.length > 0) {
         lines.push("- Checks:");
         for (const check of match.checks) {
@@ -732,11 +749,104 @@ function appendExplainMatches(
   for (const match of matches) {
     lines.push(`- ${match.name} (${match.kind}, ${match.confidence})`);
     lines.push(`  Why: ${match.reason}`);
+    if (match.evidenceSources.length > 0) {
+      lines.push(`  Evidence sources: ${match.evidenceSources.join(", ")}`);
+    }
     lines.push(`  Evidence: ${match.manifestPath}`);
     lines.push(`  If wrong: update ${match.updatePath}`);
+    appendGuidanceList(lines, "Next actions", match.nextActions, "text");
+    appendGuidanceList(lines, "Repair hints", match.repairHints, "text");
     if (match.checks && match.checks.length > 0) {
       lines.push(`  Checks: ${match.checks.join("; ")}`);
     }
+  }
+}
+
+function domainNextActions(domain: VerificationManifestDomain): string[] {
+  return [
+    `Confirm this PR really affects the ${domain.name} domain before spending time on unrelated broad smoke tests.`,
+    domain.criticality === "high"
+      ? "Require explicit validation evidence because this domain is marked high criticality."
+      : `Use the matched domain as the boundary for focused verification instead of testing the whole repository.`,
+  ];
+}
+
+function domainRepairHints(manifestPath: string, domain: VerificationManifestDomain): string[] {
+  return [
+    `If unrelated files keep matching, narrow ${manifestPath} > domains.${domain.id}.paths.`,
+    `If this is a real product area, mark ${manifestPath} > domains.${domain.id}.source as declared after team review.`,
+  ];
+}
+
+function flowNextActions(flow: VerificationManifestFlow): string[] {
+  const actions = [
+    `Draft or review E2E coverage for the ${flow.name} flow, not just the changed file.`,
+  ];
+  if (flow.entry?.route) {
+    actions.push(`Start the draft from the manifest entry route ${flow.entry.route}.`);
+  }
+  if (flow.runner) {
+    actions.push(`Prefer the manifest runner ${flow.runner} unless the local project setup says otherwise.`);
+  }
+  if (flow.checks.length > 0) {
+    actions.push(`Cover the declared checks: ${flow.checks.slice(0, 3).map((check) => check.title).join("; ")}.`);
+  }
+  return actions;
+}
+
+function flowRepairHints(manifestPath: string, flow: VerificationManifestFlow): string[] {
+  const hints = [
+    `If these files do not belong to this flow, update ${manifestPath} > flows.${flow.id}.anchors.`,
+    `If the generated test starts from the wrong screen, update ${manifestPath} > flows.${flow.id}.entry.route.`,
+  ];
+  if (flow.checks.length === 0) {
+    hints.push(`Add concrete success, failure, or edge checks under ${manifestPath} > flows.${flow.id}.checks.`);
+  } else {
+    hints.push(`If the recommended assertions feel vague, rewrite ${manifestPath} > flows.${flow.id}.checks in team language.`);
+  }
+  return hints;
+}
+
+function checkNextActions(
+  flow: VerificationManifestFlow,
+  check: VerificationManifestCheck,
+): string[] {
+  return [
+    `Add or review one assertion for this ${check.type} case: ${check.title}.`,
+    `Keep the assertion tied to the ${flow.name} flow so the draft proves product behavior rather than implementation detail.`,
+  ];
+}
+
+function checkRepairHints(
+  manifestPath: string,
+  flow: VerificationManifestFlow,
+  check: VerificationManifestCheck,
+): string[] {
+  return [
+    `If this is no longer required, remove or rename ${manifestPath} > flows.${flow.id}.checks.${check.id}.`,
+    `If the behavior is still required but hard to automate, add fixture, selector, or setup notes near ${manifestPath} > flows.${flow.id}.checks.`,
+  ];
+}
+
+function appendGuidanceList(
+  lines: string[],
+  title: string,
+  values: string[],
+  format: "text" | "markdown",
+): void {
+  if (values.length === 0) {
+    return;
+  }
+  if (format === "markdown") {
+    lines.push(`- ${title}:`);
+    for (const value of values.slice(0, 4)) {
+      lines.push(`  - ${escapeMarkdownInline(value)}`);
+    }
+    return;
+  }
+  lines.push(`  ${title}:`);
+  for (const value of values.slice(0, 4)) {
+    lines.push(`  - ${value}`);
   }
 }
 
