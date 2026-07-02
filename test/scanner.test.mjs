@@ -4014,6 +4014,7 @@ test("manifest init creates a baseline verification manifest", async () => {
 test("manifest init captures advisory instruction context", async () => {
   const root = await makeTempRepo();
   await mkdir(path.join(root, "src/pages/checkout"), { recursive: true });
+  await mkdir(path.join(root, ".agent-core/skills"), { recursive: true });
   await mkdir(path.join(root, "docs/adr"), { recursive: true });
   await writeFile(
     path.join(root, "package.json"),
@@ -4040,9 +4041,23 @@ test("manifest init captures advisory instruction context", async () => {
     [
       "# Work Rules",
       "",
+      "- Use the verification skill before changing checkout flows.",
       "- Run `pnpm test` before merge.",
       "- Never write generated E2E drafts into target repos during smoke tests; use /tmp outputs.",
       "- Do not print TOKEN=abc123 values in reports.",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, ".agent-core/skills/verification-layer.md"),
+    [
+      "---",
+      "name: verification-layer",
+      "description: Capture QA evidence and review lifecycle decisions.",
+      "---",
+      "",
+      "# Verification Layer",
+      "",
+      "Use this skill to review the goal, inspect acceptance criteria, draft E2E assertions, and repeat the review loop until no finding remains.",
     ].join("\n"),
   );
   await writeFile(
@@ -4064,12 +4079,21 @@ test("manifest init captures advisory instruction context", async () => {
   assert.ok(manifest.context);
   assert.ok(manifest.context.instructionFiles.some((file) => file.path === "CONTEXT.md" && file.kind === "context"));
   assert.ok(manifest.context.instructionFiles.some((file) => file.path === "AGENTS.md" && file.kind === "agent-instruction"));
+  assert.ok(manifest.context.instructionFiles.some((file) => file.path === "AGENTS.md" && file.roles.includes("safety-policy")));
+  assert.ok(manifest.context.instructionFiles.some((file) => file.path === "AGENTS.md" && file.roles.includes("test-runner")));
+  assert.ok(manifest.context.instructionFiles.some((file) => file.path === ".agent-core/skills/verification-layer.md" && file.roles.includes("agent-skill")));
+  assert.ok(manifest.context.instructionFiles.some((file) => file.path === ".agent-core/skills/verification-layer.md" && file.roles.includes("workflow-lifecycle")));
+  assert.ok(manifest.context.instructionFiles.some((file) => file.path === ".agent-core/skills/verification-layer.md" && file.roles.includes("verification-rubric")));
+  assert.ok(manifest.context?.source.from.includes("agent-skill-context"));
+  assert.ok(manifest.context?.source.from.includes("verification-rubric-context"));
   assert.ok(manifest.context.instructionFiles.some((file) => file.path === "docs/adr/checkout-flow.md" && file.kind === "adr"));
   assert.ok(manifest.context.validationCommands.includes("pnpm test"));
   assert.ok(manifest.context.safetyRules.some((rule) => /Never write generated E2E drafts/.test(rule)));
   assert.ok(manifest.context.safetyRules.some((rule) => /TOKEN=\[redacted\]/.test(rule)));
   assert.ok(checkoutDomain?.source.from.includes("adr-context"));
   assert.match(manifestText, /context:/);
+  assert.match(manifestText, /roles:/);
+  assert.match(manifestText, /agent-skill/);
   assert.match(manifestText, /validationCommands:/);
   assert.match(manifestText, /safetyRules:/);
   assert.ok(validation.issues.some((issue) => issue.path.includes("context.source")));

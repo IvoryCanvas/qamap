@@ -27,6 +27,15 @@ export type VerificationManifestInstructionKind =
   | "release-runbook"
   | "runbook"
   | "test-runbook";
+export type VerificationManifestInstructionRole =
+  | "agent-skill"
+  | "domain-context"
+  | "harness-config"
+  | "release-policy"
+  | "safety-policy"
+  | "test-runner"
+  | "verification-rubric"
+  | "workflow-lifecycle";
 
 export interface VerificationManifestSource {
   kind: VerificationManifestSourceKind;
@@ -77,6 +86,7 @@ export interface VerificationManifestInstructionFile {
   path: string;
   kind: VerificationManifestInstructionKind;
   confidence: VerificationManifestConfidence;
+  roles: VerificationManifestInstructionRole[];
   signals: string[];
 }
 
@@ -875,9 +885,11 @@ function buildManifestContext(
 
     const commands = extractValidationCommands(file.text);
     const rules = extractSafetyRules(file.text);
+    const roles = classifyInstructionRoles(file.path, file.text, kind, commands, rules);
     const signals = [
       ...commands.map(() => "validation-command"),
       ...rules.map(() => "safety-rule"),
+      ...roles.map((role) => `role:${role}`),
       kind === "adr" ? "architecture-decision" : "",
       kind === "goal" ? "goal-document" : "",
       kind === "context" ? "domain-language" : "",
@@ -887,6 +899,7 @@ function buildManifestContext(
       path: manifestPath,
       kind,
       confidence: instructionConfidence(kind, signals),
+      roles,
       signals: uniqueStrings(signals).slice(0, 6),
     });
     validationCommands.push(...commands);
@@ -906,7 +919,10 @@ function buildManifestContext(
     source: {
       kind: "inferred",
       confidence: instructionFiles.some((file) => file.confidence === "medium") ? "medium" : "low",
-      from: uniqueStrings(instructionFiles.map((file) => contextSourceLabel(file.kind))).slice(0, 8),
+      from: uniqueStrings([
+        ...instructionFiles.map((file) => contextSourceLabel(file.kind)),
+        ...instructionFiles.flatMap((file) => file.roles.map(contextRoleLabel)),
+      ]).slice(0, 10),
     },
   };
 }
@@ -1076,6 +1092,75 @@ function instructionConfidence(
   return "medium";
 }
 
+function classifyInstructionRoles(
+  file: string,
+  text: string,
+  kind: VerificationManifestInstructionKind,
+  commands: string[],
+  rules: string[],
+): VerificationManifestInstructionRole[] {
+  const normalized = toPosixPath(file).toLowerCase();
+  const roles: VerificationManifestInstructionRole[] = [];
+
+  if (
+    kind === "context" ||
+    kind === "adr" ||
+    kind === "goal" ||
+    /(?:product|domain|business|customer|user flow|journey|scenario|feature|screen|route|제품|도메인|사용자|고객|플로우|시나리오)/i.test(text)
+  ) {
+    roles.push("domain-context");
+  }
+  if (
+    kind === "qa-runbook" ||
+    kind === "test-runbook" ||
+    commands.length > 0 ||
+    /(?:verify|verification|qa|test|e2e|playwright|maestro|assert|coverage|evidence|fixture|selector|acceptance criteria|rubric|검증|테스트|근거|기준|커버리지)/i.test(text)
+  ) {
+    roles.push("verification-rubric");
+  }
+  if (
+    commands.length > 0 ||
+    kind === "test-runbook" ||
+    /(?:playwright|maestro|jest|vitest|node --test|pytest|go test|cargo test|runner|test command|검증 명령|테스트 명령)/i.test(text)
+  ) {
+    roles.push("test-runner");
+  }
+  if (
+    rules.length > 0 ||
+    /(?:do not (?:commit|push|merge|publish|print|expose|write)|never (?:create|commit|push|merge|publish|print|expose|write)|must not|read-only|secret|credential|guardrail|forbid|절대|금지|하지 말|하면 안|토큰|비밀|권한)/i.test(text)
+  ) {
+    roles.push("safety-policy");
+  }
+  if (
+    kind === "release-runbook" ||
+    /(?:release|deploy|publish|changelog)/i.test(normalized) ||
+    /(?:\b(?:publish|deploy|tag)\b|npm publish|version bump|릴리즈|배포|버전)/i.test(text)
+  ) {
+    roles.push("release-policy");
+  }
+  if (
+    kind === "goal" ||
+    /(?:lifecycle|workflow|process|goal|adr|review|iterate|iteration|loop|handoff|plan|implement|decision|작업 흐름|라이프사이클|목표|리뷰|반복|절차|계획|결정)/i.test(text)
+  ) {
+    roles.push("workflow-lifecycle");
+  }
+  if (
+    /(?:^|\/)skills?\//.test(normalized) ||
+    (/(?:^|\n)name:\s*[\w-]+/i.test(text) && /(?:^|\n)description:\s+/i.test(text)) ||
+    /\bskill\b/i.test(text)
+  ) {
+    roles.push("agent-skill");
+  }
+  if (
+    /(?:^|\/)(?:\.agent-core|\.github\/instructions|\.codex|\.claude)(?:\/|$)/.test(normalized) ||
+    (kind === "agent-instruction" && /(?:harness|mcp|hook|settings|agent config|agent instruction|에이전트|하네스)/i.test(text))
+  ) {
+    roles.push("harness-config");
+  }
+
+  return uniqueStrings(roles) as VerificationManifestInstructionRole[];
+}
+
 function extractValidationCommands(text: string): string[] {
   const commands: string[] = [];
   for (const line of text.split(/\r?\n/)) {
@@ -1099,6 +1184,9 @@ function extractSafetyRules(text: string): string[] {
   for (const line of text.split(/\r?\n/)) {
     const cleaned = redactSensitiveText(cleanMarkdownLine(line));
     if (cleaned.length < 8 || cleaned.length > 220) {
+      continue;
+    }
+    if (/\bdo not (?:belong|require|show)\b/i.test(cleaned)) {
       continue;
     }
     if (
@@ -1178,6 +1266,10 @@ function contextSourceLabel(kind: VerificationManifestInstructionKind): string {
     return "context-document-context";
   }
   return `${kind}-context`;
+}
+
+function contextRoleLabel(role: VerificationManifestInstructionRole): string {
+  return `${role}-context`;
 }
 
 function contextKindRank(kind: VerificationManifestInstructionKind): number {
@@ -1375,6 +1467,7 @@ function normalizeInstructionFile(
     path: readRequiredString(record, "path", manifestPath, index),
     kind: readInstructionKind(readOptionalString(record, "kind") ?? "agent-instruction", manifestPath, index),
     confidence: readConfidence(readOptionalString(record, "confidence") ?? "low", manifestPath, index),
+    roles: readStringArray(record, "roles").map((role) => readInstructionRole(role, manifestPath, index)),
     signals: readStringArray(record, "signals"),
   };
 }
@@ -1645,4 +1738,20 @@ function readInstructionKind(value: string, manifestPath: string, index: number)
     return value;
   }
   throw new Error(`CodeWard manifest context kind at index ${index} is invalid: ${manifestPath}`);
+}
+
+function readInstructionRole(value: string, manifestPath: string, index: number): VerificationManifestInstructionRole {
+  if (
+    value === "agent-skill" ||
+    value === "domain-context" ||
+    value === "harness-config" ||
+    value === "release-policy" ||
+    value === "safety-policy" ||
+    value === "test-runner" ||
+    value === "verification-rubric" ||
+    value === "workflow-lifecycle"
+  ) {
+    return value;
+  }
+  throw new Error(`CodeWard manifest context role at index ${index} is invalid: ${manifestPath}`);
 }

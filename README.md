@@ -127,7 +127,8 @@ CodeWard is intentionally small:
 - verification-focused: it tells reviewers what evidence is missing, not how to style code
 - domain-aware E2E drafting: it turns branch changes into flow language, draft specs, readiness summaries, and action items
 - repo-local verification base: shared manifests can be committed, while generated run history stays ignored by default
-- context-aware baseline generation: manifest init can use repo-local context, ADRs, goals, agent instructions, and runbooks as advisory bootstrap signals
+- context-aware baseline generation: manifest init can use repo-local context, ADRs, goals, agent instructions, harness files, skills, and runbooks as advisory bootstrap signals
+- harness/skill role hints: instruction-derived context is classified as agent skill, harness config, workflow lifecycle, verification rubric, safety policy, release policy, or test runner context
 - ecosystem-aware: it suggests validation commands for JavaScript/TypeScript, Python, Go, Rust, Gradle, and Maven projects
 - CI-friendly: text, JSON, Markdown, and SARIF output are supported
 - explainable: every finding includes a concrete fix

@@ -27,7 +27,7 @@ During baseline generation, CodeWard also looks for repo-local context documents
 - `CONTEXT.md` and `CONTEXT-MAP.md`
 - ADRs such as `docs/adr/*.md`
 - goal documents such as `goals/*.md`
-- agent instruction files such as `AGENTS.md` and project-local instruction folders
+- agent instruction, harness, and skill files such as `AGENTS.md` and project-local instruction folders
 - QA, test, release, and runbook documents under `docs/`
 
 These files are used as advisory bootstrap context. They can improve initial naming, validation command hints, and safety rules, but they are not treated as product truth until a human reviews the manifest.
@@ -71,19 +71,43 @@ context:
     - path: CONTEXT.md
       kind: context
       confidence: medium
+      roles:
+        - domain-context
       signals:
+        - role:domain-context
         - domain-language
     - path: docs/adr/checkout-flow.md
       kind: adr
       confidence: medium
+      roles:
+        - domain-context
+        - workflow-lifecycle
       signals:
+        - role:domain-context
+        - role:workflow-lifecycle
         - architecture-decision
     - path: AGENTS.md
       kind: agent-instruction
       confidence: medium
+      roles:
+        - verification-rubric
+        - test-runner
+        - safety-policy
       signals:
         - validation-command
         - safety-rule
+        - role:verification-rubric
+    - path: .agent-core/skills/verification-layer.md
+      kind: agent-instruction
+      confidence: medium
+      roles:
+        - agent-skill
+        - harness-config
+        - workflow-lifecycle
+        - verification-rubric
+      signals:
+        - role:agent-skill
+        - role:workflow-lifecycle
   validationCommands:
     - pnpm test
   safetyRules:
@@ -95,12 +119,15 @@ context:
       - context-document-context
       - adr-context
       - agent-instruction-context
+      - verification-rubric-context
+      - agent-skill-context
 ```
 
 Use this section to understand which repo-local documents influenced the baseline. Keep the trust boundary clear:
 
 - `CONTEXT.md`, ADRs, and goals can carry product language and intent.
-- agent instructions and runbooks usually carry workflow, safety, and validation rules.
+- agent instructions, harness files, skills, and runbooks usually carry workflow, safety, and validation rules.
+- `roles` explain how CodeWard classified a context source: product domain context, workflow lifecycle, verification rubric, test runner, safety policy, release policy, agent skill, or harness config.
 - instruction-derived context should start as `inferred` and should not override human-reviewed domains, flows, and checks.
 - if a recommendation is wrong because a context document is stale, update the document or remove the stale context source from the manifest.
 
@@ -165,6 +192,7 @@ flows:
 | `flows[].anchors` | Matchable route, component, file, API, or test anchors. |
 | `flows[].checks` | Required verification points that should shape E2E drafts. |
 | `context.instructionFiles` | Advisory repo-local context sources used while bootstrapping the manifest. |
+| `context.instructionFiles[].roles` | Advisory role classification for a context source, such as `verification-rubric`, `workflow-lifecycle`, `agent-skill`, or `harness-config`. |
 | `context.validationCommands` | Validation commands inferred from context documents. |
 | `context.safetyRules` | Workflow or safety rules inferred from context documents, with token-like values redacted. |
 | `source.kind` | `inferred` for CodeWard-generated entries or `declared` after human review. |

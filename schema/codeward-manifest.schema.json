@@ -68,6 +68,10 @@
       "type": "string",
       "enum": ["adr", "agent-instruction", "context", "goal", "qa-runbook", "release-runbook", "runbook", "test-runbook"]
     },
+    "instructionRole": {
+      "type": "string",
+      "enum": ["agent-skill", "domain-context", "harness-config", "release-policy", "safety-policy", "test-runner", "verification-rubric", "workflow-lifecycle"]
+    },
     "source": {
       "type": "object",
       "additionalProperties": false,
@@ -103,6 +107,15 @@
         },
         "confidence": {
           "$ref": "#/$defs/confidence"
+        },
+        "roles": {
+          "type": "array",
+          "description": "Advisory role classification for the context source, such as verification rubric, workflow lifecycle, harness config, or agent skill.",
+          "items": {
+            "$ref": "#/$defs/instructionRole"
+          },
+          "uniqueItems": true,
+          "default": []
         },
         "signals": {
           "type": "array",
