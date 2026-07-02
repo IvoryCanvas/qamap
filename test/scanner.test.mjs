@@ -4011,6 +4011,70 @@ test("manifest init creates a baseline verification manifest", async () => {
   assert.match(cliOutput.stdout, /Review and commit this file/);
 });
 
+test("manifest init captures advisory instruction context", async () => {
+  const root = await makeTempRepo();
+  await mkdir(path.join(root, "src/pages/checkout"), { recursive: true });
+  await mkdir(path.join(root, "docs/adr"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      dependencies: {
+        next: "^15.0.0",
+        react: "^19.0.0",
+      },
+      scripts: {
+        test: "node --test",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "CONTEXT.md"),
+    [
+      "# Product Context",
+      "",
+      "Checkout is the customer purchase flow and should keep visible success and failure evidence.",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "AGENTS.md"),
+    [
+      "# Work Rules",
+      "",
+      "- Run `pnpm test` before merge.",
+      "- Never write generated E2E drafts into target repos during smoke tests; use /tmp outputs.",
+      "- Do not print TOKEN=abc123 values in reports.",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "docs/adr/checkout-flow.md"),
+    "# ADR\n\nCheckout success and failure states are release-critical.\n",
+  );
+  await writeFile(
+    path.join(root, "src/pages/checkout/index.tsx"),
+    "export default function CheckoutPage() { return <button>Complete purchase</button>; }\n",
+  );
+
+  const result = await writeVerificationManifestBaseline(root);
+  const manifestText = await readFile(path.join(root, ".codeward/manifest.yaml"), "utf8");
+  const manifest = await loadVerificationManifest(root);
+  const validation = await validateVerificationManifest(root);
+  const checkoutDomain = manifest.domains.find((domain) => domain.id === "checkout");
+
+  assert.equal(result.summary.contextSources >= 2, true);
+  assert.ok(manifest.context);
+  assert.ok(manifest.context.instructionFiles.some((file) => file.path === "CONTEXT.md" && file.kind === "context"));
+  assert.ok(manifest.context.instructionFiles.some((file) => file.path === "AGENTS.md" && file.kind === "agent-instruction"));
+  assert.ok(manifest.context.instructionFiles.some((file) => file.path === "docs/adr/checkout-flow.md" && file.kind === "adr"));
+  assert.ok(manifest.context.validationCommands.includes("pnpm test"));
+  assert.ok(manifest.context.safetyRules.some((rule) => /Never write generated E2E drafts/.test(rule)));
+  assert.ok(manifest.context.safetyRules.some((rule) => /TOKEN=\[redacted\]/.test(rule)));
+  assert.ok(checkoutDomain?.source.from.includes("adr-context"));
+  assert.match(manifestText, /context:/);
+  assert.match(manifestText, /validationCommands:/);
+  assert.match(manifestText, /safetyRules:/);
+  assert.ok(validation.issues.some((issue) => issue.path.includes("context.source")));
+});
+
 test("manifest init keeps Expo app file domains specific", async () => {
   const root = await makeTempRepo();
   await mkdir(path.join(root, "app"), { recursive: true });

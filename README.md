@@ -58,7 +58,7 @@ CodeWard reads the changed files and project signals:
 Input
 - git diff: origin/main...HEAD
 - project structure: package.json, routes, test config, selectors
-- optional team context: .codeward/domains.yml, .codeward/flows.yml
+- optional team context: .codeward/manifest.yaml, CONTEXT.md, ADRs, goals, QA runbooks
 ```
 
 Then it returns reviewable verification work:
@@ -127,6 +127,7 @@ CodeWard is intentionally small:
 - verification-focused: it tells reviewers what evidence is missing, not how to style code
 - domain-aware E2E drafting: it turns branch changes into flow language, draft specs, readiness summaries, and action items
 - repo-local verification base: shared manifests can be committed, while generated run history stays ignored by default
+- context-aware baseline generation: manifest init can use repo-local context, ADRs, goals, agent instructions, and runbooks as advisory bootstrap signals
 - ecosystem-aware: it suggests validation commands for JavaScript/TypeScript, Python, Go, Rust, Gradle, and Maven projects
 - CI-friendly: text, JSON, Markdown, and SARIF output are supported
 - explainable: every finding includes a concrete fix

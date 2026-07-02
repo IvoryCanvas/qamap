@@ -18,6 +18,15 @@ export type VerificationManifestSourceKind = "declared" | "inferred";
 export type VerificationManifestAnchorKind = "api" | "component" | "file" | "route" | "test";
 export type VerificationManifestCheckType = "contract" | "edge" | "failure" | "success" | "visual";
 export type VerificationManifestMatchKind = "domain" | "flow" | "check";
+export type VerificationManifestInstructionKind =
+  | "adr"
+  | "agent-instruction"
+  | "context"
+  | "goal"
+  | "qa-runbook"
+  | "release-runbook"
+  | "runbook"
+  | "test-runbook";
 
 export interface VerificationManifestSource {
   kind: VerificationManifestSourceKind;
@@ -64,9 +73,24 @@ export interface VerificationManifestFlow {
   source: VerificationManifestSource;
 }
 
+export interface VerificationManifestInstructionFile {
+  path: string;
+  kind: VerificationManifestInstructionKind;
+  confidence: VerificationManifestConfidence;
+  signals: string[];
+}
+
+export interface VerificationManifestContext {
+  instructionFiles: VerificationManifestInstructionFile[];
+  validationCommands: string[];
+  safetyRules: string[];
+  source: VerificationManifestSource;
+}
+
 export interface VerificationManifest {
   $schema?: string;
   version: 1;
+  context?: VerificationManifestContext;
   domains: VerificationManifestDomain[];
   flows: VerificationManifestFlow[];
 }
@@ -98,6 +122,9 @@ export interface VerificationManifestInitResult {
     flows: number;
     anchors: number;
     checks: number;
+    contextSources: number;
+    validationCommands: number;
+    safetyRules: number;
   };
 }
 
@@ -308,6 +335,9 @@ export function formatVerificationManifestInitResult(result: VerificationManifes
     `Flows: ${result.summary.flows}`,
     `Anchors: ${result.summary.anchors}`,
     `Checks: ${result.summary.checks}`,
+    `Context sources: ${result.summary.contextSources}`,
+    `Validation commands: ${result.summary.validationCommands}`,
+    `Safety rules: ${result.summary.safetyRules}`,
     "Review and commit this file when the baseline should become team verification policy.",
   ].join("\n");
 }
@@ -333,6 +363,7 @@ export async function validateVerificationManifest(rootInput: string, workspaceR
 
   validateDomainDefinitions(manifest, issues);
   validateManifestMetadata(manifest, issues);
+  await validateManifestContext(manifest, manifestRoot, issues);
   await validateFlowDefinitions(manifest, manifestRoot, issues);
 
   const status = issues.some((item) => item.severity === "error")
@@ -459,6 +490,7 @@ function buildVerificationManifestBaseline(
   manifestRoot: string,
   files: ProjectFile[],
 ): VerificationManifest {
+  const context = buildManifestContext(root, manifestRoot, files);
   const behaviorFiles = files
     .filter((file) => isBehaviorFile(file.path))
     .map((file) => ({
@@ -466,12 +498,13 @@ function buildVerificationManifestBaseline(
       path: toPosixPath(path.relative(manifestRoot, path.join(root, file.path))),
     }))
     .filter((file) => !file.path.startsWith("../"));
-  const domains = buildBaselineDomains(behaviorFiles).slice(0, 12);
-  const flows = buildBaselineFlows(behaviorFiles, domains, inferRunner(files)).slice(0, 16);
+  const domains = buildBaselineDomains(behaviorFiles, context).slice(0, 12);
+  const flows = buildBaselineFlows(behaviorFiles, domains, inferRunner(files), context).slice(0, 16);
 
   return {
     $schema: verificationManifestSchemaUrl,
     version: 1,
+    ...(context ? { context } : {}),
     domains,
     flows,
   };
@@ -506,6 +539,47 @@ function validateDomainDefinitions(manifest: LoadedVerificationManifest, issues:
     }
     if (domain.source.kind === "inferred" && domain.source.confidence === "low") {
       issues.push(issue("info", `${basePath}.source`, "Domain is inferred with low confidence.", "Review the domain name and paths, then mark the source as declared if the team accepts it."));
+    }
+  }
+}
+
+async function validateManifestContext(
+  manifest: LoadedVerificationManifest,
+  manifestRoot: string,
+  issues: VerificationManifestValidationIssue[],
+): Promise<void> {
+  if (!manifest.context) {
+    return;
+  }
+
+  const contextPath = `${manifest.path} > context`;
+  if (manifest.context.source.kind === "inferred") {
+    issues.push(issue(
+      "info",
+      `${contextPath}.source`,
+      "Instruction and runbook context was inferred from repository documents.",
+      "Treat this context as advisory until a human confirms which rules are product verification policy.",
+    ));
+  }
+
+  if (manifest.context.instructionFiles.some((file) => file.confidence === "low")) {
+    issues.push(issue(
+      "info",
+      `${contextPath}.instructionFiles`,
+      "Some instruction-derived context has low confidence.",
+      "Use it as a hint for manifest refinement, not as product truth, until the team reviews it.",
+    ));
+  }
+
+  const seen = new Set<string>();
+  for (const [index, file] of manifest.context.instructionFiles.entries()) {
+    const filePath = `${contextPath}.instructionFiles[${index}]`;
+    if (seen.has(file.path)) {
+      issues.push(issue("warning", filePath, `Duplicate context source '${file.path}'.`, "Keep one context entry per source file."));
+    }
+    seen.add(file.path);
+    if (!(await pathExists(path.join(manifestRoot, file.path)))) {
+      issues.push(issue("warning", `${filePath}.path`, `Context source '${file.path}' was not found.`, "Remove stale context sources or regenerate the manifest baseline."));
     }
   }
 }
@@ -666,7 +740,71 @@ function appendExplainMatches(
   }
 }
 
-function buildBaselineDomains(files: ProjectFile[]): VerificationManifestDomain[] {
+function buildManifestContext(
+  root: string,
+  manifestRoot: string,
+  files: ProjectFile[],
+): VerificationManifestContext | undefined {
+  const instructionFiles: VerificationManifestInstructionFile[] = [];
+  const validationCommands: string[] = [];
+  const safetyRules: string[] = [];
+
+  for (const file of files) {
+    if (!file.text) {
+      continue;
+    }
+    const kind = instructionKindForFile(file.path);
+    if (!kind) {
+      continue;
+    }
+
+    const manifestPath = toPosixPath(path.relative(manifestRoot, path.join(root, file.path)));
+    if (manifestPath.startsWith("../")) {
+      continue;
+    }
+
+    const commands = extractValidationCommands(file.text);
+    const rules = extractSafetyRules(file.text);
+    const signals = [
+      ...commands.map(() => "validation-command"),
+      ...rules.map(() => "safety-rule"),
+      kind === "adr" ? "architecture-decision" : "",
+      kind === "goal" ? "goal-document" : "",
+      kind === "context" ? "domain-language" : "",
+    ].filter(Boolean);
+
+    instructionFiles.push({
+      path: manifestPath,
+      kind,
+      confidence: instructionConfidence(kind, signals),
+      signals: uniqueStrings(signals).slice(0, 6),
+    });
+    validationCommands.push(...commands);
+    safetyRules.push(...rules);
+  }
+
+  if (instructionFiles.length === 0 && validationCommands.length === 0 && safetyRules.length === 0) {
+    return undefined;
+  }
+
+  return {
+    instructionFiles: instructionFiles
+      .sort((left, right) => contextKindRank(left.kind) - contextKindRank(right.kind) || left.path.localeCompare(right.path))
+      .slice(0, 24),
+    validationCommands: uniqueStrings(validationCommands).slice(0, 12),
+    safetyRules: uniqueStrings(safetyRules).slice(0, 12),
+    source: {
+      kind: "inferred",
+      confidence: instructionFiles.some((file) => file.confidence === "medium") ? "medium" : "low",
+      from: uniqueStrings(instructionFiles.map((file) => contextSourceLabel(file.kind))).slice(0, 8),
+    },
+  };
+}
+
+function buildBaselineDomains(
+  files: ProjectFile[],
+  context?: VerificationManifestContext,
+): VerificationManifestDomain[] {
   const grouped = new Map<string, { name: string; files: string[]; from: string[] }>();
 
   for (const file of files) {
@@ -675,15 +813,17 @@ function buildBaselineDomains(files: ProjectFile[]): VerificationManifestDomain[
       continue;
     }
     const existing = grouped.get(candidate.id);
+    const contextEvidence = contextEvidenceForTerms(context, [candidate.id, candidate.name]);
     if (existing) {
       existing.files.push(file.path);
       existing.from.push(candidate.from);
+      existing.from.push(...contextEvidence);
       continue;
     }
     grouped.set(candidate.id, {
       name: candidate.name,
       files: [file.path],
-      from: [candidate.from],
+      from: [candidate.from, ...contextEvidence],
     });
   }
 
@@ -696,7 +836,7 @@ function buildBaselineDomains(files: ProjectFile[]): VerificationManifestDomain[
       criticality: "medium",
       source: {
         kind: "inferred",
-        confidence: value.files.length > 1 ? "medium" : "low",
+        confidence: value.files.length > 1 || value.from.some((item) => item.endsWith("-context")) ? "medium" : "low",
         from: uniqueStrings(value.from).slice(0, 4),
       },
     }));
@@ -706,6 +846,7 @@ function buildBaselineFlows(
   files: ProjectFile[],
   domains: VerificationManifestDomain[],
   runner: VerificationManifestRunner,
+  context?: VerificationManifestContext,
 ): VerificationManifestFlow[] {
   const flows: VerificationManifestFlow[] = [];
   for (const file of files) {
@@ -717,6 +858,7 @@ function buildBaselineFlows(
     const domain = bestDomainForFile(domains, file.path);
     const subject = route ? titleCase(route.replace(/^\/+/, "").replace(/[:/]+/g, " ")) : component ?? "Changed UI";
     const id = slugify([domain?.id, subject].filter(Boolean).join(" "));
+    const contextEvidence = contextEvidenceForTerms(context, [subject, domain?.name, domain?.id].filter(Boolean) as string[]);
     const anchors: VerificationManifestAnchor[] = [
       {
         kind: route ? "route" : "component",
@@ -738,8 +880,8 @@ function buildBaselineFlows(
       checks: checksForFlow(subject, file.text),
       source: {
         kind: "inferred",
-        confidence: route ? "medium" : "low",
-        from: [route ? "route-file" : "component-file"],
+        confidence: route || contextEvidence.length > 0 ? "medium" : "low",
+        from: uniqueStrings([route ? "route-file" : "component-file", ...contextEvidence]),
       },
     });
   }
@@ -775,6 +917,171 @@ function checksForFlow(subject: string, text?: string): VerificationManifestChec
     });
   }
   return checks;
+}
+
+function instructionKindForFile(file: string): VerificationManifestInstructionKind | undefined {
+  const normalized = toPosixPath(file);
+  const lower = normalized.toLowerCase();
+  const basename = path.basename(normalized);
+
+  if (basename === "CONTEXT.md" || basename === "CONTEXT-MAP.md") {
+    return "context";
+  }
+  if (/^(?:docs\/)?adrs?\//i.test(normalized) || /\/adrs?\//i.test(normalized)) {
+    return "adr";
+  }
+  if (/^(?:\.?goals|goals)\//i.test(normalized) || /\/goals\//i.test(normalized)) {
+    return "goal";
+  }
+  if (
+    basename === "AGENTS.md" ||
+    basename === "CLAUDE.md" ||
+    basename === "GEMINI.md" ||
+    /^(?:\.codex|\.claude|\.agent-core|\.github\/instructions)\//i.test(normalized)
+  ) {
+    return "agent-instruction";
+  }
+  if (/docs\/.*(?:qa|quality).*\.md$/i.test(lower)) {
+    return "qa-runbook";
+  }
+  if (/docs\/.*(?:test|e2e|playwright|maestro).*\.md$/i.test(lower)) {
+    return "test-runbook";
+  }
+  if (/docs\/.*(?:release|deploy|publish).*\.md$/i.test(lower)) {
+    return "release-runbook";
+  }
+  if (/docs\/.*runbook.*\.md$/i.test(lower)) {
+    return "runbook";
+  }
+  return undefined;
+}
+
+function instructionConfidence(
+  kind: VerificationManifestInstructionKind,
+  signals: string[],
+): VerificationManifestConfidence {
+  if (kind === "agent-instruction") {
+    return signals.length > 0 ? "medium" : "low";
+  }
+  return "medium";
+}
+
+function extractValidationCommands(text: string): string[] {
+  const commands: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const candidates = [...line.matchAll(/`([^`\n]+)`/g)].map((match) => match[1]);
+    const stripped = cleanMarkdownLine(line);
+    if (/^(?:pnpm|npm|yarn|bun|npx|node|pytest|go|cargo|maestro|playwright|gradle|mvn|\.\/gradlew)\b/i.test(stripped)) {
+      candidates.push(stripped);
+    }
+    for (const candidate of candidates) {
+      const command = normalizeCommand(candidate);
+      if (command && isValidationCommand(command)) {
+        commands.push(command);
+      }
+    }
+  }
+  return uniqueStrings(commands).slice(0, 12);
+}
+
+function extractSafetyRules(text: string): string[] {
+  const rules: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const cleaned = redactSensitiveText(cleanMarkdownLine(line));
+    if (cleaned.length < 8 || cleaned.length > 220) {
+      continue;
+    }
+    if (
+      /(?:do not|don't|never|must not|read-only|\/tmp|token|secret|credential|절대|금지|하지 말|하면 안|커밋|푸시|PR 생성)/i.test(
+        cleaned,
+      )
+    ) {
+      rules.push(cleaned);
+    }
+  }
+  return uniqueStrings(rules).slice(0, 12);
+}
+
+function normalizeCommand(value: string): string | undefined {
+  const command = redactSensitiveText(value.trim().replace(/^\$\s*/, "").replace(/^>\s*/, ""));
+  if (!command || command.length > 140 || /(?:publish|login|token|secret|password|rm\s+-rf)/i.test(command)) {
+    return undefined;
+  }
+  return command.replace(/\s+/g, " ");
+}
+
+function isValidationCommand(command: string): boolean {
+  return (
+    /^(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?(?:test|test:[\w:-]+|e2e|lint|typecheck|check|build|verify|coverage)\b/i.test(command) ||
+    /^(?:npx\s+)?playwright\s+test\b/i.test(command) ||
+    /^maestro\s+test\b/i.test(command) ||
+    /^node\s+--test\b/i.test(command) ||
+    /^pytest\b/i.test(command) ||
+    /^go\s+test\b/i.test(command) ||
+    /^cargo\s+test\b/i.test(command) ||
+    /^(?:gradle|\.\/gradlew)\s+(?:test|check)\b/i.test(command) ||
+    /^mvn\s+test\b/i.test(command)
+  );
+}
+
+function cleanMarkdownLine(value: string): string {
+  return value
+    .replace(/^\s{0,3}(?:[-*]|\d+\.)\s+/, "")
+    .replace(/^\s{0,3}#+\s*/, "")
+    .trim();
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/\bnpm_[A-Za-z0-9]{12,}\b/g, "[redacted-token]")
+    .replace(/\b(TOKEN|SECRET|PASSWORD|API_KEY|AUTH_TOKEN)=\S+/gi, "$1=[redacted]")
+    .replace(/_authToken=\S+/gi, "_authToken=[redacted]");
+}
+
+function contextEvidenceForTerms(context: VerificationManifestContext | undefined, terms: string[]): string[] {
+  if (!context) {
+    return [];
+  }
+  const normalizedTerms = uniqueStrings(
+    terms
+      .flatMap((term) => [term, slugify(term), term.replace(/\s+/g, "-")])
+      .map((term) => term.toLowerCase())
+      .filter((term) => term.length >= 3),
+  );
+  if (normalizedTerms.length === 0) {
+    return [];
+  }
+  const evidence = context.instructionFiles
+    .filter((file) => {
+      const filePath = file.path.toLowerCase();
+      return normalizedTerms.some((term) => filePath.includes(term));
+    })
+    .map((file) => contextSourceLabel(file.kind));
+  return uniqueStrings(evidence);
+}
+
+function contextSourceLabel(kind: VerificationManifestInstructionKind): string {
+  if (kind === "agent-instruction") {
+    return "agent-instruction-context";
+  }
+  if (kind === "context") {
+    return "context-document-context";
+  }
+  return `${kind}-context`;
+}
+
+function contextKindRank(kind: VerificationManifestInstructionKind): number {
+  const ranks: Record<VerificationManifestInstructionKind, number> = {
+    context: 0,
+    adr: 1,
+    goal: 2,
+    "qa-runbook": 3,
+    "test-runbook": 4,
+    "release-runbook": 5,
+    runbook: 6,
+    "agent-instruction": 7,
+  };
+  return ranks[kind];
 }
 
 function inferRunner(files: ProjectFile[]): VerificationManifestRunner {
@@ -926,7 +1233,40 @@ function normalizeVerificationManifest(value: unknown, manifestPath: string): Ve
   const flows = Array.isArray(record.flows)
     ? record.flows.map((flow, index) => normalizeFlow(flow, manifestPath, index))
     : [];
-  return { $schema: schema, version: 1, domains, flows };
+  const context = normalizeContext(record.context, manifestPath);
+  return { $schema: schema, version: 1, ...(context ? { context } : {}), domains, flows };
+}
+
+function normalizeContext(value: unknown, manifestPath: string): VerificationManifestContext | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const instructionFiles = Array.isArray(record.instructionFiles)
+    ? record.instructionFiles.map((item, index) => normalizeInstructionFile(item, manifestPath, index))
+    : [];
+  const validationCommands = readStringArray(record, "validationCommands");
+  const safetyRules = readStringArray(record, "safetyRules");
+  return {
+    instructionFiles,
+    validationCommands,
+    safetyRules,
+    source: readSource(record.source, "context", manifestPath, 0),
+  };
+}
+
+function normalizeInstructionFile(
+  value: unknown,
+  manifestPath: string,
+  index: number,
+): VerificationManifestInstructionFile {
+  const record = asRecord(value, `CodeWard manifest context file at index ${index} must be an object: ${manifestPath}`);
+  return {
+    path: readRequiredString(record, "path", manifestPath, index),
+    kind: readInstructionKind(readOptionalString(record, "kind") ?? "agent-instruction", manifestPath, index),
+    confidence: readConfidence(readOptionalString(record, "confidence") ?? "low", manifestPath, index),
+    signals: readStringArray(record, "signals"),
+  };
 }
 
 function normalizeDomain(value: unknown, manifestPath: string, index: number): VerificationManifestDomain {
@@ -1052,6 +1392,9 @@ function summarizeManifest(manifest: VerificationManifest): VerificationManifest
     flows: manifest.flows.length,
     anchors: manifest.flows.reduce((total, flow) => total + flow.anchors.length, 0),
     checks: manifest.flows.reduce((total, flow) => total + flow.checks.length, 0),
+    contextSources: manifest.context?.instructionFiles.length ?? 0,
+    validationCommands: manifest.context?.validationCommands.length ?? 0,
+    safetyRules: manifest.context?.safetyRules.length ?? 0,
   };
 }
 
@@ -1176,4 +1519,20 @@ function readCheckType(value: string, manifestPath: string, index: number): Veri
     return value;
   }
   throw new Error(`CodeWard manifest check type at index ${index} is invalid: ${manifestPath}`);
+}
+
+function readInstructionKind(value: string, manifestPath: string, index: number): VerificationManifestInstructionKind {
+  if (
+    value === "adr" ||
+    value === "agent-instruction" ||
+    value === "context" ||
+    value === "goal" ||
+    value === "qa-runbook" ||
+    value === "release-runbook" ||
+    value === "runbook" ||
+    value === "test-runbook"
+  ) {
+    return value;
+  }
+  throw new Error(`CodeWard manifest context kind at index ${index} is invalid: ${manifestPath}`);
 }
