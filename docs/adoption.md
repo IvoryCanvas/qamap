@@ -1,20 +1,32 @@
 # Adopting QAMap
 
-QAMap works best when teams treat it as a repository preflight check for AI-assisted development, not as a replacement for review or security tooling.
+QAMap works best when teams treat it as the local QA pass for AI-assisted PRs, not as a replacement for review or security tooling.
 
 ## First Run
 
-Start with a non-blocking scan:
+Start with the PR QA draft on a changed branch — no manifest, no config:
 
 ```sh
-pnpm dlx qamap scan .
+pnpm dlx qamap qa . --base origin/main --head HEAD
 ```
 
-For a changed branch, preview the verification plan and draft E2E output before writing files:
+For coding agents, request the compact machine-readable summary instead:
+
+```sh
+pnpm dlx qamap qa . --base origin/main --head HEAD --format agent
+```
+
+When the qa output looks useful, preview and then write the draft E2E files:
+
+```sh
+pnpm dlx qamap e2e draft . --base origin/main --head HEAD --dry-run
+pnpm dlx qamap e2e draft . --base origin/main --head HEAD
+```
+
+For a combined PR verification report with readiness gates, add `verify`:
 
 ```sh
 pnpm dlx qamap verify . --base origin/main --head HEAD --pr-body-file pr-body.md
-pnpm dlx qamap e2e draft . --base origin/main --head HEAD --dry-run
 ```
 
 When developing QAMap itself from source:
@@ -46,18 +58,18 @@ Start advisory, then tighten the gate once the findings are understood.
 
 | Phase | Command | Goal |
 | --- | --- | --- |
-| 1. Baseline | `qamap scan .` | See current repo-level AI agent risks without blocking work. |
-| 2. Doctor | `qamap doctor . --format markdown` | Get an agent-readiness summary by guardrail area. |
-| 3. Verify | `qamap verify . --base origin/main --head HEAD --pr-body-file pr-body.md` | Combine review findings, readiness score, suggested domain tests, and next actions. |
-| 4. Review | `qamap review . --base origin/main --head HEAD --format markdown` | See new findings introduced by the branch. |
-| 5. Test plan | `qamap test-plan . --base origin/main --head HEAD --include-working-tree` | Suggest domain test scenarios for changed and local files. |
-| 6. E2E preview | `qamap e2e draft . --base origin/main --head HEAD --dry-run` | Preview generated draft paths, readiness, action items, and blockers before writing files. |
-| 7. E2E apply | `qamap e2e draft . --base origin/main --head HEAD` | Write draft files once the preview looks useful enough to review. |
-| 8. Eval | `qamap eval . --base origin/main --head HEAD --pr-body-file pr-body.md` | Score intent capture, risk explanation, test evidence, and review size. |
-| 9. PR Action | `uses: IvoryCanvas/qamap@main` | Add annotations, a step summary, a test plan, eval, and a sticky PR comment. |
-| 10. Report | `qamap report . --output QAMAP_REPORT.md` | Share a readable audit artifact in a PR or maintainer discussion. |
-| 11. High-risk gate | `qamap scan . --fail-on high` | Block obvious risks such as committed env files or unsafe scripts. |
-| 12. Medium-risk gate | `qamap scan . --fail-on medium` | Require stronger agent guidance, tests, and workflow permissions. |
+| 1. PR QA draft | `qamap qa . --base origin/main --head HEAD` | Get the affected flow, suggested E2E/checklist draft, missing evidence, and PR checklist for a branch. |
+| 2. Agent handoff | `qamap qa . --base origin/main --head HEAD --format agent` | Give coding agents the same decision content as compact JSON instead of a long report. |
+| 3. E2E preview | `qamap e2e draft . --base origin/main --head HEAD --dry-run` | Preview generated draft paths, readiness, action items, and blockers before writing files. |
+| 4. E2E apply | `qamap e2e draft . --base origin/main --head HEAD` | Write draft files once the preview looks useful enough to review. |
+| 5. QA memory | `qamap manifest init .` (from the default branch) | Create `.qamap/manifest.yaml` so future PR recommendations reuse reviewed team QA language. |
+| 6. Verify | `qamap verify . --base origin/main --head HEAD --pr-body-file pr-body.md` | Combine review findings, readiness score, suggested domain tests, and next actions. |
+| 7. PR Action | `uses: IvoryCanvas/qamap@main` | Add annotations, a step summary, a test plan, eval, and a sticky PR comment. |
+| 8. Guardrail baseline | `qamap scan .` | See repo-level AI agent risks (guardrails layer) without blocking work. |
+| 9. High-risk gate | `qamap scan . --fail-on high` | Block obvious risks such as committed env files or unsafe scripts. |
+| 10. Medium-risk gate | `qamap scan . --fail-on medium` | Require stronger agent guidance, tests, and workflow permissions. |
+
+`doctor`, `review`, `test-plan`, `eval`, and `report` remain available for teams that want the individual reports behind `verify`.
 
 ## Monorepos
 

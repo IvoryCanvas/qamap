@@ -38,6 +38,12 @@ pnpm dlx qamap qa . --base origin/main --head HEAD
 
 That first command is intentionally manifest-free. It previews a PR comment/checklist that names the affected flow, recommended runner, draft file, missing fixture/selector/assertion evidence, and validation command.
 
+Handing the result to a coding agent instead of a human? Use the compact agent format (see [For Coding Agents](#for-coding-agents)):
+
+```sh
+pnpm dlx qamap qa . --base origin/main --head HEAD --format agent
+```
+
 Install QAMap in a repository when you want a repeatable project command:
 
 ```sh
@@ -58,7 +64,7 @@ pnpm exec qamap e2e draft . --base origin/main --head HEAD --dry-run
 pnpm exec qamap e2e draft . --base origin/main --head HEAD
 ```
 
-Optional accuracy upgrade: create repo-local QA memory from the default branch, review it, then let future PRs reuse it:
+Optional accuracy upgrade: create repo-local QA memory from the default branch and review it. Matching is anchor-path based today — a flow claims a PR only when changed files or routes hit its listed anchors — so add shared components to a flow's `anchors` when changes to them should map to that flow:
 
 ```sh
 git switch main
@@ -91,7 +97,7 @@ pnpm dlx qamap qa . --base origin/main --head HEAD
 
 ![QAMap 30-second PR demo](docs/assets/qamap-30s-demo.gif)
 
-In this demo, QAMap maps a checkout form PR to the `Checkout purchase` flow, previews `tests/e2e/checkout-purchase.spec.ts`, and names the missing evidence before that draft can be trusted. It does **not** claim browser QA has passed; it also names the remaining work, such as deterministic fixture data and a real `pnpm run test:e2e` execution.
+The GIF is a simulated walkthrough of that loop on a checkout form PR with a committed manifest. It does **not** claim browser QA has passed; run the command above on your own branch to see the real, longer first-run output, including the remaining work such as deterministic fixture data and a real `pnpm run test:e2e` execution.
 
 QAMap reads the changed files and project signals:
 
@@ -114,61 +120,85 @@ Output
 - blockers such as missing runner config, selectors, fixtures, or assertions
 ```
 
-Example `qamap qa` output for a small Next.js checkout form change:
+Trimmed real `qamap qa` output for a small Next.js notes-page change in a repository with no tests and no manifest (full output also lists validation gaps and a PR checklist):
 
 ```txt
 # QAMap QA Draft
 
-Summary
+> Local-first PR QA skill output. No cloud. No LLM token. Manifest is optional, not required for first use.
+
+## Summary
+
 - Project: Web
 - Recommended runner: Playwright
-- Manifest: .qamap/manifest.yaml
-- Readiness: near-runnable
+- Manifest: not found; using repo signals and PR diff only
+- Readiness: needs-work (54/100)
+- Draft flows: 1
 
-PR Comment Draft
-- Affected flow: Checkout purchase
-- Suggested draft: tests/e2e/checkout-purchase.spec.ts
-- Changed files: src/app/checkout/page.tsx, src/features/checkout/CheckoutForm.tsx
-- Success signal: confirmation state is visible after submit
-- If wrong: update .qamap/manifest.yaml > flows.checkout-checkout-purchase.anchors
+## First E2E Draft Bootstrap
 
-Missing evidence before trusting this PR
-- [required] fixture: Add deterministic payment/customer fixture data.
-- [recommended] selector: Confirm stable selectors for changed checkout controls.
+QAMap did not find committed test files for this target. The next step is to
+create the first runnable starter draft, not to stop at a checklist.
 
-PR checklist
-- [ ] Review tests/e2e/checkout-purchase.spec.ts.
-- [ ] Confirm the checkout success and failed-response assertions.
-- [ ] Run pnpm run test:e2e.
+- Recommended first runner: Playwright
+- Create command: `qamap e2e setup . --runner playwright`
+- Install command: `npm install -D @playwright/test`
+- Draft files QAMap can create:
+  - `playwright.config.ts`
+  - `tests/e2e/notes-primary-journey.spec.ts`
+
+## PR Comment Draft
+
+### Affected Flow
+
+- Notes primary journey (domain-language)
+  - User journey: User -> Open route /notes. -> Protect Notes primary journey
+    by fill Write A Note with realistic data.
+  - Changed files: `app/notes/page.tsx`
+  - Why: Primary entrypoint inferred as route /notes [high] (app/notes/page.tsx).
 ```
 
-The generated draft reads like the user journey instead of a generic file checklist:
+Accepting that bootstrap with `qamap e2e setup . --runner playwright` writes a working `playwright.config.ts` and this starter spec — real locators from the changed JSX, and honest smoke assertions instead of placeholder failures:
 
 ```ts
-test("Checkout purchase", async ({ page }) => {
-  // Verification manifest evidence:
-  // Flow: Checkout Purchase
-  // .qamap/manifest.yaml > flows.checkout-checkout-purchase.anchors
+await test.step("Open route /notes.", async () => {
+  await page.goto("/notes");
+});
 
-  await test.step("Open route /checkout.", async () => {
-    await page.goto("/checkout");
-  });
+await test.step("Fill Write A Note with realistic data.", async () => {
+  await page.getByPlaceholder("Write a note").fill("QAMap sample value");
+});
 
-  await test.step("Fill checkout email.", async () => {
-    await page.getByPlaceholder("Email").fill("buyer@example.com");
-  });
+await test.step("Activate the main Notes action using Add Note.", async () => {
+  await page.getByTestId("add-note").click();
+});
 
-  await test.step("Submit checkout.", async () => {
-    await page.getByTestId("checkout-submit").click();
-  });
-
-  await expect(page.getByText("Order confirmed")).toBeVisible();
+await test.step("Confirm the visible result, saved state, navigation, or event that proves Notes worked.", async () => {
+  await expect(page.getByText("Notes")).toBeVisible();
 });
 ```
 
+This exact starter spec passes against the demo app on the first run (`1 passed (1.3s)` under chromium). First-run assertions are smoke checks against detected text and selectors; the draft also carries the coverage targets a human (or the team's agent) should turn into real domain assertions before promoting the spec to required CI evidence.
+
 See [docs/quickstart-demo.md](docs/quickstart-demo.md) for a compact walkthrough, [docs/agent-skill.md](docs/agent-skill.md) for agent handoff usage, [docs/manifest.md](docs/manifest.md) for the verification manifest loop, and [docs/e2e-output-examples.md](docs/e2e-output-examples.md) for more output shapes.
 
-QAMap also ships a portable agent skill template at [skills/qamap-pr-qa/SKILL.md](skills/qamap-pr-qa/SKILL.md). Use it with any local agent workflow that can read reusable instructions before finalizing a PR.
+## For Coding Agents
+
+Stop re-explaining the same QA context to your agent on every PR. QAMap answers "what should this branch prove before merge?" locally, deterministically, and without spending a single LLM token on repo exploration:
+
+```sh
+qamap qa . --base origin/main --head HEAD --format agent
+```
+
+`--format agent` returns one minified JSON object (`schema: qamap.qa`, about 2 KB for a typical small PR) with the affected flows, draft paths and runnable status, required evidence, bootstrap blockers, PR checklist, and validation commands — the decision content of the full report at a fraction of the context cost.
+
+Three integration points ship with the package:
+
+- `skills/qamap-pr-qa/SKILL.md` — a portable agent skill template: any local agent workflow that reads reusable instructions can run QAMap as its final QA pass before PR handoff.
+- `qamap context . --write AGENTS.md` — generated agent instructions now include a Pre-PR QA section, so agents working in the repo learn to run `qamap qa` on their own.
+- `--output` — write the qa report to a file an agent or reviewer can paste into the PR body.
+
+Treat QAMap output as QA planning evidence, not proof that browser, device, or manual QA passed — the output says so itself.
 
 ## Why This Is Different
 
@@ -216,6 +246,12 @@ QAMap는 AI 코딩 에이전트가 만든 PR을 리뷰하기 전에 로컬에서
 
 PR diff와 repo 구조를 읽고 어떤 사용자 플로우가 영향받았는지, 어떤 E2E 또는 체크리스트가 필요한지, fixture/selector/assertion/runner/validation 근거 중 무엇이 부족한지 정리합니다. 클라우드나 LLM 토큰을 쓰지 않습니다.
 
+```sh
+pnpm dlx qamap qa . --base origin/main --head HEAD
+```
+
+에이전트에게 넘길 때는 `--format agent`를 붙이면 같은 판단 내용을 약 2KB의 JSON으로 받을 수 있어, 매 세션 repo 탐색에 토큰을 쓰지 않아도 됩니다.
+
 목표는 거대한 QA 플랫폼이 아니라, 유지보수자가 매번 에이전트에게 프로젝트 맥락과 검증 방법을 다시 설명하느라 쓰는 시간을 줄여주는 작고 선명한 도구입니다. Manifest 없이 바로 시작하고, 반복해서 틀리는 추천은 `.qamap/manifest.yaml`에 팀의 QA 언어로 보정해 향후 PR 추천을 개선합니다.
 
 </details>
@@ -224,6 +260,7 @@ PR diff와 repo 구조를 읽고 어떤 사용자 플로우가 영향받았는�
 
 ```sh
 pnpm exec qamap qa . --base origin/main --head HEAD
+pnpm exec qamap qa . --base origin/main --head HEAD --format agent
 pnpm exec qamap qa . --manifest /tmp/qamap-manifest.yaml --base origin/main --head HEAD --output QAMAP_QA.md
 pnpm exec qamap scan .
 pnpm exec qamap verify . --base origin/main --head HEAD --pr-body-file pr-body.md
@@ -236,23 +273,9 @@ pnpm exec qamap e2e draft . --base origin/main --head HEAD --dry-run
 
 Use `pnpm dlx qamap ...` for one-off runs without installing QAMap into the target repository.
 
-## Why It Matters
+## Repository Guardrails (Secondary Layer)
 
-AI agents are becoming normal contributors to software projects. They can research a repository, edit files, run commands, and prepare pull requests. The hidden cost is setup time: maintainers repeatedly explain project rules, safe validation commands, risky files, and review expectations before the useful work can begin.
-
-The risky failure mode is not always broken code. It is code that looks plausible, merged through a repository with missing context, broad permissions, unsafe scripts, or weak validation.
-
-QAMap gives maintainers a quick first line of defense:
-
-- Is there clear guidance for agents?
-- Are MCP configs safe enough to inspect?
-- Are committed agent settings or hooks able to run risky commands?
-- Are API endpoints documented only in prose, without a machine-readable contract source?
-- Did a local `.env` file slip into the repo?
-- Can package scripts publish, push, merge, or run risky shell pipelines?
-- Are workflows using broad permissions or risky triggers?
-- Is there a real test command for agent-made changes?
-- Does an AI-assisted change explain its intent, risk, and verification evidence?
+The QA draft loop above is the core product. QAMap also ships a static guardrails scanner as a secondary layer for repositories that let agents work broadly: it checks agent instructions, MCP configs, committed env files, risky package scripts, workflow permissions, and validation signals before agent work becomes review churn.
 
 For a repository baseline before broad agent use, run:
 
@@ -261,13 +284,14 @@ qamap scan .
 ```
 
 ```txt
-QAMap 0.1.0
 Findings: 6 (high: 3, medium: 2, low: 1, info: 0)
 
 HIGH
 - QM003 Suspicious agent instruction text (AGENTS.md)
   Fix: Remove untrusted instruction text or move examples into clearly fenced documentation.
 ```
+
+See the rule table below and [docs/rules.md](docs/rules.md) for what the scanner checks.
 
 When developing QAMap from source:
 
@@ -559,7 +583,16 @@ The PR comment can include suggested domain tests and a verification readiness e
 
 ## Where QAMap Fits
 
-QAMap is not trying to replace the larger security ecosystem.
+On the QA side, QAMap starts one step earlier than test-writing tools — it decides what a PR must prove before anyone records, generates, or writes a test:
+
+| Tool category | Typical focus | QAMap focus |
+| --- | --- | --- |
+| Test recorders and studios | Turning a known flow into a script by watching you run it. | Deciding which flow a PR affects and what evidence is missing, before recording starts. |
+| LLM test generation | Spending model tokens to write test code from source. | Free, deterministic PR-to-QA mapping; drafts are starter scaffolds an agent or human finishes. |
+| Re-prompting an agent per PR | Re-deriving repo QA context in every session. | Repo-owned QA memory (`.qamap/manifest.yaml`) plus a compact `--format agent` handoff. |
+| Change-impact test selection | Choosing which existing unit/CI tests to run. | Naming the user-facing flow and E2E/checklist work that should exist at all. |
+
+On the guardrails side, QAMap is not trying to replace the larger security ecosystem:
 
 | Tool category | Typical focus | QAMap focus |
 | --- | --- | --- |

@@ -10,13 +10,15 @@ What user flow did this PR touch, what should be tested, and what evidence is mi
 
 ## Recommended Agent Step
 
-Run this before writing a PR body or asking for review:
+Run this before writing a PR body or asking for review. Agents should prefer the compact agent format — one minified JSON object (about 2 KB for a typical small PR) instead of a long report:
 
 ```sh
-pnpm dlx qamap qa . --base origin/main --head HEAD
+pnpm dlx qamap qa . --base origin/main --head HEAD --format agent
 ```
 
-For installed projects:
+The result carries `flows[]` (draft path, runnable status, entry route, steps, selectors), `requiredEvidence[]`, `requiredBootstrap[]`, `prChecklist[]`, and `commands[]` under `schema: qamap.qa`.
+
+For a human-readable report, drop the flag; for installed projects write it to a file:
 
 ```sh
 pnpm exec qamap qa . --base origin/main --head HEAD --output QAMAP_QA.md
@@ -70,7 +72,7 @@ Then edit `.qamap/manifest.yaml` so future branches can reuse the corrected team
 
 ```txt
 Before finalizing a PR, run:
-pnpm dlx qamap qa . --base origin/main --head HEAD
+pnpm dlx qamap qa . --base origin/main --head HEAD --format agent
 
 Paste the affected flow, suggested E2E/checklist, missing evidence, and PR checklist into the PR body or review note.
 If the recommendation is wrong, ask the maintainer which manifest domain, flow, anchor, or check should be corrected.
