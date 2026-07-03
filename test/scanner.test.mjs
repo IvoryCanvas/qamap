@@ -2235,6 +2235,78 @@ test("generateE2ePlan flags missing mock fixtures for API-dependent UI flows", a
   assert.match(spec, /\[missing\].*fixture\/mock readiness/);
 });
 
+test("qa command points API-dependent flows at existing repo mock and seed files", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/services"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/home"), { recursive: true });
+  await mkdir(path.join(root, "ios/Pods/boost/boost/random/detail"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        lint: "eslint .",
+        ios: "expo run:ios",
+      },
+      dependencies: {
+        expo: "^54.0.0",
+        "react-native": "^0.81.0",
+      },
+    }),
+  );
+  await writeFile(path.join(root, "app.json"), JSON.stringify({ expo: { name: "Mood Fixture" } }));
+  await writeFile(
+    path.join(root, "src/services/reportMockService.ts"),
+    "export const reportMockService = { success: () => ({ status: 'ready' }) };\n",
+  );
+  await writeFile(
+    path.join(root, "src/services/devSeedService.ts"),
+    "export const devSeedService = { seed: async () => 1 };\n",
+  );
+  await writeFile(
+    path.join(root, "ios/Pods/boost/boost/random/detail/generator_seed_seq.hpp"),
+    "/* third-party seed helper */\n",
+  );
+  await writeFile(
+    path.join(root, "src/pages/home/HomePage.tsx"),
+    "export function HomePage() { return null; }\n",
+  );
+  await writeFile(
+    path.join(root, "src/services/emotionService.ts"),
+    "export async function loadEmotion() { return { score: 1 }; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/emotion-api"]);
+  await writeFile(
+    path.join(root, "src/services/emotionService.ts"),
+    [
+      "export async function loadEmotion() {",
+      "  const response = await fetch('/api/emotions/current');",
+      "  return response.json();",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "load emotion api"]);
+
+  const qa = await generateQaDraft(root, { base: "main", head: "HEAD", runner: "maestro" });
+  const markdown = formatMarkdownQaDraft(qa);
+  const fixtureGap = qa.missingEvidence.find((item) => item.kind === "fixture");
+
+  assert.ok(fixtureGap);
+  assert.equal(fixtureGap.priority, "recommended");
+  assert.match(fixtureGap.detail, /Reuse or extend existing fixture\/mock evidence/);
+  assert.match(fixtureGap.detail, /src\/services\/reportMockService\.ts/);
+  assert.match(fixtureGap.detail, /src\/services\/devSeedService\.ts/);
+  assert.doesNotMatch(fixtureGap.detail, /ios\/Pods/);
+  assert.match(markdown, /src\/services\/reportMockService\.ts/);
+  assert.match(markdown, /src\/services\/devSeedService\.ts/);
+  assert.doesNotMatch(markdown, /ios\/Pods/);
+});
+
 test("generateE2ePlan builds a bootstrap plan for projects without tests", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
@@ -4340,6 +4412,109 @@ test("package metadata includes the portable PR QA skill template", async () => 
   assert.match(skillText, /name: codeward-pr-qa/);
   assert.match(skillText, /pnpm dlx @ivorycanvas\/codeward qa/);
   assert.match(skillText, /Manifest Repair/);
+});
+
+test("qa command explains first-test bootstrap work for repositories without tests", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/app/checkout"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        dev: "next dev",
+        build: "next build",
+      },
+      dependencies: {
+        next: "^15.0.0",
+        react: "^19.0.0",
+        "react-dom": "^19.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/app/checkout/page.tsx"),
+    [
+      "export default function CheckoutPage() {",
+      "  return <main>",
+      "    <h1>Checkout</h1>",
+      "    <button>Pay now</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "baseline checkout"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/coupon-error-state"]);
+  await writeFile(
+    path.join(root, "src/app/checkout/page.tsx"),
+    [
+      "export default function CheckoutPage() {",
+      "  return <main>",
+      "    <h1>Checkout</h1>",
+      "    <label>Coupon code<input placeholder=\"SAVE10\" /></label>",
+      "    <button>Apply coupon</button>",
+      "    <p>Coupon code is required</p>",
+      "    <button>Pay now</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "add coupon error state"]);
+
+  const qa = await generateQaDraft(root, { base: "main", head: "HEAD" });
+  const markdown = formatMarkdownQaDraft(qa);
+
+  assert.equal(qa.testSuite.hasTestSuite, false);
+  assert.equal(qa.runner, "playwright");
+  assert.match(markdown, /## No Test Setup Detected/);
+  assert.match(markdown, /first-test bootstrap plan/);
+  assert.match(markdown, /Recommended first runner: Playwright/);
+  assert.match(markdown, /Setup command: `codeward e2e setup \. --runner playwright`/);
+  assert.match(markdown, /Create the first changed-flow E2E draft/);
+  assert.match(markdown, /Add deterministic fixture or mock responses/);
+  assert.match(markdown, /Checkout primary journey/);
+  assert.match(markdown, /SAVE10/);
+  assert.match(markdown, /Apply coupon/);
+});
+
+test("api service fallback uses contract smoke instead of app launch", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/controllers"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        build: "tsc",
+        dev: "node dist/server.js",
+      },
+      dependencies: {
+        express: "^4.18.0",
+      },
+      devDependencies: {
+        typescript: "^5.8.0",
+      },
+    }),
+  );
+  await writeFile(path.join(root, "src/controllers/health.ts"), "export const health = () => ({ ok: true });\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "baseline api"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD" });
+  const markdown = formatMarkdownE2eDraft(draft);
+
+  assert.equal(draft.plan.project.type, "api-service");
+  assert.equal(draft.runner, "manual");
+  assert.ok(draft.files.some((file) => file.flowTitle === "API contract smoke flow"));
+  assert.doesNotMatch(markdown, /App launch smoke flow/);
+  assert.match(markdown, /API contract smoke flow/);
+  assert.match(markdown, /response status, response shape, auth behavior, and error handling/);
+  assert.match(markdown, /success response fixture/);
 });
 
 test("package version matches the CLI version constant", async () => {

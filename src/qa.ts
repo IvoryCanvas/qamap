@@ -28,6 +28,9 @@ export interface QaDraftResult {
   manifestPath?: string;
   noCloud: true;
   noLlmToken: true;
+  testSuite: E2eDraftResult["plan"]["testSuite"];
+  bootstrap: E2eDraftResult["plan"]["bootstrap"];
+  runnerSetup: E2eDraftResult["plan"]["runnerSetup"];
   readiness: E2eDraftReadinessSummary;
   flows: QaDraftFlow[];
   missingEvidence: QaDraftMissingEvidence[];
@@ -84,6 +87,9 @@ export async function generateQaDraft(rootInput: string, options: QaDraftOptions
     manifestPath: draft.plan.verificationManifestPath,
     noCloud: true,
     noLlmToken: true,
+    testSuite: draft.plan.testSuite,
+    bootstrap: draft.plan.bootstrap,
+    runnerSetup: draft.plan.runnerSetup,
     readiness: draft.readinessSummary,
     flows,
     missingEvidence,
@@ -110,6 +116,34 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
   lines.push(`- Readiness: ${result.readiness.level} (${result.readiness.score}/100)`);
   lines.push(`- Draft flows: ${result.flows.length}`);
   lines.push("");
+
+  if (!result.testSuite.hasTestSuite) {
+    lines.push("## No Test Setup Detected");
+    lines.push("");
+    lines.push(
+      `CodeWard did not find committed test files for this target. Treat this output as a first-test bootstrap plan, not as proof that QA passed.`,
+    );
+    lines.push("");
+    lines.push(`- Recommended first runner: ${formatRunnerName(result.runner)}`);
+    if (result.runnerSetup.setupCommand) {
+      lines.push(`- Setup command: \`${escapeMarkdownInline(result.runnerSetup.setupCommand)}\``);
+    }
+    const installCommand = result.runnerSetup.installCommands[0];
+    if (installCommand) {
+      lines.push(`- Install command: \`${escapeMarkdownInline(installCommand)}\``);
+    }
+    const requiredSteps = result.bootstrap.steps.filter((step) => step.status === "required").slice(0, 5);
+    if (requiredSteps.length > 0) {
+      lines.push("- First bootstrap steps:");
+      for (const step of requiredSteps) {
+        lines.push(`  - ${escapeMarkdownInline(step.title)}: ${escapeMarkdownInline(step.action)}`);
+        if (step.commands.length > 0) {
+          lines.push(`    - Command: \`${escapeMarkdownInline(step.commands[0])}\``);
+        }
+      }
+    }
+    lines.push("");
+  }
 
   lines.push("## PR Comment Draft");
   lines.push("");

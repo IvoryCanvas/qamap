@@ -322,6 +322,17 @@ The manual draft should name concrete command evidence:
 When a project has little or no E2E setup, CodeWard should be honest about what must happen before a draft becomes regression coverage:
 
 ```txt
+## No Test Setup Detected
+
+CodeWard did not find committed test files for this target. Treat this output as a first-test bootstrap plan, not as proof that QA passed.
+
+- Recommended first runner: Playwright
+- Setup command: `codeward e2e setup . --runner playwright`
+- First bootstrap steps:
+  - Create the first changed-flow E2E draft
+  - Add stable selectors for changed user actions
+  - Add deterministic fixture or mock responses
+
 Bootstrap summary:
 4 required bootstrap steps must be resolved before generated E2E drafts should be treated as regression coverage.
 
@@ -350,6 +361,13 @@ Action summary:
 ## API-Dependent Client Flow
 
 When a client-side change calls an API path but the branch does not include backend or fixture evidence, CodeWard should name that as a readiness gap and still give the tester a concrete mock slot:
+
+If reusable repo-local evidence already exists, the PR QA output should point at it instead of only saying "add a fixture":
+
+```txt
+Missing evidence before trusting this PR
+- [recommended] fixture: Confirm fixture coverage - Reuse or extend existing fixture/mock evidence for this flow: src/services/devSeedService.ts, src/services/reportMockService.ts.
+```
 
 ```ts
 const mockApiResponses = {

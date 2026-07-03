@@ -4893,12 +4893,14 @@ async function inferFlowFixtureReadiness(
       backendSignals,
       mockSignals,
       nextActions: [
+        `Keep changed fixture/mock evidence aligned with this flow: ${formatFileSummary(changedMockSignals)}.`,
         "Keep deterministic success, empty, unauthorized, and failure fixture cases aligned with the changed flow.",
       ],
     };
   }
 
   if (context.projectMockFiles.length > 0) {
+    const reusableMockSignals = mockSignals.length > 0 ? mockSignals : context.projectMockFiles;
     return {
       status: "partial",
       reason: "Mock or fixture infrastructure exists, but this branch does not add flow-specific fixture evidence.",
@@ -4907,7 +4909,7 @@ async function inferFlowFixtureReadiness(
       backendSignals,
       mockSignals,
       nextActions: [
-        "Add or update the fixture/mock response for this changed flow before making the draft required.",
+        `Reuse or extend existing fixture/mock evidence for this flow: ${formatFileSummary(reusableMockSignals)}.`,
         "Cover the primary success response and one empty, rejected, or server-error response.",
       ],
     };
@@ -5027,9 +5029,34 @@ function isBackendImplementationFile(file: string): boolean {
 }
 
 function isMockOrFixtureFile(file: string): boolean {
+  if (isFixtureEvidenceIgnoredPath(file)) {
+    return false;
+  }
+  const basename = path.basename(file);
+  const stem = basename.replace(/\.[^.]+$/g, "");
+  const extension = path.extname(basename).toLowerCase();
+  const canUseBroadFilenameMatch = fixtureEvidenceSourceExtensions.has(extension);
   return /(?:^|\/)(?:__mocks__|mocks?|fixtures?|factories|seeds?|test-data|testData|msw|mirage)\//i.test(file) ||
-    /(?:mock|fixture|factory|seed|handler|msw)\.[cm]?[jt]sx?$/i.test(file);
+    /(?:mock|fixture|factory|seed|handler|msw)\.[cm]?[jt]sx?$/i.test(basename) ||
+    (canUseBroadFilenameMatch && /(?:mock|fixture|factory|seed|msw|mirage)/i.test(stem));
 }
+
+function isFixtureEvidenceIgnoredPath(file: string): boolean {
+  return /(?:^|\/)(?:node_modules|vendor|vendors|Pods|build|dist|coverage|\.next|\.nuxt|\.expo|\.turbo|\.yarn\/cache)\//i.test(file);
+}
+
+const fixtureEvidenceSourceExtensions = new Set([
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".json",
+  ".yaml",
+  ".yml",
+  ".py",
+]);
 
 function isRelatedEvidenceFile(evidenceFile: string, flowFiles: string[]): boolean {
   if (flowFiles.length === 0) {
@@ -6700,21 +6727,16 @@ function draftSelfCheckSummary(checks: E2eDraftSelfCheckItem[], runnerName: stri
 }
 
 function buildFallbackFlow(plan: E2ePlanResult): E2eFlow {
-  const coverage = buildCoverageTargets("changed-file", [], plan.recommendedRunner.name);
+  const fallback = fallbackFlowDefinition(plan.project.type);
+  const coverage = buildCoverageTargets(fallback.kind, [], plan.recommendedRunner.name);
   const flow: Omit<E2eFlow, "languageBrief"> = {
-    title: "App launch smoke flow",
-    reason:
-      "No changed user-facing files were detected, so CodeWard generated a minimal smoke draft for the detected app surface.",
+    title: fallback.title,
+    reason: fallback.reason,
     files: [],
-    steps: [
-      "Launch the app.",
-      "Verify the first screen renders.",
-      "Exercise the primary visible action if one is present.",
-      "Verify the app remains usable after the action.",
-    ],
+    steps: fallback.steps,
     coverage,
     coverageEvidence: evaluateFlowCoverageEvidence(
-      { title: "App launch smoke flow", files: [], coverage },
+      { title: fallback.title, files: [], coverage },
       {
         ...plan.testSuite,
         files: [],
@@ -6723,13 +6745,13 @@ function buildFallbackFlow(plan: E2ePlanResult): E2eFlow {
     entrypoints: [],
     setupHints: [],
     fixtureReadiness: {
-      status: "not-needed",
-      reason: "No API, network, payment, or external-response dependency was detected for this fallback flow.",
+      status: fallback.fixtureStatus,
+      reason: fallback.fixtureReason,
       apiSignals: [],
       apiEndpoints: [],
       backendSignals: [],
       mockSignals: [],
-      nextActions: [],
+      nextActions: fallback.fixtureActions,
     },
     selectors: [],
     missingTestability: plan.missingTestability,
@@ -6737,6 +6759,103 @@ function buildFallbackFlow(plan: E2ePlanResult): E2eFlow {
   return {
     ...flow,
     languageBrief: buildFlowLanguageBrief(flow),
+  };
+}
+
+function fallbackFlowDefinition(projectType: E2eProjectType): {
+  title: string;
+  reason: string;
+  steps: string[];
+  kind: E2eFlowKind;
+  fixtureStatus: E2eFixtureReadinessStatus;
+  fixtureReason: string;
+  fixtureActions: string[];
+} {
+  if (projectType === "api-service") {
+    return {
+      title: "API contract smoke flow",
+      reason:
+        "No changed endpoint-specific files were detected, so CodeWard generated a service contract smoke checklist instead of an app-launch journey.",
+      steps: [
+        "Start the service with the documented local command.",
+        "Call one representative health, auth, or changed-domain endpoint.",
+        "Verify response status, response shape, auth behavior, and error handling.",
+        "Record the request example and response fixture as PR evidence.",
+      ],
+      kind: "api",
+      fixtureStatus: "missing",
+      fixtureReason: "API service smoke coverage needs at least one deterministic request and response fixture before it can be trusted.",
+      fixtureActions: [
+        "Add a success response fixture plus one unauthorized, validation, timeout, or server-error response.",
+        "Document the local base URL, auth header, and request payload used for the contract check.",
+      ],
+    };
+  }
+  if (projectType === "cli") {
+    return {
+      title: "CLI command smoke flow",
+      reason:
+        "No changed command-specific files were detected, so CodeWard generated a command contract smoke checklist.",
+      steps: [
+        "Run the documented help or version command.",
+        "Run one valid command invocation with a small fixture input.",
+        "Verify stdout, stderr, exit code, and generated files.",
+        "Run one invalid argument path and verify the failure message.",
+      ],
+      kind: "command",
+      fixtureStatus: "not-needed",
+      fixtureReason: "CLI fallback coverage starts with command arguments, output, exit code, and fixture files rather than API response data.",
+      fixtureActions: [],
+    };
+  }
+  if (projectType === "design-tokens") {
+    return {
+      title: "Design token artifact smoke flow",
+      reason:
+        "No changed token-specific files were detected, so CodeWard generated an artifact validation checklist.",
+      steps: [
+        "Run the token validation or build command.",
+        "Regenerate published token artifacts.",
+        "Verify one representative consumer, visual sample, or theme fixture.",
+        "Record any renamed, removed, or newly-required token fields.",
+      ],
+      kind: "artifact",
+      fixtureStatus: "not-needed",
+      fixtureReason: "Design token fallback coverage needs generated artifacts and consumer samples rather than API response fixtures.",
+      fixtureActions: [],
+    };
+  }
+  if (projectType === "data-catalog") {
+    return {
+      title: "Catalog artifact smoke flow",
+      reason:
+        "No changed catalog-specific files were detected, so CodeWard generated a catalog validation checklist.",
+      steps: [
+        "Run the catalog schema or generation command.",
+        "Verify the generated export or documentation artifact.",
+        "Run one downstream consumer, ingestion, or migration fixture if available.",
+        "Record renamed, removed, deprecated, or newly-required fields.",
+      ],
+      kind: "catalog",
+      fixtureStatus: "not-needed",
+      fixtureReason: "Catalog fallback coverage needs schema, generated output, and consumer fixtures rather than API response data.",
+      fixtureActions: [],
+    };
+  }
+  return {
+    title: "App launch smoke flow",
+    reason:
+      "No changed user-facing files were detected, so CodeWard generated a minimal smoke draft for the detected app surface.",
+    steps: [
+      "Launch the app.",
+      "Verify the first screen renders.",
+      "Exercise the primary visible action if one is present.",
+      "Verify the app remains usable after the action.",
+    ],
+    kind: "changed-file",
+    fixtureStatus: "not-needed",
+    fixtureReason: "No API, network, payment, or external-response dependency was detected for this fallback flow.",
+    fixtureActions: [],
   };
 }
 
@@ -7865,7 +7984,7 @@ function buildDraftNextSteps(plan: E2ePlanResult, runner: E2eRunnerName): string
 
 function manualDraftNextStep(projectType: E2eProjectType): string {
   if (projectType === "api-service") {
-    return "Document the API contract start command, request examples, auth fixture, and failure cases before treating the checklist as PR evidence.";
+    return "Document the API contract start command, request examples, response status, response shape, auth behavior, and error handling fixtures before treating the checklist as PR evidence.";
   }
   if (projectType === "design-tokens") {
     return "Document the token validation command, artifact generation command, and representative consumer fixture before treating the checklist as PR evidence.";
