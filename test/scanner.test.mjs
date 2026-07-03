@@ -49,6 +49,7 @@ import {
 } from "../dist/index.js";
 
 const cliPath = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const execFileAsync = promisify(execFile);
 
 test("scanProject reports common AI agent repository risks", async () => {
@@ -4328,6 +4329,16 @@ test("qa command emits a PR comment draft without requiring a manifest", async (
   ]);
   assert.match(cliOutput.stdout, /CodeWard QA Draft/);
   assert.match(cliOutput.stdout, /PR Comment Draft/);
+});
+
+test("package metadata includes the portable PR QA skill template", async () => {
+  const packageJson = JSON.parse(await readFile(path.join(repositoryRoot, "package.json"), "utf8"));
+  const skillText = await readFile(path.join(repositoryRoot, "skills/codeward-pr-qa/SKILL.md"), "utf8");
+
+  assert.ok(packageJson.files.includes("skills"));
+  assert.match(skillText, /name: codeward-pr-qa/);
+  assert.match(skillText, /pnpm dlx @ivorycanvas\/codeward qa/);
+  assert.match(skillText, /Manifest Repair/);
 });
 
 test("e2e draft can use an external verification manifest for read-only adoption preview", async () => {

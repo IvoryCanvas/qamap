@@ -57,6 +57,12 @@ pnpm dlx @ivorycanvas/codeward qa . --manifest /tmp/codeward-manifest.yaml --bas
 
 The manifest is the durable part. It lets a team correct domains, flows, anchors, and checks once, then reuse that correction across future PRs without re-explaining the same QA context to an LLM.
 
+If your coding agent supports reusable local instructions, use the packaged skill template as the PR handoff workflow:
+
+```txt
+skills/codeward-pr-qa/SKILL.md
+```
+
 ## Manifest-Backed PoC Path
 
 The practical PoC is not "CodeWard reads every project perfectly." The useful loop is:

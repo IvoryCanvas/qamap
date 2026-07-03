@@ -24,6 +24,30 @@ pnpm exec codeward qa . --base origin/main --head HEAD --output CODEWARD_QA.md
 
 The command writes no test files. It only previews the QA work that should be attached to the PR.
 
+## Packaged Skill Template
+
+CodeWard ships a portable skill template at:
+
+```txt
+skills/codeward-pr-qa/SKILL.md
+```
+
+Use it when an agent surface supports local skill folders, instruction folders, or reusable workflow prompts. The template is intentionally vendor-neutral: it tells an agent when to run `codeward qa`, how to pick a base branch, what sections to copy into the PR, and when to suggest manifest repair.
+
+After installing CodeWard as a dev dependency, inspect the template:
+
+```sh
+cat node_modules/@ivorycanvas/codeward/skills/codeward-pr-qa/SKILL.md
+```
+
+Or from a cloned CodeWard repository:
+
+```sh
+cat skills/codeward-pr-qa/SKILL.md
+```
+
+If your agent supports symlinked skills, point its skill directory at `skills/codeward-pr-qa`. If it only supports instruction text, copy the contents of `SKILL.md` into that system's reusable instruction format.
+
 ## What The Agent Should Do With The Output
 
 Use the `PR Comment Draft` section as review context:

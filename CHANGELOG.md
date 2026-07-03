@@ -12,6 +12,7 @@
 - Added a manifest bootstrap PoC path where repo-local context filenames such as ADRs can sharpen inferred flow names, then matched PR changes can produce concrete Playwright draft actions from detected input and submit selectors.
 - Added `--manifest <file>` support to manifest validation/explanation, `verify`, and E2E plan/draft commands so teams can preview an external generated manifest without writing it into the target repository.
 - Added `codeward qa` as a manifest-free local QA skill entrypoint that turns a PR diff into a PR comment/checklist draft with affected flow, recommended runner, suggested E2E/checklist path, missing evidence, and agent handoff guidance.
+- Added a packaged `skills/codeward-pr-qa/SKILL.md` template so local agent workflows can run CodeWard before PR handoff without requiring users to rewrite the workflow prompt.
 
 ### Changed
 
@@ -19,6 +20,7 @@
 - Expanded manifest docs and quick-start examples to show the full default-branch manifest baseline, PR explanation, E2E draft, and manifest repair loop.
 - Documented a read-only adoption preview flow using `manifest init --write /tmp/codeward-manifest.yaml` plus `e2e draft --manifest /tmp/codeward-manifest.yaml`.
 - Repositioned README and quick-start docs so first use starts with `codeward qa`, while `.codeward/manifest.yaml` is presented as an optional accuracy upgrade rather than a setup gate.
+- Included `skills` in the npm package file list so the PR QA skill template ships with the CLI package.
 
 ## 0.2.0 - 2026-07-01
 

@@ -168,6 +168,8 @@ test("Checkout purchase", async ({ page }) => {
 
 See [docs/quickstart-demo.md](docs/quickstart-demo.md) for a compact walkthrough, [docs/agent-skill.md](docs/agent-skill.md) for agent handoff usage, [docs/manifest.md](docs/manifest.md) for the verification manifest loop, and [docs/e2e-output-examples.md](docs/e2e-output-examples.md) for more output shapes.
 
+CodeWard also ships a portable agent skill template at [skills/codeward-pr-qa/SKILL.md](skills/codeward-pr-qa/SKILL.md). Use it with any local agent workflow that can read reusable instructions before finalizing a PR.
+
 ## Why This Is Different
 
 Recorders such as browser or mobile test studios are useful when you already know the flow to exercise. CodeWard starts one step earlier: it asks what the PR changed, which repo-owned QA memory applies, and what test artifact should exist before merge.
@@ -194,6 +196,7 @@ CodeWard is intentionally small:
 - no-token by default: it does not call an LLM API
 - verification-focused: it tells reviewers what evidence is missing, not how to style code
 - PR QA skill output: `codeward qa` turns a branch into a PR-ready affected-flow summary, suggested E2E/checklist draft, missing evidence list, and copyable checklist
+- packaged agent skill: `skills/codeward-pr-qa/SKILL.md` gives coding agents a compact PR QA workflow for running CodeWard before handoff
 - domain-aware E2E drafting: it turns branch changes into flow language, draft specs, readiness summaries, and action items
 - repo-local verification base: shared manifests can be committed, while generated run history stays ignored by default
 - context-aware baseline generation: manifest init can use repo-local context, ADRs, goals, agent instructions, harness files, skills, and runbooks as advisory bootstrap signals
