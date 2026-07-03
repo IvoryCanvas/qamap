@@ -5571,6 +5571,9 @@ test("generateAgentContext reflects npm scripts and repository boundaries", asyn
   assert.match(context, /Do not push directly to `main`/);
   assert.match(context, /Never create or suggest branches with a `codex\/` prefix/);
   assert.match(context, /Use `feat\/`, `fix\/`, `refactor\/`, `style\/`, `hotfix\/`, `chore\/`, or `docs\/` branch prefixes/);
+  assert.match(context, /## Pre-PR QA/);
+  assert.match(context, /npx qamap qa \. --base origin\/main --head HEAD --format agent/);
+  assert.match(context, /QA planning evidence, not as proof/);
 });
 
 async function makeTempRepo() {
