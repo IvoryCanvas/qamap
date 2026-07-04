@@ -4567,6 +4567,162 @@ test("qa command emits a PR comment draft without requiring a manifest", async (
   assert.equal(agentCliSummary.schema.name, "qamap.qa");
 });
 
+test("draft steps keep non-Latin selector labels instead of emitting blank actions", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/memo"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/memo/page.tsx"),
+    [
+      "export default function MemoPage() {",
+      "  return <main>",
+      "    <input placeholder=\"메모를 입력하세요\" />",
+      "    <button aria-label=\"저장하기\">저장</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/memo-tags"]);
+  await writeFile(
+    path.join(root, "app/memo/page.tsx"),
+    [
+      "export default function MemoPage() {",
+      "  return <main>",
+      "    <input placeholder=\"메모를 입력하세요\" />",
+      "    <input placeholder=\"태그를 입력하세요\" />",
+      "    <button aria-label=\"저장하기\">저장</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "add tag input"]);
+
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", runner: "playwright", dryRun: true });
+  const stepText = draft.files.flatMap((file) => file.draftSteps ?? []).join("\n");
+  assert.match(stepText, /Fill 메모를 입력하세요 with realistic data/);
+  assert.match(stepText, /using 저장하기/);
+  assert.doesNotMatch(stepText, /Fill\s{2,}with/);
+  assert.doesNotMatch(stepText, /using \.\s*$/m);
+  assert.doesNotMatch(formatMarkdownE2eDraft(draft), /Fill\s{2,}with/);
+});
+
+test("generateE2ePlan reaches consuming surfaces when only a shared component changes", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "components"), { recursive: true });
+  await mkdir(path.join(root, "app/cart"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: { test: "playwright test" },
+      dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" },
+    }),
+  );
+  await writeFile(
+    path.join(root, "tsconfig.json"),
+    JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./*"] } } }),
+  );
+  await writeFile(
+    path.join(root, "components/Button.tsx"),
+    "export function Button({ label }: { label: string }) { return <button data-testid=\"shared-button\">{label}</button>; }\n",
+  );
+  await writeFile(
+    path.join(root, "app/cart/page.tsx"),
+    [
+      "import { Button } from \"@/components/Button\";",
+      "export default function CartPage() {",
+      "  return <main><h1>Cart</h1><Button label=\"Checkout\" /></main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/button-variant"]);
+  await writeFile(
+    path.join(root, "components/Button.tsx"),
+    "export function Button({ label }: { label: string }) { return <button data-testid=\"shared-button\" className=\"primary\">{label}</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "button variant"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const uiFlow = plan.flows.find((flow) => flow.files.includes("app/cart/page.tsx"));
+  assert.ok(uiFlow, "expected a flow that reaches the consuming cart page via imports");
+  assert.ok(uiFlow.files.includes("components/Button.tsx"));
+  assert.match(uiFlow.reason, /through imports: components\/Button\.tsx -> app\/cart\/page\.tsx/);
+  assert.ok(uiFlow.entrypoints.some((entrypoint) => entrypoint.value === "/cart"));
+});
+
+test("verification manifest flows match when changed files are imported by anchored files", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "components"), { recursive: true });
+  await mkdir(path.join(root, "app/cart"), { recursive: true });
+  await mkdir(path.join(root, ".qamap"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0" } }),
+  );
+  await writeFile(
+    path.join(root, "components/Button.tsx"),
+    "export function Button() { return <button data-testid=\"shared-button\">Buy</button>; }\n",
+  );
+  await writeFile(
+    path.join(root, "app/cart/page.tsx"),
+    "import { Button } from \"../../components/Button\";\nexport default function CartPage() { return <main><Button /></main>; }\n",
+  );
+  await writeFile(
+    path.join(root, ".qamap/manifest.yaml"),
+    [
+      "version: 1",
+      "domains:",
+      "  - id: cart",
+      "    name: Cart",
+      "    paths:",
+      "      - app/cart/**",
+      "flows:",
+      "  - id: cart-checkout",
+      "    name: Cart checkout",
+      "    domain: cart",
+      "    anchors:",
+      "      - kind: file",
+      "        path: app/cart/page.tsx",
+      "    checks:",
+      "      - id: cart-checkout-success",
+      "        title: Complete checkout from the cart",
+      "        type: success",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/button-only"]);
+  await writeFile(
+    path.join(root, "components/Button.tsx"),
+    "export function Button() { return <button data-testid=\"shared-button\">Buy now</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "button copy"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  assert.ok(
+    plan.verificationManifestMatches.some((match) => match.kind === "flow" && match.id === "cart-checkout"),
+    "expected the cart-checkout manifest flow to match via the import chain",
+  );
+});
+
 test("generated drafts are not counted as test-suite evidence", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
