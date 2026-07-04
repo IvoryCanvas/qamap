@@ -4567,6 +4567,54 @@ test("qa command emits a PR comment draft without requiring a manifest", async (
   assert.equal(agentCliSummary.schema.name, "qamap.qa");
 });
 
+test("draft steps keep non-Latin selector labels instead of emitting blank actions", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/memo"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/memo/page.tsx"),
+    [
+      "export default function MemoPage() {",
+      "  return <main>",
+      "    <input placeholder=\"메모를 입력하세요\" />",
+      "    <button aria-label=\"저장하기\">저장</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/memo-tags"]);
+  await writeFile(
+    path.join(root, "app/memo/page.tsx"),
+    [
+      "export default function MemoPage() {",
+      "  return <main>",
+      "    <input placeholder=\"메모를 입력하세요\" />",
+      "    <input placeholder=\"태그를 입력하세요\" />",
+      "    <button aria-label=\"저장하기\">저장</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "add tag input"]);
+
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", runner: "playwright", dryRun: true });
+  const stepText = draft.files.flatMap((file) => file.draftSteps ?? []).join("\n");
+  assert.match(stepText, /Fill 메모를 입력하세요 with realistic data/);
+  assert.match(stepText, /using 저장하기/);
+  assert.doesNotMatch(stepText, /Fill\s{2,}with/);
+  assert.doesNotMatch(stepText, /using \.\s*$/m);
+  assert.doesNotMatch(formatMarkdownE2eDraft(draft), /Fill\s{2,}with/);
+});
+
 test("generateE2ePlan reaches consuming surfaces when only a shared component changes", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);

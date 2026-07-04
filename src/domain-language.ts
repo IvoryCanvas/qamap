@@ -171,7 +171,7 @@ function buildScenarioSuggestions(
       continue;
     }
     scenarios.push({
-      title: `${domain.name} primary journey`,
+      title: primaryJourneyTitle(domain.name),
       intent: `Use "${domain.name}" as the shared name for this changed behavior until the team chooses a more specific scenario.`,
       checks: [
         `Start from the normal entry point for ${domain.name}.`,
@@ -192,7 +192,7 @@ function buildScenarioSuggestions(
     .filter((item) => !hasBehaviorScenarioForTerm(item, behaviorScenarios))
     .slice(0, 5)) {
     scenarios.push({
-      title: `${term.term} primary journey`,
+      title: primaryJourneyTitle(term.term),
       intent: `Use "${term.term}" as the shared name for this changed behavior until the team chooses a better domain term.`,
       checks: [
         `Start from the normal entry point for ${term.term}.`,
@@ -206,6 +206,10 @@ function buildScenarioSuggestions(
   }
 
   return dedupeScenarios(scenarios).slice(0, 6);
+}
+
+function primaryJourneyTitle(name: string): string {
+  return `${name.replace(/\s+primary\s+journey\s*$/i, "").trim()} primary journey`;
 }
 
 function hasBehaviorScenarioForTerm(term: DomainLanguageTerm, scenarios: DomainScenarioSuggestion[]): boolean {

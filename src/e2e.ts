@@ -4715,7 +4715,12 @@ function exerciseStepSubject(step: string): string | undefined {
 }
 
 function selectorStepLabel(selector: E2eSelector): string {
-  return titleCase(selector.value.replace(/[-_]+/g, " "));
+  const label = titleCase(selector.value.replace(/[-_]+/g, " "));
+  if (label) {
+    return label;
+  }
+  const raw = selector.value.trim();
+  return raw.length > 0 ? `"${raw}"` : `the ${selector.kind} control`;
 }
 
 function actionVerbForSelector(selector: E2eSelector): string {
@@ -6006,7 +6011,7 @@ function titleCase(value: string): string {
   return value
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/[-_]+/g, " ")
-    .replace(/[^a-zA-Z0-9 ]+/g, " ")
+    .replace(/[^\p{L}\p{N} ]+/gu, " ")
     .trim()
     .split(/\s+/)
     .filter(Boolean)
