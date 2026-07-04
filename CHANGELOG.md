@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Draft steps and assertions now prefer selectors and labels that the diff itself introduced: added `aria-label`/`data-testid`/`testID`/placeholder values rank first when binding actions, so generated specs exercise what the change added instead of pre-existing UI. Selectors carry an `addedInDiff` marker in JSON output, and the benchmark runner reports a `diffAnchor` metric.
+- Domain scenarios are named after the action the diff introduced when an added element label makes one clear (for example "Checkout Submit" instead of "Checkout primary journey"), reducing content-free flow names.
+
 ### Fixed
 
 - Django-style Python service files with prefixed names (`views_summary.py`) or inside service module directories (`views/report_export.py`) are now classified as service sources, so backend changes join API contract flows instead of disappearing from the plan.

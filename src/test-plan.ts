@@ -615,6 +615,65 @@ async function defaultBaseRef(root: string): Promise<string> {
   throw new Error("Could not infer a base ref. Pass --base <ref>.");
 }
 
+export interface AddedDiffTextOptions {
+  base: string;
+  head: string;
+  workspaceRoot?: string;
+  includeWorkingTree?: boolean;
+}
+
+const maxAddedTextFiles = 200;
+const maxAddedTextPerFile = 20_000;
+
+export async function collectAddedDiffText(
+  rootInput: string,
+  options: AddedDiffTextOptions,
+): Promise<Record<string, string>> {
+  const root = path.resolve(rootInput);
+  const workspaceRoot = options.workspaceRoot ? path.resolve(options.workspaceRoot) : undefined;
+  const gitRoot = workspaceRoot ?? root;
+  const relativeRoot = workspaceRoot ? toPosixPath(path.relative(workspaceRoot, root)) : "";
+  const byFile: Record<string, string> = {};
+  try {
+    const { stdout } = await git(gitRoot, ["diff", "--unified=0", `${options.base}...${options.head}`]);
+    mergeAddedDiffText(byFile, stdout, relativeRoot);
+    if (options.includeWorkingTree) {
+      const { stdout: workingTree } = await git(gitRoot, ["diff", "--unified=0", "HEAD"]);
+      mergeAddedDiffText(byFile, workingTree, relativeRoot);
+    }
+  } catch {
+    return byFile;
+  }
+  return byFile;
+}
+
+function mergeAddedDiffText(byFile: Record<string, string>, diffText: string, relativeRoot: string): void {
+  let currentFile: string | undefined;
+  for (const line of diffText.split(/\r?\n/)) {
+    if (line.startsWith("+++ ")) {
+      const rawPath = line.replace(/^\+\+\+ /, "");
+      if (rawPath === "/dev/null") {
+        currentFile = undefined;
+        continue;
+      }
+      const filePath = rawPath.replace(/^b\//, "");
+      currentFile = relativeRoot ? stripScopedPath(filePath, relativeRoot, `${relativeRoot}/`) : filePath;
+      continue;
+    }
+    if (!currentFile || !line.startsWith("+") || line.startsWith("+++")) {
+      continue;
+    }
+    if (byFile[currentFile] === undefined && Object.keys(byFile).length >= maxAddedTextFiles) {
+      continue;
+    }
+    const existing = byFile[currentFile] ?? "";
+    if (existing.length >= maxAddedTextPerFile) {
+      continue;
+    }
+    byFile[currentFile] = `${existing}${line.slice(1)}\n`;
+  }
+}
+
 async function getChangedFiles(
   root: string,
   base: string,

@@ -1747,7 +1747,7 @@ test("generateE2ePlan keeps UI actors when API-adjacent screen files change", as
     runner: "maestro",
     output: ".maestro",
   });
-  const draftFile = draft.files.find((file) => file.flowTitle === "Vendors primary journey");
+  const draftFile = draft.files.find((file) => file.flowTitle === "Vendors Open");
   assert.ok(draftFile);
   assert.equal(draftFile.languageBrief.actor, "User");
 });
@@ -1922,7 +1922,7 @@ test("generateE2eDraft fills inferred web input selectors before submitting acti
     output: "tests/e2e",
     runner: "playwright",
   });
-  const draftFile = draft.files.find((file) => file.flowTitle === "Listing Media Link");
+  const draftFile = draft.files.find((file) => file.flowTitle === "Listing Media Link Submit");
   assert.ok(draftFile);
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
 
@@ -2506,9 +2506,12 @@ test("generateE2eDraft uses web selectors in Playwright specs", async () => {
     output: "tests/e2e",
     runner: "playwright",
   });
-  const draftFile = draft.files.find((file) => file.flowTitle === "Checkout primary journey");
+  const draftFile = draft.files.find((file) => file.flowTitle === "Checkout Submit");
   assert.ok(draftFile);
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
+  const apiDraftFile = draft.files.find((file) => file.flowTitle === "Checkout API contract smoke flow");
+  assert.ok(apiDraftFile);
+  const apiSpec = await readFile(path.join(root, apiDraftFile.path), "utf8");
 
   assert.equal(draft.runner, "playwright");
   assert.equal(draftFile.source, "domain-language");
@@ -2517,20 +2520,21 @@ test("generateE2eDraft uses web selectors in Playwright specs", async () => {
     draft.plan.flows[0].coverageEvidence.find((evidence) => evidence.targetTitle === "Primary success path")?.status,
     "missing",
   );
-  assert.ok(draft.files.some((file) => file.path === "tests/e2e/checkout-primary-journey.spec.ts"));
+  assert.ok(draft.files.some((file) => file.path === "tests/e2e/checkout-submit.spec.ts"));
   assert.ok(draftFile.entrypointCount > 0);
-  assert.ok(draftFile.setupHintCount >= 2);
+  assert.ok(draftFile.setupHintCount >= 1);
+  assert.ok(apiDraftFile.setupHintCount >= 2);
   assert.match(draftFile.primaryEntrypoint ?? "", /route \/checkout/);
-  assert.match(spec, /test\("Checkout primary journey"/);
+  assert.match(spec, /test\("Checkout Submit"/);
   assert.match(spec, /Domain scenario:/);
   assert.match(spec, /Draft brief:/);
   assert.match(spec, /Changed behavior:/);
   assert.match(spec, /Why this flow matters:/);
   assert.match(spec, /Human fixture inputs:/);
-  assert.match(spec, /Seed or mock success, empty, unauthorized, timeout, and server-error responses/);
+  assert.match(apiSpec, /Seed or mock success, empty, unauthorized, timeout, and server-error responses/);
   assert.match(spec, /Entrypoint hints:/);
   assert.match(spec, /Setup hints:/);
-  assert.match(spec, /Network response setup/);
+  assert.match(apiSpec, /Network response setup/);
   assert.match(spec, /Payment sandbox setup/);
   assert.match(spec, /page\.goto\("\/checkout"\)/);
   assert.match(spec, /page\.getByTestId\("checkout-submit"\)/);
@@ -2662,7 +2666,7 @@ test("generateE2ePlan captures Playwright execution profile and self-check block
   const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
   const markdown = formatMarkdownE2ePlan(plan);
   const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".generated-e2e" });
-  const draftFile = draft.files.find((file) => file.flowTitle === "Profile primary journey");
+  const draftFile = draft.files.find((file) => file.flowTitle === "Profile Save");
   assert.ok(draftFile);
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
 
@@ -2772,21 +2776,21 @@ test("generateE2ePlan infers Playwright base URLs from dev scripts", async () =>
   assert.deepEqual(setup.installCommands, ["pnpm add -D @playwright/test"]);
   assert.equal(setup.draftFiles.length, 1);
   assert.equal(setupDraftFile.status, "created");
-  assert.match(setupDraftFile.path, /^tests\/e2e\/settings-primary-journey\.spec\.ts$/);
+  assert.match(setupDraftFile.path, /^tests\/e2e\/settings-save\.spec\.ts$/);
   assert.equal(setup.nextCommands.some((command) => /^qamap e2e draft\b/.test(command)), false);
   assert.equal(packageJson.scripts["test:e2e"], "playwright test");
   assert.match(configText, /testDir: "\.\/tests\/e2e"/);
   assert.match(configText, /http:\/\/localhost:3004/);
   assert.match(configText, /command: "pnpm run dev"/);
-  assert.match(setupDraftText, /test\("Settings primary journey"/);
+  assert.match(setupDraftText, /test\("Settings Save"/);
   assert.match(setupDraftText, /page\.goto\("\/settings"\)/);
   assert.match(setupDraftText, /page\.getByLabel\("Save settings"\)\.click\(\)/);
   assert.match(setupDraftText, /expect\(page\.getByRole\("button", \{ name: "Save settings" \}\)\)\.toBeVisible\(\)/);
-  assert.match(setupDraftText, /Goal: Protect Settings primary journey by complete the main Settings action with realistic data/);
+  assert.match(setupDraftText, /Goal: Protect Settings Save by exercise Save with realistic data from the changed branch/);
   assert.doesNotMatch(setupDraftText, /TODO: Start from the normal entry point/);
   assert.doesNotMatch(setupDraftText, /test\.step\("Start from the normal entry point/);
   assert.match(setupMarkdown, /## Generated Draft/);
-  assert.match(setupMarkdown, /settings-primary-journey\.spec\.ts/);
+  assert.match(setupMarkdown, /settings-save\.spec\.ts/);
 });
 
 test("generateE2eDraft supports Next app router route groups and concrete route hints", async () => {
@@ -3066,7 +3070,7 @@ test("generateE2eDraft normalizes dynamic routes without creating id domain scen
     output: "tests/e2e",
     runner: "playwright",
   });
-  const bundleDraftFile = draft.files.find((file) => file.flowTitle === "Bundle primary journey");
+  const bundleDraftFile = draft.files.find((file) => file.flowTitle === "Bundle Apply");
   assert.ok(bundleDraftFile);
   const spec = await readFile(path.join(root, bundleDraftFile.path), "utf8");
 
@@ -3120,7 +3124,7 @@ test("generateE2eDraft preserves camelCase pages router route segments", async (
     output: "tests/e2e",
     runner: "playwright",
   });
-  const draftFile = draft.files.find((file) => file.flowTitle === "Bundle Submission Complete");
+  const draftFile = draft.files.find((file) => file.flowTitle === "Bundle Close Complete");
   assert.ok(draftFile);
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
 
@@ -3175,7 +3179,7 @@ test("generateE2eDraft fills dynamic route params from concrete route hints", as
     output: "tests/e2e",
     runner: "playwright",
   });
-  const draftFile = draft.files.find((file) => file.flowTitle === "Mysubmissions primary journey");
+  const draftFile = draft.files.find((file) => file.flowTitle === "Mysubmissions Submit Application");
   assert.ok(draftFile);
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
 
@@ -4609,7 +4613,7 @@ test("draft steps keep non-Latin selector labels instead of emitting blank actio
 
   const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", runner: "playwright", dryRun: true });
   const stepText = draft.files.flatMap((file) => file.draftSteps ?? []).join("\n");
-  assert.match(stepText, /Fill 메모를 입력하세요 with realistic data/);
+  assert.match(stepText, /Fill 태그를 입력하세요 with realistic data/);
   assert.match(stepText, /using 저장하기/);
   assert.doesNotMatch(stepText, /Fill\s{2,}with/);
   assert.doesNotMatch(stepText, /using \.\s*$/m);
@@ -4748,6 +4752,61 @@ test("django service files with prefixed or module-directory names join api flow
   assert.ok(flowFiles.includes("billing/views/report_export.py"));
   assert.ok(flowFiles.includes("billing/reporting/views_summary.py"));
   assert.ok(plan.flows.some((flow) => /API contract/i.test(flow.title)));
+});
+
+test("diff-added selectors rank first and name the changed behavior", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/notes"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/notes/page.tsx"),
+    [
+      "export default function NotesPage() {",
+      "  return <main>",
+      "    <input data-testid=\"note-input\" placeholder=\"Write a note\" />",
+      "    <button data-testid=\"add-note\">Add note</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/pin-notes"]);
+  await writeFile(
+    path.join(root, "app/notes/page.tsx"),
+    [
+      "export default function NotesPage() {",
+      "  return <main>",
+      "    <input data-testid=\"note-input\" placeholder=\"Write a note\" />",
+      "    <button data-testid=\"add-note\">Add note</button>",
+      "    <button data-testid=\"pin-note\" aria-label=\"Pin selected note\">Pin</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "add pin button"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const flow = plan.flows.find((item) => item.selectors.length > 0);
+  assert.ok(flow);
+  const pinSelector = flow.selectors.find((selector) => selector.value === "pin-note");
+  assert.ok(pinSelector, "expected the diff-added pin-note selector to be extracted");
+  assert.equal(pinSelector.addedInDiff, true);
+  assert.ok(
+    plan.domainLanguage.scenarios.some((scenario) => /pin/i.test(scenario.title)),
+    "expected a scenario named after the added pin action",
+  );
+
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", runner: "playwright", dryRun: true });
+  const stepText = draft.files.flatMap((file) => file.draftSteps ?? []).join("\n");
+  assert.match(stepText, /pin/i);
 });
 
 test("generated drafts are not counted as test-suite evidence", async () => {
@@ -5352,9 +5411,9 @@ test("domains and flows suggest changed-file manifests for package scopes", asyn
   assert.match(domainOutput.stdout, /name: Listing/);
   assert.match(domainOutput.stdout, /services\/listing\/src\/pages\/listing\/\*\*/);
   assert.match(domainOutput.stdout, /\/listing\/:listingId/);
-  assert.match(domainOutput.stdout, /Listing primary journey/);
+  assert.match(domainOutput.stdout, /Listing Apply/);
   assert.match(flowOutput.stdout, /flows:/);
-  assert.match(flowOutput.stdout, /id: listing-primary-journey/);
+  assert.match(flowOutput.stdout, /id: listing-apply/);
   assert.match(flowOutput.stdout, /domains:/);
   assert.match(flowOutput.stdout, /- listing/);
   assert.match(flowOutput.stdout, /routes:/);
@@ -5368,7 +5427,7 @@ test("domains and flows suggest changed-file manifests for package scopes", asyn
   assert.match(domainSuggestion.promotionPlan.candidates[0].action, /\.qamap\/domains\.yml/);
   assert.equal(flowSuggestion.promotionPlan.counts.commitCandidate, 1);
   assert.equal(flowSuggestion.promotionPlan.candidates[0].status, "commit-candidate");
-  assert.equal(flowSuggestion.promotionPlan.candidates[0].id, "listing-primary-journey");
+  assert.equal(flowSuggestion.promotionPlan.candidates[0].id, "listing-apply");
   assert.match(flowSuggestion.promotionPlan.candidates[0].action, /\.qamap\/flows\.yml/);
 });
 
