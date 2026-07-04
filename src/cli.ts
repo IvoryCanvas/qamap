@@ -85,7 +85,12 @@ interface ParsedOptions {
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
 
-  if (!command || command === "--help" || command === "-h") {
+  if (!command) {
+    printStartHere();
+    return 0;
+  }
+
+  if (command === "help" || command === "--help" || command === "-h") {
     printHelp();
     return 0;
   }
@@ -875,6 +880,30 @@ function readValue(args: string[], index: number, flag: string): string {
     throw new Error(`Missing value for ${flag}`);
   }
   return value;
+}
+
+function printStartHere(): void {
+  console.log(`QAMap ${VERSION} — local-first PR QA for AI-assisted changes.
+
+Start here, from inside your repository, on the branch you want to check:
+
+  qamap qa
+      What should this branch prove before merge? Prints the affected user
+      flow, recommended E2E runner, missing evidence, and a PR checklist.
+      The base branch defaults to origin/main (then main); override with
+      --base <ref> --head <ref>.
+
+  qamap e2e setup . --runner playwright
+      No tests yet? Create the runner config plus a first runnable starter
+      spec for the changed flow, then run it with: npm run test:e2e
+
+  qamap manifest init
+      Save reviewed team QA language to .qamap/manifest.yaml so future
+      branches get sharper recommendations. Optional — qa works without it.
+
+Handing the result to a coding agent? Add: --format agent
+
+Full command reference: qamap help`);
 }
 
 function printHelp(): void {

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Running `qamap` with no arguments now prints a short "start here" guide (the three core commands and when to use them) instead of the full 25-command usage wall; the full reference moved to `qamap help` and stays on `--help`.
+
 ### Added
 
 - Draft steps and assertions now prefer selectors and labels that the diff itself introduced: added `aria-label`/`data-testid`/`testID`/placeholder values rank first when binding actions, so generated specs exercise what the change added instead of pre-existing UI. Selectors carry an `addedInDiff` marker in JSON output, and the benchmark runner reports a `diffAnchor` metric.
