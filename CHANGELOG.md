@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Django-style Python service files with prefixed names (`views_campaigns.py`) or module directories (`views/seeding_creator.py`, `internal_ops/`) are now classified as service sources, so backend changes join API contract flows instead of disappearing from the plan.
+
 - Monorepo roots without framework dependencies of their own (turbo/pnpm/yarn workspaces where apps live under `apps/`, `services/`, or `packages/`) are no longer classified as unknown/manual: project detection now aggregates workspace member dependencies, with per-member evidence, so a frontend monorepo gets a web/Playwright recommendation at the root.
 
 ### Added
