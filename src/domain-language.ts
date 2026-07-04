@@ -50,6 +50,7 @@ export async function buildDomainLanguageSummary(
   changedFiles: TestPlanChangedFile[],
   coreFlows: MatchedCoreFlow[],
   domains: MatchedDomain[] = [],
+  addedDiffText: Record<string, string> = {},
 ): Promise<DomainLanguageSummary> {
   const root = path.resolve(rootInput);
   const files = changedFiles.map((file) => file.path).filter((file) => !isTestLikeFile(file));
@@ -80,7 +81,7 @@ export async function buildDomainLanguageSummary(
     .filter((term) => isUsefulTerm(term.term))
     .sort(compareTerms)
     .slice(0, 12);
-  const behaviorScenarios = buildBehaviorScenarioSuggestions(terms, files);
+  const behaviorScenarios = buildBehaviorScenarioSuggestions(terms, files, addedDiffText);
   const scenarios = buildScenarioSuggestions(terms, coreFlows, domains, behaviorScenarios);
 
   return {
@@ -220,6 +221,7 @@ function hasBehaviorScenarioForTerm(term: DomainLanguageTerm, scenarios: DomainS
 function buildBehaviorScenarioSuggestions(
   terms: DomainLanguageTerm[],
   files: string[],
+  addedDiffText: Record<string, string> = {},
 ): DomainScenarioSuggestion[] {
   const candidates = new Map<string, BehaviorScenarioCandidate>();
   for (const file of files.filter(isDomainLanguageFile)) {
@@ -227,7 +229,7 @@ function buildBehaviorScenarioSuggestions(
     if (!term) {
       continue;
     }
-    const behavior = behaviorLabelFromPath(file, term.term);
+    const behavior = behaviorLabelFromAddedText(addedDiffText[file], term.term) ?? behaviorLabelFromPath(file, term.term);
     if (!behavior) {
       continue;
     }
@@ -313,6 +315,35 @@ function isBehaviorOnlyTerm(term: string, file: string): boolean {
     return false;
   }
   return termTokens.every((token) => basenameTokens.some((basenameToken) => sameToken(token, basenameToken)));
+}
+
+const addedLabelMatcher =
+  /(?:aria-label|accessibilityLabel)=["']([^"'{}<>\n]{3,60})["']|data-testid=["']([^"'{}<>\n]{3,60})["']|testID=["']([^"'{}<>\n]{3,60})["']/g;
+
+function behaviorLabelFromAddedText(addedText: string | undefined, domainTerm: string): string | undefined {
+  if (!addedText) {
+    return undefined;
+  }
+  const domainTokens = behaviorTokensFromText(domainTerm);
+  let fallback: string | undefined;
+  for (const match of addedText.matchAll(addedLabelMatcher)) {
+    const label = match[1] ?? match[2] ?? match[3];
+    const tokens = behaviorTokensFromText(label)
+      .filter((token) => !domainTokens.some((domainToken) => sameToken(domainToken, token)))
+      .filter((token) => !behaviorStructuralTokens.has(token));
+    if (tokens.length === 0 || tokens.length > 4) {
+      continue;
+    }
+    if (tokens.length === 1 && !behaviorActionTokens.has(tokens[0]) && !isLikelyBusinessObjectToken(tokens[0])) {
+      continue;
+    }
+    const title = titleCase(tokens.map(formatBehaviorToken).join(" "));
+    if (tokens.some((token) => behaviorActionTokens.has(token))) {
+      return title;
+    }
+    fallback ??= title;
+  }
+  return fallback;
 }
 
 function behaviorLabelFromPath(file: string, domainTerm: string): string | undefined {

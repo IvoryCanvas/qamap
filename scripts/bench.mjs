@@ -60,6 +60,7 @@ for (const target of config.targets) {
     flows: plan.flows.length,
     genericTitles: plan.flows.filter((flow) => genericTitlePattern.test(flow.title)).length,
     importPropagatedFlows: plan.flows.filter((flow) => flow.reason.includes("through imports")).length,
+    diffAnchoredFlows: plan.flows.filter((flow) => (flow.selectors ?? []).some((selector) => selector.addedInDiff)).length,
     blankActions: allSteps.filter((step) => blankActionPattern.test(step)).length,
     mustReachRecall: mustReach.length > 0 ? `${reached.length}/${mustReach.length}` : null,
     mustReachMissing: mustReach.filter((file) => !flowFiles.has(file)),
@@ -91,6 +92,7 @@ function printTable(rows) {
     ["runner", 11],
     ["flows", 5],
     ["importPropagatedFlows", 10],
+    ["diffAnchoredFlows", 10],
     ["blankActions", 6],
     ["genericTitles", 8],
     ["mustReachRecall", 10],
@@ -128,7 +130,7 @@ function printDeltas(baselineRows, currentRows) {
       continue;
     }
     const deltas = [];
-    for (const key of ["flows", "importPropagatedFlows", "blankActions", "genericTitles", "agentBytes"]) {
+    for (const key of ["flows", "importPropagatedFlows", "diffAnchoredFlows", "blankActions", "genericTitles", "agentBytes"]) {
       const diff = (current[key] ?? 0) - (before[key] ?? 0);
       if (diff !== 0) {
         deltas.push(`${key} ${diff > 0 ? "+" : ""}${diff}`);
@@ -141,6 +143,7 @@ function printDeltas(baselineRows, currentRows) {
 function shortLabel(key) {
   const labels = {
     importPropagatedFlows: "viaImport",
+    diffAnchoredFlows: "diffAnchor",
     blankActions: "blank",
     genericTitles: "generic",
     mustReachRecall: "reach",

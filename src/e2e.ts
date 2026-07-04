@@ -13,7 +13,7 @@ import {
   evaluateFlowCoverageEvidence,
   summarizeTestSuiteInventory,
 } from "./test-evidence.js";
-import { generateTestPlan } from "./test-plan.js";
+import { collectAddedDiffText, generateTestPlan } from "./test-plan.js";
 import type { TestPlanChangedFile, TestPlanOptions, TestPlanResult } from "./test-plan.js";
 import type { DomainLanguageSummary, DomainScenarioSuggestion } from "./domain-language.js";
 import type { MatchedDomain } from "./domains.js";
@@ -163,6 +163,7 @@ export interface E2eSelector {
   kind: E2eSelectorKind;
   value: string;
   file: string;
+  addedInDiff?: boolean;
 }
 
 export interface E2eFixtureReadiness {
@@ -443,7 +444,13 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
   const domains = matchDomains(domainManifest, matchableChangedFiles);
   const verificationManifest = await loadVerificationManifest(coreFlowRoot, { manifestPath: options.manifestPath });
   const verificationManifestMatches = matchVerificationManifest(verificationManifest, matchableChangedFiles);
-  const domainLanguage = await buildDomainLanguageSummary(root, testPlan.changedFiles, coreFlows, domains);
+  const addedDiffText = await collectAddedDiffText(root, {
+    base: testPlan.base,
+    head: testPlan.head,
+    workspaceRoot: testPlan.workspaceRoot,
+    includeWorkingTree: options.includeWorkingTree,
+  });
+  const domainLanguage = await buildDomainLanguageSummary(root, testPlan.changedFiles, coreFlows, domains, addedDiffText);
   const workspaceTargets = await buildWorkspaceTargets(root, testPlan);
   const flows = await buildFlows(
     root,
@@ -452,6 +459,7 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
     project.type,
     testSuiteInventory,
     domainLanguage,
+    addedDiffText,
   );
   const testSuite = summarizeTestSuiteInventory(testSuiteInventory);
   const missingTestability = uniqueStrings([
@@ -4299,13 +4307,14 @@ async function buildFlows(
   projectType: E2eProjectType,
   testSuiteInventory: TestSuiteInventory,
   domainLanguage: DomainLanguageSummary,
+  addedDiffText: Record<string, string> = {},
 ): Promise<E2eFlow[]> {
   const files = changedFiles.map((file) => file.path);
   const importImpacts = await collectImportImpacts(root, files);
   const fixtureContext = await collectFixtureReadinessContext(root, files);
   const flowResults = await Promise.all(
     buildFlowCandidates(files, runner, projectType, domainLanguage, importImpacts).map((candidate) =>
-      buildFlow(root, runner, candidate, testSuiteInventory, fixtureContext),
+      buildFlow(root, runner, candidate, testSuiteInventory, fixtureContext, addedDiffText),
     ),
   );
   const flows = flowResults.filter((flow): flow is E2eFlow => Boolean(flow));
@@ -4681,6 +4690,7 @@ async function buildFlow(
   candidate: FlowCandidate,
   testSuiteInventory: TestSuiteInventory,
   fixtureContext: FixtureReadinessContext,
+  addedDiffText: Record<string, string> = {},
 ): Promise<E2eFlow | undefined> {
   const files = uniqueStrings(candidate.files).slice(0, 20);
   if (files.length === 0) {
@@ -4688,7 +4698,7 @@ async function buildFlow(
   }
   const coverage = buildCoverageTargets(candidate.kind, files, runner);
   const setupHints = await inferFlowSetupHints(root, files, candidate.kind);
-  const selectors = await inferFlowSelectors(root, files, runner);
+  const selectors = await inferFlowSelectors(root, files, runner, addedDiffText);
   const flow: Omit<E2eFlow, "languageBrief"> = {
     title: candidate.title,
     reason: candidate.reason,
@@ -4708,9 +4718,16 @@ async function buildFlow(
   };
 }
 
+function preferDiffAdded(
+  selectors: E2eSelector[],
+  predicate: (selector: E2eSelector) => boolean,
+): E2eSelector | undefined {
+  return selectors.find((selector) => selector.addedInDiff && predicate(selector)) ?? selectors.find(predicate);
+}
+
 function refineStepsForInferredSelectors(steps: string[], selectors: E2eSelector[]): string[] {
-  const inputSelector = selectors.find(isInputSelector);
-  const actionSelector = selectors.find((selector) => selectorCanDriveInteraction(selector) && !isInputSelector(selector));
+  const inputSelector = preferDiffAdded(selectors, isInputSelector);
+  const actionSelector = preferDiffAdded(selectors, (selector) => selectorCanDriveInteraction(selector) && !isInputSelector(selector));
   if (!inputSelector || !actionSelector || steps.some((step) => /^\s*(?:fill|input|enter|type|provide|write)\b/i.test(step))) {
     return steps;
   }
@@ -4729,8 +4746,8 @@ function refineStepsForInferredSelectors(steps: string[], selectors: E2eSelector
 }
 
 function refineManifestStepsForInferredSelectors(steps: string[], selectors: E2eSelector[]): string[] {
-  const inputSelector = selectors.find(isInputSelector);
-  const actionSelector = selectors.find((selector) => selectorCanDriveInteraction(selector) && !isInputSelector(selector));
+  const inputSelector = preferDiffAdded(selectors, isInputSelector);
+  const actionSelector = preferDiffAdded(selectors, (selector) => selectorCanDriveInteraction(selector) && !isInputSelector(selector));
   if (!inputSelector || !actionSelector || steps.some(isInputStep)) {
     return steps;
   }
@@ -5258,7 +5275,12 @@ const fixtureEvidenceIgnoredTokens = new Set([
   "tests",
 ]);
 
-async function inferFlowSelectors(root: string, files: string[], runner: E2eRunnerName): Promise<E2eSelector[]> {
+async function inferFlowSelectors(
+  root: string,
+  files: string[],
+  runner: E2eRunnerName,
+  addedDiffText: Record<string, string> = {},
+): Promise<E2eSelector[]> {
   const selectors: E2eSelector[] = [];
   for (const file of files.slice(0, 8)) {
     if (!isUiImplementationFile(file)) {
@@ -5268,7 +5290,10 @@ async function inferFlowSelectors(root: string, files: string[], runner: E2eRunn
     if (!text) {
       continue;
     }
-    selectors.push(...extractSelectorsFromText(file, text, runner));
+    const addedText = addedDiffText[file];
+    for (const selector of extractSelectorsFromText(file, text, runner)) {
+      selectors.push(addedText && addedText.includes(selector.value) ? { ...selector, addedInDiff: true } : selector);
+    }
   }
   return uniqueSelectors(selectors).slice(0, 12);
 }
@@ -8308,42 +8333,65 @@ function formatMaestroCommand(command: MaestroDraftCommand): string[] {
   return [`- ${command.kind}: ${command.value}`];
 }
 
+function takePreferredSelector(
+  selectors: E2eSelector[],
+  predicate: (selector: E2eSelector) => boolean,
+  diffGate: (selector: E2eSelector) => boolean = predicate,
+): E2eSelector | undefined {
+  let firstIndex = -1;
+  for (let index = 0; index < selectors.length; index += 1) {
+    const selector = selectors[index];
+    if (!predicate(selector)) {
+      continue;
+    }
+    if (selector.addedInDiff && diffGate(selector)) {
+      return selectors.splice(index, 1)[0];
+    }
+    if (firstIndex === -1) {
+      firstIndex = index;
+    }
+  }
+  return firstIndex >= 0 ? selectors.splice(firstIndex, 1)[0] : undefined;
+}
+
 function takeSelectorForStep(selectors: E2eSelector[], step: string): E2eSelector | undefined {
   if (/^launch\b/i.test(step)) {
     return undefined;
   }
   if (isInputStep(step)) {
-    const inputIndex = selectors.findIndex((selector) => isInputSelector(selector) && selectorMatchesStep(selector, step));
-    if (inputIndex >= 0) {
-      const [selector] = selectors.splice(inputIndex, 1);
-      return selector;
+    const matched = takePreferredSelector(selectors, (selector) => isInputSelector(selector) && selectorMatchesStep(selector, step));
+    if (matched) {
+      return matched;
     }
-    const fallbackInputIndex = selectors.findIndex(isInputSelector);
-    if (fallbackInputIndex >= 0) {
-      const [selector] = selectors.splice(fallbackInputIndex, 1);
-      return selector;
+    const fallbackInput = takePreferredSelector(selectors, isInputSelector);
+    if (fallbackInput) {
+      return fallbackInput;
     }
   }
   if (!isInteractionStep(step) && !isVerificationStep(step) && !canUsePrimarySelector(step)) {
     return undefined;
   }
-  const index = selectors.findIndex((selector) => !isInputSelector(selector) && selectorMatchesStep(selector, step));
-  if (index >= 0) {
-    const [selector] = selectors.splice(index, 1);
-    return selector;
+  const diffGateForStep = isAssertionStep(step) || isVerificationStep(step)
+    ? selectorCanSupportAssertion
+    : selectorCanDriveInteraction;
+  const matched = takePreferredSelector(
+    selectors,
+    (selector) => !isInputSelector(selector) && selectorMatchesStep(selector, step),
+    diffGateForStep,
+  );
+  if (matched) {
+    return matched;
   }
   if (isAssertionStep(step)) {
-    const assertionIndex = selectors.findIndex((selector) => selectorCanSupportAssertion(selector));
-    if (assertionIndex >= 0) {
-      const [selector] = selectors.splice(assertionIndex, 1);
-      return selector;
+    const assertion = takePreferredSelector(selectors, selectorCanSupportAssertion);
+    if (assertion) {
+      return assertion;
     }
   }
   if (canUsePrimarySelector(step)) {
-    const fallbackIndex = selectors.findIndex((selector) => selectorCanDriveInteraction(selector));
-    if (fallbackIndex >= 0) {
-      const [selector] = selectors.splice(fallbackIndex, 1);
-      return selector;
+    const fallback = takePreferredSelector(selectors, selectorCanDriveInteraction);
+    if (fallback) {
+      return fallback;
     }
   }
   return undefined;

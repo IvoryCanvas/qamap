@@ -22,6 +22,7 @@ node scripts/bench.mjs --baseline bench-results/<file>.json   # delta vs a saved
 
 - `runner` mismatch lines — wrong tool recommendation for a known repo shape.
 - `viaImport` — flows produced through the reverse import graph (shared-file changes reaching surfaces).
+- `diffAnchor` — flows whose selector set includes at least one selector introduced by the diff itself; higher means drafts act on what the change added instead of pre-existing UI.
 - `blank` — steps with blank action slots (must stay 0).
 - `generic` — flows with content-free names (`... primary journey`, `... smoke flow`); lower is better.
 - `reach` — recall of `mustReachFiles`; missing files are listed per target.
