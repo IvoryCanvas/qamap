@@ -5173,7 +5173,8 @@ function routeSegmentsFromFileParts(parts: string[]): string[] {
 function isBackendImplementationFile(file: string): boolean {
   return /(?:^|\/)(?:server|servers|backend|api|apis|routes|controllers?|handlers?|resolvers?|endpoints?)\//i.test(file) ||
     /(?:openapi|swagger|schema|controller|handler|resolver|route)\.(?:json|ya?ml|[cm]?[jt]sx?|py|go|rs|kt|java|rb|php)$/i.test(file) ||
-    /(?:^|\/)(?:urls|views|serializers|routers|controllers?|handlers?|admin|models|services|tasks|permissions|filters)\.py$/i.test(file);
+    /(?:^|\/)(?:urls|views|viewsets|serializers|routers|controllers?|handlers?|admin|models|services|tasks|permissions|filters|consumers|signals)\w*\.py$/i.test(file) ||
+    /(?:^|\/)(?:views|viewsets|serializers|services|routers|handlers|tasks|consumers|internal_ops)\/[^/]+\.py$/i.test(file);
 }
 
 function isMockOrFixtureFile(file: string): boolean {
@@ -5758,7 +5759,8 @@ function isUiImplementationFile(file: string): boolean {
 
 function isServiceSourceFile(file: string): boolean {
   return /(?:^|\/)src\/.+\.(?:[cm]?[jt]s|py|go|rs|java|kt|cs)$/i.test(file) ||
-    /(?:^|\/)(?:urls|views|serializers|routers|controllers?|handlers?|admin|models|services|tasks|permissions|filters)\.py$/i.test(file);
+    /(?:^|\/)(?:urls|views|viewsets|serializers|routers|controllers?|handlers?|admin|models|services|tasks|permissions|filters|consumers|signals)\w*\.py$/i.test(file) ||
+    /(?:^|\/)(?:views|viewsets|serializers|services|api|apis|routers|handlers|tasks|consumers|internal_ops)\/[^/]+\.py$/i.test(file);
 }
 
 function summarizeFlowSubject(files: string[], fallback: string, domainLanguage?: DomainLanguageSummary): string {
