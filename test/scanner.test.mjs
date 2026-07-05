@@ -4900,6 +4900,50 @@ test("vue bound attributes and i18n keys are not extracted as selectors", async 
   assert.ok(!values.some((value) => value === "t"), "expression fragments must not leak");
 });
 
+test("logic-only changes name journeys from the page's primary action", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/invoices"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/invoices/page.tsx"),
+    [
+      "const sort = (rows: number[]) => rows;",
+      "export default function InvoicesPage() {",
+      "  return <main>",
+      "    <button data-testid=\"send-invoice\">Send invoice</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/sort-desc"]);
+  await writeFile(
+    path.join(root, "app/invoices/page.tsx"),
+    [
+      "const sort = (rows: number[]) => [...rows].reverse();",
+      "export default function InvoicesPage() {",
+      "  return <main>",
+      "    <button data-testid=\"send-invoice\">Send invoice</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "sort desc"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const titles = plan.domainLanguage.scenarios.map((scenario) => scenario.title);
+  assert.ok(titles.some((title) => /Invoices Send/i.test(title)), `expected action-named scenario, got: ${titles.join(", ")}`);
+  assert.ok(!titles.some((title) => /Invoices primary journey/i.test(title)));
+});
+
 test("generated drafts are not counted as test-suite evidence", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);

@@ -82,7 +82,8 @@ export async function buildDomainLanguageSummary(
     .sort(compareTerms)
     .slice(0, 12);
   const behaviorScenarios = buildBehaviorScenarioSuggestions(terms, files, addedDiffText);
-  const scenarios = buildScenarioSuggestions(terms, coreFlows, domains, behaviorScenarios);
+  const fallbackBehaviors = await buildFullTextBehaviorFallbacks(root, terms, domains, behaviorScenarios, addedDiffText);
+  const scenarios = buildScenarioSuggestions(terms, coreFlows, domains, behaviorScenarios, fallbackBehaviors);
 
   return {
     terms,
@@ -130,6 +131,7 @@ function buildScenarioSuggestions(
   coreFlows: MatchedCoreFlow[],
   domains: MatchedDomain[],
   behaviorScenarios: DomainScenarioSuggestion[] = [],
+  fallbackBehaviors: Map<string, string> = new Map(),
 ): DomainScenarioSuggestion[] {
   const scenarios: DomainScenarioSuggestion[] = [];
 
@@ -171,9 +173,12 @@ function buildScenarioSuggestions(
       }
       continue;
     }
+    const domainFallback = fallbackBehaviors.get(domain.name);
     scenarios.push({
-      title: primaryJourneyTitle(domain.name),
-      intent: `Use "${domain.name}" as the shared name for this changed behavior until the team chooses a more specific scenario.`,
+      title: domainFallback ? `${domain.name} ${domainFallback}` : primaryJourneyTitle(domain.name),
+      intent: domainFallback
+        ? `The changed surface's primary "${domainFallback}" action names this journey; rename it if the team uses a better word.`
+        : `Use "${domain.name}" as the shared name for this changed behavior until the team chooses a more specific scenario.`,
       checks: [
         `Start from the normal entry point for ${domain.name}.`,
         `Complete the main ${domain.name} action with realistic data.`,
@@ -192,9 +197,12 @@ function buildScenarioSuggestions(
     .filter((item) => item.source !== "core-flow")
     .filter((item) => !hasBehaviorScenarioForTerm(item, behaviorScenarios))
     .slice(0, 5)) {
+    const termFallback = fallbackBehaviors.get(term.term);
     scenarios.push({
-      title: primaryJourneyTitle(term.term),
-      intent: `Use "${term.term}" as the shared name for this changed behavior until the team chooses a better domain term.`,
+      title: termFallback ? `${term.term} ${termFallback}` : primaryJourneyTitle(term.term),
+      intent: termFallback
+        ? `The changed surface's primary "${termFallback}" action names this journey; rename it if the team uses a better word.`
+        : `Use "${term.term}" as the shared name for this changed behavior until the team chooses a better domain term.`,
       checks: [
         `Start from the normal entry point for ${term.term}.`,
         `Complete the main ${term.term} action with realistic data.`,
@@ -207,6 +215,59 @@ function buildScenarioSuggestions(
   }
 
   return dedupeScenarios(scenarios).slice(0, 6);
+}
+
+async function buildFullTextBehaviorFallbacks(
+  root: string,
+  terms: DomainLanguageTerm[],
+  domains: MatchedDomain[],
+  behaviorScenarios: DomainScenarioSuggestion[],
+  addedDiffText: Record<string, string>,
+): Promise<Map<string, string>> {
+  const fallbacks = new Map<string, string>();
+  const candidates: Array<{ name: string; files: string[] }> = [
+    ...domains.map((domain) => ({ name: domain.name, files: domain.matchedFiles })),
+    ...terms
+      .filter((term) => term.source !== "core-flow")
+      .filter((term) => !hasBehaviorScenarioForTerm(term, behaviorScenarios))
+      .map((term) => ({ name: term.term, files: term.files })),
+  ];
+  for (const candidate of candidates.slice(0, 8)) {
+    if (fallbacks.has(candidate.name)) {
+      continue;
+    }
+    const uiFiles = candidate.files.filter((file) => /\.(?:tsx|jsx|vue|svelte)$/i.test(file)).slice(0, 2);
+    if (uiFiles.length === 0) {
+      continue;
+    }
+    // Gate: when the diff itself added labeled elements, naming intent belongs to the
+    // diff-added path (even when its filters declined) — never to pre-existing controls.
+    const addedHasLabels = uiFiles.some((file) => {
+      const addedText = addedDiffText[file];
+      if (!addedText) {
+        return false;
+      }
+      // .search() never reads or mutates lastIndex, unlike .test() on /g regexes.
+      return addedText.search(addedLabelMatcher) !== -1 || addedText.search(addedActionTextMatcher) !== -1;
+    });
+    if (addedHasLabels) {
+      continue;
+    }
+    for (const file of uiFiles) {
+      let fullText: string;
+      try {
+        fullText = await fs.readFile(path.join(root, file), "utf8");
+      } catch {
+        continue;
+      }
+      const behavior = behaviorLabelFromAddedText(fullText, candidate.name);
+      if (behavior) {
+        fallbacks.set(candidate.name, behavior);
+        break;
+      }
+    }
+  }
+  return fallbacks;
 }
 
 function primaryJourneyTitle(name: string): string {
@@ -820,4 +881,9 @@ const behaviorActionTokens = new Set([
   "update",
   "upload",
   "verify",
+  "send",
+  "share",
+  "export",
+  "download",
+  "print",
 ]);
