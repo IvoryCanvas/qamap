@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- When a diff changes only logic or styles on a surface (no labeled elements added), the journey is now named after the surface's primary action-bearing control ("Invoices Send" instead of "Invoices primary journey"). Diffs that add labeled elements keep the existing diff-derived naming, so previously named flows are unaffected. A few common action verbs (send, share, export, download, print) were added to the action vocabulary. Known limit: non-English control labels do not yet qualify as action names.
+
 ### Fixed
 
 - Vue bound attributes (`:aria-label="t('nav.search')"`, `v-bind` expressions) are no longer mistaken for literal selector values, and dotted i18n-key tokens (`menu.items.search`) are rejected as selector text, so Vue single-file components stop producing locators that can never match rendered UI.
