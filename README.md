@@ -53,7 +53,7 @@ Stop re-explaining the same QA context to your agent on every PR:
 qamap qa --format agent
 ```
 
-One minified JSON object (`schema: qamap.qa`, ~2 KB for a small PR) with affected flows, draft paths, required evidence, and the PR checklist — the decision content of the full report at a fraction of the context cost. To make agents run this themselves, run `qamap init --agent` once: it adds a Pre-PR QA section to `AGENTS.md` and installs the packaged skill ([skills/qamap-pr-qa/SKILL.md](skills/qamap-pr-qa/SKILL.md)) into `.claude/skills/`. Details: [agent skill guide](docs/agent-skill.md).
+One minified JSON object (`schema: qamap.qa`, ~2 KB for a small PR) with affected flows, draft paths, required evidence, and the PR checklist — the decision content of the full report at a fraction of the context cost. The shape is a documented, versioned contract: [agent format contract](docs/agent-format.md). To make agents run this themselves, run `qamap init --agent` once: it adds a Pre-PR QA section to `AGENTS.md` and installs the packaged skill ([skills/qamap-pr-qa/SKILL.md](skills/qamap-pr-qa/SKILL.md)) into `.claude/skills/`. Details: [agent skill guide](docs/agent-skill.md).
 
 ## Why QAMap
 
@@ -89,6 +89,7 @@ pnpm dlx @ivorycanvas/qamap qa . --base origin/main --head HEAD
 | [Verification manifest](docs/manifest.md) | Repo-local QA memory: schema, init, explain, repair loop |
 | [Adoption & rollout](docs/adoption.md) | First run to CI gate, plus positioning |
 | [Agent skill guide](docs/agent-skill.md) | Using QAMap from coding-agent workflows |
+| [Agent format contract](docs/agent-format.md) | The versioned `--format agent` JSON shape and stability policy |
 | [Repository guardrails](docs/guardrails.md) | The optional static scanner and its rules |
 | [Configuration](docs/configuration.md) | `qamap.config.json` policy options |
 | [GitHub Action](docs/github-action.md) | PR annotations, summaries, and comments in CI |

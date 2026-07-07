@@ -61,6 +61,8 @@ That means QAMap is most valuable when it becomes the team's verification base: 
 | `qamap eval . --base origin/main --head HEAD --pr-body-file pr-body.md` | Score change readiness across intent, risk, tests, and review size. |
 | `qamap github-action . --mode review --base origin/main --head HEAD` | Generate GitHub Action annotations, step summary, and PR comment body. |
 | `qamap test-plan . --base origin/main --head HEAD --include-working-tree` | Suggest domain test scenarios for changed files. |
+| `qamap qa . --base origin/main --head HEAD` | One-command PR QA: affected flows, missing QA evidence, a PR checklist, and E2E starter drafts, opening with At a Glance. |
+| `qamap qa . --base origin/main --head HEAD --format agent` | The same decision content as one ~2-4KB JSON line for coding agents — a versioned contract documented in [docs/agent-format.md](agent-format.md). |
 | `qamap e2e plan . --base origin/main --head HEAD` | Suggest E2E runner, bootstrap steps, user flows, coverage targets, existing test evidence, and missing testability hooks for changed files. |
 | `qamap e2e plan . --base origin/main --head HEAD --record-history` | Save a compact local run snapshot under `.qamap/runs/` while keeping JSON/Markdown output usable. |
 | `qamap e2e setup . --runner playwright` | Explicitly apply the accepted runner setup and create the first changed-flow E2E draft without overwriting existing files. |

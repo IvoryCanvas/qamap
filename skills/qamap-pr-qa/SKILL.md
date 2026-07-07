@@ -25,6 +25,7 @@ Use QAMap as a final local QA pass before presenting a pull request for human re
    ```
 
    Drop `--format agent` when a human will read the output directly; the default markdown report is written for people.
+   The agent JSON is a versioned contract (`schema: qamap.qa` v1, additive-only): see docs/agent-format.md in the QAMap repository.
 
 3. If the repository is a monorepo and the changed files are clearly inside one package, run a scoped pass too:
 
