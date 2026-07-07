@@ -363,12 +363,16 @@ Action summary:
 
 When a client-side change calls an API path but the branch does not include backend or fixture evidence, QAMap should name that as a readiness gap and still give the tester a concrete mock slot:
 
-If reusable repo-local evidence already exists, the PR QA output should point at it instead of only saying "add a fixture":
+If reusable repo-local evidence already exists, the PR QA output reads its contents (exports, handled routes, response keys) and points at the concrete thing to reuse instead of only saying "add a fixture":
 
 ```txt
 Missing evidence before trusting this PR
-- [recommended] fixture: Confirm fixture coverage - Reuse or extend existing fixture/mock evidence for this flow: src/services/demoSeedService.ts, src/services/metricsMockService.ts.
+- [recommended] fixture: Confirm fixture coverage for /api/sentiments/current - Reuse src/services/demoSeedService.ts (exports demoSeedService) to build a deterministic response for /api/sentiments/current.
 ```
+
+When an existing handler file already covers part of the flow, the next action names the file and the still-uncovered endpoints, for example `Extend src/mocks/handlers.ts (already handles /api/invoices) to also cover /api/payments/summary`. The generated Playwright mock bodies then reuse the response keys observed in that file (`invoices: "qamap-invoices"`) instead of the generic placeholder below, with a comment noting the source file.
+
+When no fixture file contents are available, the draft falls back to the generic placeholder:
 
 ```ts
 const mockApiResponses = {

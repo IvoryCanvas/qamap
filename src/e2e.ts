@@ -3,6 +3,8 @@ import path from "node:path";
 import YAML from "yaml";
 import { buildDomainLanguageSummary } from "./domain-language.js";
 import { defaultDomainManifestPath, loadDomainManifest, matchDomains } from "./domains.js";
+import { analyzeFixtureSource, insightCoversEndpoint } from "./fixture-insight.js";
+import type { FixtureFileInsight } from "./fixture-insight.js";
 import { collectProjectFiles } from "./fs.js";
 import { buildReverseImportIndex, expandChangedFilesWithImporters, findImportingSurfaces } from "./import-graph.js";
 import type { ImportImpact } from "./import-graph.js";
@@ -166,6 +168,8 @@ export interface E2eSelector {
   addedInDiff?: boolean;
 }
 
+export type { FixtureFileInsight } from "./fixture-insight.js";
+
 export interface E2eFixtureReadiness {
   status: E2eFixtureReadinessStatus;
   reason: string;
@@ -174,6 +178,7 @@ export interface E2eFixtureReadiness {
   backendSignals: string[];
   mockSignals: string[];
   nextActions: string[];
+  mockInsights?: FixtureFileInsight[];
 }
 
 export interface E2eValidationMatrixRow {
@@ -1867,18 +1872,22 @@ function buildDraftActionItems(
     }
   }
 
+  // Endpoints ride in the title because the agent format keeps only titles.
+  const fixtureEndpointSuffix = flow.fixtureReadiness.apiEndpoints.length > 0
+    ? ` for ${formatEndpointSummary(flow.fixtureReadiness.apiEndpoints)}`
+    : "";
   if (flow.fixtureReadiness.status === "missing") {
     items.push(draftActionItem(
       "fixture",
       "required",
-      "Add deterministic fixture or mock data",
+      `Add deterministic fixture or mock data${fixtureEndpointSuffix}`,
       flow.fixtureReadiness.nextActions[0] ?? flow.fixtureReadiness.reason,
     ));
   } else if (flow.fixtureReadiness.status === "partial") {
     items.push(draftActionItem(
       "fixture",
       "recommended",
-      "Confirm fixture coverage",
+      `Confirm fixture coverage${fixtureEndpointSuffix}`,
       flow.fixtureReadiness.nextActions[0] ?? flow.fixtureReadiness.reason,
     ));
   }
@@ -4956,14 +4965,36 @@ interface FixtureReadinessContext {
   changedBackendFiles: string[];
   changedMockFiles: string[];
   projectMockFiles: string[];
+  mockFileInsights: Map<string, FixtureFileInsight>;
 }
+
+const maxAnalyzedMockFiles = 24;
 
 async function collectFixtureReadinessContext(root: string, changedFiles: string[]): Promise<FixtureReadinessContext> {
   const projectFiles = await collectProjectFiles(root, 12000);
+  const changedMockFiles = changedFiles.filter(isMockOrFixtureFile).slice(0, maxFilesPerFlow);
+  const projectMockEntries = projectFiles.filter((file) => isMockOrFixtureFile(file.path));
+
+  // The project walk already loaded these files' text; parsing it here is what
+  // lets fixture guidance name concrete exports, handled routes, and keys.
+  const mockFileInsights = new Map<string, FixtureFileInsight>();
+  for (const file of changedMockFiles) {
+    const text = await readTextIfExists(path.join(root, file));
+    if (text !== undefined) {
+      mockFileInsights.set(file, analyzeFixtureSource(file, text));
+    }
+  }
+  for (const file of projectMockEntries.slice(0, maxAnalyzedMockFiles)) {
+    if (!mockFileInsights.has(file.path) && file.text !== undefined) {
+      mockFileInsights.set(file.path, analyzeFixtureSource(file.path, file.text));
+    }
+  }
+
   return {
     changedBackendFiles: changedFiles.filter(isBackendImplementationFile).slice(0, maxFilesPerFlow),
-    changedMockFiles: changedFiles.filter(isMockOrFixtureFile).slice(0, maxFilesPerFlow),
-    projectMockFiles: projectFiles.map((file) => file.path).filter(isMockOrFixtureFile).slice(0, maxFilesPerFlow),
+    changedMockFiles,
+    projectMockFiles: projectMockEntries.map((file) => file.path).slice(0, maxFilesPerFlow),
+    mockFileInsights,
   };
 }
 
@@ -5047,6 +5078,7 @@ async function inferFlowFixtureReadiness(
   const mockSignals = uniqueStrings([...changedMockSignals, ...fallbackProjectMockSignals]).slice(0, maxFilesPerFlow);
 
   if (changedMockSignals.length > 0) {
+    const changedInsights = insightsForMockSignals(changedMockSignals, context);
     return {
       status: "ready",
       reason: "This branch includes mock or fixture evidence for an API-dependent flow.",
@@ -5055,14 +5087,16 @@ async function inferFlowFixtureReadiness(
       backendSignals,
       mockSignals,
       nextActions: [
-        `Keep changed fixture/mock evidence aligned with this flow: ${formatFileSummary(changedMockSignals)}.`,
+        `Keep changed fixture/mock evidence aligned with this flow: ${describeFixtureEvidence(changedMockSignals, changedInsights)}.`,
         "Keep deterministic success, empty, unauthorized, and failure fixture cases aligned with the changed flow.",
       ],
+      ...(changedInsights.length > 0 ? { mockInsights: changedInsights } : {}),
     };
   }
 
   if (context.projectMockFiles.length > 0) {
     const reusableMockSignals = mockSignals.length > 0 ? mockSignals : context.projectMockFiles;
+    const reusableInsights = insightsForMockSignals(reusableMockSignals, context);
     return {
       status: "partial",
       reason: "Mock or fixture infrastructure exists, but this branch does not add flow-specific fixture evidence.",
@@ -5071,9 +5105,10 @@ async function inferFlowFixtureReadiness(
       backendSignals,
       mockSignals,
       nextActions: [
-        `Reuse or extend existing fixture/mock evidence for this flow: ${formatFileSummary(reusableMockSignals)}.`,
+        reuseFixtureAction(reusableMockSignals, reusableInsights, apiEndpoints),
         "Cover the primary success response and one empty, rejected, or server-error response.",
       ],
+      ...(reusableInsights.length > 0 ? { mockInsights: reusableInsights } : {}),
     };
   }
 
@@ -5086,7 +5121,9 @@ async function inferFlowFixtureReadiness(
       backendSignals,
       mockSignals,
       nextActions: [
-        "Confirm the test environment can serve the changed API path, or add a mock response for local E2E runs.",
+        apiEndpoints.length > 0
+          ? `Confirm the test environment can serve ${formatEndpointSummary(apiEndpoints)}, or add a mock response for local E2E runs.`
+          : "Confirm the test environment can serve the changed API path, or add a mock response for local E2E runs.",
         "Seed realistic response data for success and failure paths.",
       ],
     };
@@ -5100,10 +5137,69 @@ async function inferFlowFixtureReadiness(
     backendSignals,
     mockSignals,
     nextActions: [
-      "Add a deterministic mock or fixture response, such as MSW handlers, Playwright route fulfillment, mock data, or seeded test data.",
+      apiEndpoints.length > 0
+        ? `Add a deterministic mock or fixture response for ${formatEndpointSummary(apiEndpoints)}, such as an MSW handler, Playwright route fulfillment, mock data, or seeded test data.`
+        : "Add a deterministic mock or fixture response, such as MSW handlers, Playwright route fulfillment, mock data, or seeded test data.",
       "Include success plus one empty, unauthorized, rejected, timeout, or server-error response.",
     ],
   };
+}
+
+function insightsForMockSignals(mockSignals: string[], context: FixtureReadinessContext): FixtureFileInsight[] {
+  return mockSignals
+    .map((file) => context.mockFileInsights.get(file))
+    .filter((insight): insight is FixtureFileInsight => insight !== undefined)
+    .slice(0, 3);
+}
+
+function describeFixtureEvidence(mockSignals: string[], insights: FixtureFileInsight[]): string {
+  if (insights.length === 0) {
+    return formatFileSummary(mockSignals);
+  }
+  return insights.map(describeFixtureFile).join("; ");
+}
+
+function describeFixtureFile(insight: FixtureFileInsight): string {
+  if (insight.handledEndpoints.length > 0) {
+    return `${insight.file} (already handles ${formatEndpointSummary(insight.handledEndpoints)})`;
+  }
+  if (insight.exports.length > 0) {
+    return `${insight.file} (exports ${insight.exports.slice(0, 3).join(", ")})`;
+  }
+  return insight.file;
+}
+
+// Turns "reuse something somewhere" into "extend this file for these routes"
+// whenever the analyzed mock files give us that specificity.
+function reuseFixtureAction(
+  reusableMockSignals: string[],
+  insights: FixtureFileInsight[],
+  apiEndpoints: string[],
+): string {
+  if (insights.length === 0 || apiEndpoints.length === 0) {
+    return `Reuse or extend existing fixture/mock evidence for this flow: ${describeFixtureEvidence(reusableMockSignals, insights)}.`;
+  }
+  const uncovered = apiEndpoints.filter(
+    (endpoint) => !insights.some((insight) => insightCoversEndpoint(insight, endpoint)),
+  );
+  if (uncovered.length === 0) {
+    return `Wire the existing mock coverage into this flow's E2E run: ${describeFixtureEvidence(reusableMockSignals, insights)} for ${formatEndpointSummary(apiEndpoints)}.`;
+  }
+  const handlerInsight = insights.find((insight) => insight.handledEndpoints.length > 0);
+  if (handlerInsight) {
+    return `Extend ${describeFixtureFile(handlerInsight)} to also cover ${formatEndpointSummary(uncovered)}.`;
+  }
+  const exporterInsight = insights.find((insight) => insight.exports.length > 0);
+  if (exporterInsight) {
+    return `Reuse ${describeFixtureFile(exporterInsight)} to build a deterministic response for ${formatEndpointSummary(uncovered)}.`;
+  }
+  return `Reuse or extend existing fixture/mock evidence for ${formatEndpointSummary(uncovered)}: ${describeFixtureEvidence(reusableMockSignals, insights)}.`;
+}
+
+function formatEndpointSummary(endpoints: string[]): string {
+  const shown = endpoints.slice(0, 3);
+  const remaining = endpoints.length - shown.length;
+  return remaining > 0 ? `${shown.join(", ")} and ${remaining} more` : shown.join(", ");
 }
 
 async function findApiDependencySignals(
@@ -5227,9 +5323,18 @@ function isMockOrFixtureFile(file: string): boolean {
   const stem = basename.replace(/\.[^.]+$/g, "");
   const extension = path.extname(basename).toLowerCase();
   const canUseBroadFilenameMatch = fixtureEvidenceSourceExtensions.has(extension);
-  return /(?:^|\/)(?:__mocks__|mocks?|fixtures?|factories|seeds?|test-data|testData|msw|mirage)\//i.test(file) ||
-    /(?:mock|fixture|factory|seed|handler|msw)\.[cm]?[jt]sx?$/i.test(basename) ||
-    (canUseBroadFilenameMatch && /(?:mock|fixture|factory|seed|msw|mirage)/i.test(stem));
+  if (/(?:^|\/)(?:__mocks__|mocks?|fixtures?|factories|seeds?|test-data|testData|msw|mirage)\//i.test(file)) {
+    return true;
+  }
+  // Match whole name tokens, not substrings: demoSeedService and mock-users
+  // qualify, but a useSeedlingCatalog hook or an errorHandler utility does
+  // not. "handler" alone is an ordinary code word, so it only counts as mock
+  // evidence when the mock-ish directory rule above already matched.
+  const stemTokens = stem.split(/[^a-zA-Z0-9]+|(?<=[a-z0-9])(?=[A-Z])/).map((token) => token.toLowerCase());
+  return canUseBroadFilenameMatch &&
+    stemTokens.some((token) => token === "mock" || token === "mocks" || token === "fixture" || token === "fixtures" ||
+      token === "factory" || token === "factories" || token === "seed" || token === "seeds" ||
+      token === "msw" || token === "mirage");
 }
 
 function isFixtureEvidenceIgnoredPath(file: string): boolean {
@@ -7945,19 +8050,37 @@ function appendPlaywrightMockRouteScaffold(lines: string[], flow: E2eFlow): void
   if (mockableEndpoints.length === 0) {
     return;
   }
+  const insights = flow.fixtureReadiness.mockInsights ?? [];
+  const shapeSources: string[] = [];
   lines.push("");
   lines.push("  const mockApiResponses = {");
   for (const endpoint of mockableEndpoints.slice(0, maxFilesPerFlow)) {
+    const insight =
+      insights.find((candidate) => candidate.sampleKeys.length > 0 && insightCoversEndpoint(candidate, endpoint)) ??
+      insights.find((candidate) => candidate.sampleKeys.length > 0);
     lines.push(`    "${quoteJs(playwrightMockRoutePattern(endpoint))}": {`);
     lines.push("      status: 200,");
     lines.push("      body: {");
-    lines.push('        ok: true,');
-    lines.push('        source: "qamap-draft",');
+    if (insight) {
+      if (!shapeSources.includes(insight.file)) {
+        shapeSources.push(insight.file);
+      }
+      for (const key of insight.sampleKeys) {
+        lines.push(`        ${key}: "qamap-${key}",`);
+      }
+    } else {
+      lines.push('        ok: true,');
+      lines.push('        source: "qamap-draft",');
+    }
     lines.push("      },");
     lines.push("    },");
   }
   lines.push("  };");
-  lines.push("  // Replace sample responses with deterministic fixtures from the target domain before promoting this draft.");
+  if (shapeSources.length > 0) {
+    lines.push(`  // Response shape keys reuse ${formatFileSummary(shapeSources)}; replace the sample values with deterministic fixture data before promoting this draft.`);
+  } else {
+    lines.push("  // Replace sample responses with deterministic fixtures from the target domain before promoting this draft.");
+  }
   lines.push("  for (const [urlPattern, response] of Object.entries(mockApiResponses)) {");
   lines.push("    await page.route(urlPattern, async (route) => {");
   lines.push("      await route.fulfill({");

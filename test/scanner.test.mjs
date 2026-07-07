@@ -2300,13 +2300,140 @@ test("qa command points API-dependent flows at existing repo mock and seed files
 
   assert.ok(fixtureGap);
   assert.equal(fixtureGap.priority, "recommended");
-  assert.match(fixtureGap.detail, /Reuse or extend existing fixture\/mock evidence/);
-  assert.match(fixtureGap.detail, /src\/services\/metricsMockService\.ts/);
-  assert.match(fixtureGap.detail, /src\/services\/demoSeedService\.ts/);
+  assert.match(
+    fixtureGap.detail,
+    /Reuse src\/services\/demoSeedService\.ts \(exports demoSeedService\) to build a deterministic response for \/api\/sentiments\/current/,
+  );
   assert.doesNotMatch(fixtureGap.detail, /ios\/Pods/);
-  assert.match(markdown, /src\/services\/metricsMockService\.ts/);
   assert.match(markdown, /src\/services\/demoSeedService\.ts/);
   assert.doesNotMatch(markdown, /ios\/Pods/);
+});
+
+test("analyzeFixtureSource extracts exports, handled routes, and sample keys", async () => {
+  const { analyzeFixtureSource, insightCoversEndpoint } = await import("../dist/fixture-insight.js");
+
+  const handlers = analyzeFixtureSource(
+    "src/mocks/handlers.ts",
+    [
+      'import { http, HttpResponse } from "msw";',
+      "export const orderHandlers = [",
+      '  http.get("/api/orders", () => HttpResponse.json({ orders: [], total: 0 })),',
+      '  http.post("/api/orders/:id/cancel", () => HttpResponse.json({ ok: true })),',
+      "];",
+    ].join("\n"),
+  );
+  assert.deepEqual(handlers.exports, ["orderHandlers"]);
+  assert.deepEqual(handlers.handledEndpoints, ["/api/orders", "/api/orders/:id/cancel"]);
+  assert.ok(handlers.sampleKeys.includes("orders"));
+  assert.ok(handlers.sampleKeys.includes("total"));
+  assert.equal(insightCoversEndpoint(handlers, "/api/orders"), true);
+  assert.equal(insightCoversEndpoint(handlers, "/api/orders/1a2b/cancel"), true);
+  assert.equal(insightCoversEndpoint(handlers, "https://staging.example.test/api/orders"), true);
+  assert.equal(insightCoversEndpoint(handlers, "/api/payments"), false);
+  assert.equal(insightCoversEndpoint(handlers, "/api/orders/1a2b"), false);
+
+  const jsonFixture = analyzeFixtureSource("tests/fixtures/order.json", '[{"id": 1, "status": "paid"}]');
+  assert.deepEqual(jsonFixture.exports, []);
+  assert.deepEqual(jsonFixture.handledEndpoints, []);
+  assert.deepEqual(jsonFixture.sampleKeys, ["id", "status"]);
+
+  const globPattern = analyzeFixtureSource(
+    "tests/mocks/routes.ts",
+    'export function installRoutes(page) { return page.route("**/api/reports/*", () => {}); }',
+  );
+  assert.deepEqual(globPattern.handledEndpoints, ["/api/reports/*"]);
+  assert.equal(insightCoversEndpoint(globPattern, "/api/reports/monthly"), true);
+});
+
+test("fixture guidance names the mock handler file to extend and shapes mock payloads", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/mocks"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/billing"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        test: "playwright test",
+      },
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        "react-dom": "^19.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/mocks/handlers.ts"),
+    [
+      'import { http, HttpResponse } from "msw";',
+      "export const billingHandlers = [",
+      '  http.get("/api/invoices", () => HttpResponse.json({ invoices: [], total: 0 })),',
+      "];",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "src/pages/billing/BillingPage.tsx"),
+    "export function BillingPage() { return <button>Open billing</button>; }\n",
+  );
+  await mkdir(path.join(root, "src/utils"), { recursive: true });
+  await mkdir(path.join(root, "src/features/seedling-catalog"), { recursive: true });
+  await writeFile(
+    path.join(root, "src/utils/errorHandler.ts"),
+    "export function handleApiError(error) { return { message: String(error) }; }\n",
+  );
+  await writeFile(
+    path.join(root, "src/features/seedling-catalog/useSeedlingCatalog.ts"),
+    "export function useSeedlingCatalog() { return fetch('/api/catalog'); }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/billing-summary"]);
+  await writeFile(
+    path.join(root, "src/pages/billing/BillingPage.tsx"),
+    [
+      "export async function loadBilling() {",
+      "  const invoices = await fetch('/api/invoices');",
+      "  const summary = await fetch('/api/payments/summary');",
+      "  return { invoices: await invoices.json(), summary: await summary.json() };",
+      "}",
+      "export function BillingPage() { return <button data-testid=\"open-billing\">Open billing</button>; }",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "load billing summary"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const flow = plan.flows.find((item) => item.fixtureReadiness.status === "partial");
+
+  assert.ok(flow);
+  assert.ok(flow.fixtureReadiness.mockSignals.includes("src/mocks/handlers.ts"));
+  // Whole-token matching: neither the "handler" suffix nor a "seed" substring
+  // may pull ordinary source files into mock evidence.
+  assert.equal(flow.fixtureReadiness.mockSignals.includes("src/utils/errorHandler.ts"), false);
+  assert.equal(flow.fixtureReadiness.mockSignals.includes("src/features/seedling-catalog/useSeedlingCatalog.ts"), false);
+  assert.match(
+    flow.fixtureReadiness.nextActions[0],
+    /Extend src\/mocks\/handlers\.ts \(already handles \/api\/invoices\) to also cover \/api\/payments\/summary/,
+  );
+  assert.ok(flow.fixtureReadiness.mockInsights);
+  assert.deepEqual(flow.fixtureReadiness.mockInsights[0].handledEndpoints, ["/api/invoices"]);
+  assert.deepEqual(flow.fixtureReadiness.mockInsights[0].exports, ["billingHandlers"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const draftFile = draft.files.find((file) => file.fixtureReadinessStatus === "partial");
+  assert.ok(draftFile);
+  const spec = await readFile(path.join(root, draftFile.path), "utf8");
+  assert.match(spec, /invoices: "qamap-invoices"/);
+  assert.match(spec, /total: "qamap-total"/);
+  assert.match(spec, /Response shape keys reuse src\/mocks\/handlers\.ts/);
+  assert.doesNotMatch(spec, /source: "qamap-draft"/);
 });
 
 test("generateE2ePlan builds a bootstrap plan for projects without tests", async () => {
