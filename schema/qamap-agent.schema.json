@@ -1,0 +1,143 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/IvoryCanvas/qamap/main/schema/qamap-agent.schema.json",
+  "title": "QAMap agent QA summary (qamap.qa v1)",
+  "description": "The single-line JSON object printed by `qamap qa --format agent`. Within schema version 1, fields are only ever added — existing fields are never removed or retyped. A breaking change bumps schema.version to 2.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "base",
+    "head",
+    "project",
+    "runner",
+    "manifest",
+    "readiness",
+    "testSuite",
+    "flows",
+    "requiredEvidence",
+    "recommendedEvidenceCount",
+    "requiredBootstrap",
+    "prChecklist",
+    "commands"
+  ],
+  "properties": {
+    "schema": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "qamap.qa" },
+        "version": { "const": 1 }
+      }
+    },
+    "base": {
+      "type": "string",
+      "description": "Git ref the diff was computed against."
+    },
+    "head": {
+      "type": "string",
+      "description": "Git ref of the change under review."
+    },
+    "project": {
+      "type": "string",
+      "description": "Detected project type, for example web, react-native, node, python, unknown."
+    },
+    "runner": {
+      "type": "string",
+      "enum": ["maestro", "playwright", "manual"],
+      "description": "Recommended E2E runner for this repository."
+    },
+    "manifest": {
+      "type": ["string", "null"],
+      "description": "Path of the verification manifest in use, or null when the run used repo signals and the PR diff only."
+    },
+    "readiness": {
+      "type": "object",
+      "required": ["score", "level"],
+      "properties": {
+        "score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "level": {
+          "type": "string",
+          "enum": ["ready", "near-runnable", "needs-work", "blocked"],
+          "description": "Stable machine value; human reports render this as a stage on a four-step journey."
+        }
+      }
+    },
+    "testSuite": {
+      "type": "object",
+      "required": ["present", "files"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "files": { "type": "number", "minimum": 0 }
+      }
+    },
+    "firstDraftCommand": {
+      "type": "string",
+      "description": "One command that creates the first E2E draft. Only present when the repository has no test suite."
+    },
+    "flows": {
+      "type": "array",
+      "description": "Affected user flows derived from the diff, most relevant first (capped).",
+      "items": {
+        "type": "object",
+        "required": ["title", "source", "draft", "steps", "selectors"],
+        "properties": {
+          "title": { "type": "string" },
+          "source": {
+            "type": "string",
+            "description": "Where the flow came from, for example verification-manifest, core-flow, domain-language, heuristic."
+          },
+          "draft": { "type": "string", "description": "Path of the generated draft file for this flow." },
+          "runnable": {
+            "type": "string",
+            "enum": ["runnable-candidate", "near-runnable", "review-only"],
+            "description": "How trustworthy the generated draft is as an executable test. Absent when not evaluated."
+          },
+          "entry": { "type": "string", "description": "Best entrypoint hint (route or screen). Absent when unknown." },
+          "steps": { "type": "array", "items": { "type": "string" } },
+          "selectors": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "requiredEvidence": {
+      "type": "array",
+      "description": "QA evidence the change still needs before merge (required priority only, capped at 8).",
+      "items": {
+        "type": "object",
+        "required": ["flow", "kind", "title"],
+        "properties": {
+          "flow": { "type": "string" },
+          "kind": { "type": "string" },
+          "title": { "type": "string" }
+        }
+      }
+    },
+    "recommendedEvidenceCount": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Count of recommended-priority evidence items not listed here; run without --format agent to see them."
+    },
+    "requiredBootstrap": {
+      "type": "array",
+      "description": "Setup steps that must happen before drafts can be treated as regression coverage (capped at 3).",
+      "items": {
+        "type": "object",
+        "required": ["title", "action"],
+        "properties": {
+          "title": { "type": "string" },
+          "action": { "type": "string" }
+        }
+      }
+    },
+    "prChecklist": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Ready-to-paste PR checklist lines (capped)."
+    },
+    "commands": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Suggested commands to run next, most useful first (capped at 4)."
+    }
+  }
+}
