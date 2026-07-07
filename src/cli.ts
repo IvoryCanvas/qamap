@@ -43,6 +43,7 @@ import { formatMarkdownReviewReport, formatReviewReport, reviewProject } from ".
 import { scanProject } from "./scanner.js";
 import { isAtLeastSeverity, isSeverity } from "./severity.js";
 import { formatMarkdownTestPlan, generateTestPlan } from "./test-plan.js";
+import { colorizeReport, shouldColorize } from "./terminal.js";
 import { formatMarkdownVerifyReport, formatVerifyReport, verifyChange } from "./verify.js";
 import type { QAMapConfig } from "./types.js";
 import type { Severity } from "./types.js";
@@ -858,7 +859,7 @@ async function printOrWrite(output: string, outputPath?: string): Promise<void> 
     await fs.writeFile(resolvedOutputPath, output, "utf8");
     console.log(`Wrote ${resolvedOutputPath}`);
   } else {
-    console.log(output.trimEnd());
+    console.log(shouldColorize() ? colorizeReport(output.trimEnd()) : output.trimEnd());
   }
 }
 

@@ -4977,6 +4977,40 @@ test("korean action labels name flows and survive slugified filenames", async ()
   assert.match(stepText, /저장하기/);
 });
 
+test("terminal colorizer decorates reports only and passes machine formats through", async () => {
+  const { colorizeReport, shouldColorize } = await import("../dist/terminal.js");
+
+  const report = [
+    "# QAMap QA Draft",
+    "> quoted note",
+    "- Do next: `qamap e2e setup`",
+    "- [required] fixture: add data",
+    "- Readiness: blocked (0/100)",
+  ].join("\n");
+  const colored = colorizeReport(report);
+  assert.match(colored, /\u001b\[1m\u001b\[36m# QAMap QA Draft\u001b\[0m/);
+  assert.match(colored, /\u001b\[2m> quoted note\u001b\[0m/);
+  assert.match(colored, /\u001b\[31m\[required\]\u001b\[0m/);
+  assert.match(colored, /Readiness\u001b\[0m: \u001b\[31mblocked\u001b\[0m/);
+  assert.match(colored, /\u001b\[36mqamap e2e setup\u001b\[0m/);
+
+  const json = JSON.stringify({ schema: { name: "qamap.qa" } });
+  assert.equal(colorizeReport(json), json);
+
+  const previousNoColor = process.env.NO_COLOR;
+  const previousForce = process.env.FORCE_COLOR;
+  process.env.NO_COLOR = "1";
+  delete process.env.FORCE_COLOR;
+  assert.equal(shouldColorize({ isTTY: true }), false);
+  delete process.env.NO_COLOR;
+  process.env.FORCE_COLOR = "1";
+  assert.equal(shouldColorize({ isTTY: false }), true);
+  delete process.env.FORCE_COLOR;
+  assert.equal(shouldColorize({ isTTY: false }), false);
+  if (previousNoColor !== undefined) process.env.NO_COLOR = previousNoColor;
+  if (previousForce !== undefined) process.env.FORCE_COLOR = previousForce;
+});
+
 test("generated drafts are not counted as test-suite evidence", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);

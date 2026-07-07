@@ -4,6 +4,10 @@
 
 ### Added
 
+- Reports are colorized when printed to an interactive terminal: headings, the At a Glance keys, status words (blocked/needs-work/ready and friends), priority tags, and inline commands get ANSI styling with zero dependencies. Files written with `--output`, pipes, CI logs, and machine formats (`json`, `agent`, `sarif`) are byte-identical to before; the standard `NO_COLOR` and `FORCE_COLOR` environment variables are honored.
+
+### Added
+
 - Korean action labels now qualify for flow and scenario naming: labels like `저장하기` or `신청하기` (36 common action stems, with `~하기/~합니다`-style endings) name the journey the same way English action words do, draft filenames keep Hangul instead of collapsing to an empty slug, and Korean submit-like labels drive `Submit` steps. This closes the known limit noted in 0.3.3.
 
 ### Changed
