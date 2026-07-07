@@ -2300,13 +2300,226 @@ test("qa command points API-dependent flows at existing repo mock and seed files
 
   assert.ok(fixtureGap);
   assert.equal(fixtureGap.priority, "recommended");
-  assert.match(fixtureGap.detail, /Reuse or extend existing fixture\/mock evidence/);
-  assert.match(fixtureGap.detail, /src\/services\/metricsMockService\.ts/);
-  assert.match(fixtureGap.detail, /src\/services\/demoSeedService\.ts/);
+  assert.match(
+    fixtureGap.detail,
+    /Reuse src\/services\/demoSeedService\.ts \(exports demoSeedService\) to build a deterministic response for \/api\/sentiments\/current/,
+  );
   assert.doesNotMatch(fixtureGap.detail, /ios\/Pods/);
-  assert.match(markdown, /src\/services\/metricsMockService\.ts/);
   assert.match(markdown, /src\/services\/demoSeedService\.ts/);
   assert.doesNotMatch(markdown, /ios\/Pods/);
+});
+
+test("analyzeFixtureSource extracts exports, handled routes, and sample keys", async () => {
+  const { analyzeFixtureSource, insightCoversEndpoint } = await import("../dist/fixture-insight.js");
+
+  const handlers = analyzeFixtureSource(
+    "src/mocks/handlers.ts",
+    [
+      'import { http, HttpResponse } from "msw";',
+      "export const orderHandlers = [",
+      '  http.get("/api/orders", () => HttpResponse.json({ orders: [], total: 0 })),',
+      '  http.post("/api/orders/:id/cancel", () => HttpResponse.json({ ok: true })),',
+      "];",
+    ].join("\n"),
+  );
+  assert.deepEqual(handlers.exports, ["orderHandlers"]);
+  assert.deepEqual(handlers.handledEndpoints, ["/api/orders", "/api/orders/:id/cancel"]);
+  assert.ok(handlers.sampleKeys.includes("orders"));
+  assert.ok(handlers.sampleKeys.includes("total"));
+  assert.equal(insightCoversEndpoint(handlers, "/api/orders"), true);
+  assert.equal(insightCoversEndpoint(handlers, "/api/orders/1a2b/cancel"), true);
+  assert.equal(insightCoversEndpoint(handlers, "https://staging.example.test/api/orders"), true);
+  assert.equal(insightCoversEndpoint(handlers, "/api/payments"), false);
+  assert.equal(insightCoversEndpoint(handlers, "/api/orders/1a2b"), false);
+
+  const jsonFixture = analyzeFixtureSource("tests/fixtures/order.json", '[{"id": 1, "status": "paid"}]');
+  assert.deepEqual(jsonFixture.exports, []);
+  assert.deepEqual(jsonFixture.handledEndpoints, []);
+  assert.deepEqual(jsonFixture.sampleKeys, ["id", "status"]);
+
+  const dashedJson = analyzeFixtureSource("tests/fixtures/summary.json", '{"created-at": "x", "total": 1}');
+  assert.deepEqual(dashedJson.sampleKeys, ["created-at", "total"]);
+
+  const globPattern = analyzeFixtureSource(
+    "tests/mocks/routes.ts",
+    'export function installRoutes(page) { return page.route("**/api/reports/*", () => {}); }',
+  );
+  assert.deepEqual(globPattern.handledEndpoints, ["/api/reports/*"]);
+  assert.equal(insightCoversEndpoint(globPattern, "/api/reports/monthly"), true);
+  // A trailing single wildcard matches exactly one segment, never zero or two.
+  assert.equal(insightCoversEndpoint(globPattern, "/api/reports"), false);
+  assert.equal(insightCoversEndpoint(globPattern, "/api/reports/monthly/details"), false);
+
+  // Hosts never masquerade as path segments, and catch-all handlers register.
+  const hostPatterns = analyzeFixtureSource(
+    "src/mocks/host-handlers.ts",
+    [
+      'export const hostHandlers = [',
+      '  http.get("//api.example.test/api/orders", () => HttpResponse.json({ ok: true })),',
+      '];',
+      'export function installCatchAll(page) { return page.route("**", () => {}); }',
+    ].join("\n"),
+  );
+  assert.deepEqual(hostPatterns.handledEndpoints, ["/api/orders", "/**"]);
+  assert.equal(insightCoversEndpoint(hostPatterns, "/api/orders"), true);
+  assert.equal(insightCoversEndpoint(hostPatterns, "/api/anything/else"), true);
+
+  // Relative patterns are dropped instead of silently truncated, and code
+  // option keys whose values are not data literals stay out of sampleKeys.
+  const noisy = analyzeFixtureSource(
+    "src/mocks/noisy.ts",
+    'export const q = { queryFn: fetchThing, retries: 2 }; page.route("api/orders", () => {});',
+  );
+  assert.deepEqual(noisy.handledEndpoints, []);
+  assert.deepEqual(noisy.sampleKeys, ["retries"]);
+});
+
+test("generated mock bodies quote non-identifier fixture keys from JSON fixtures", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "fixtures"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/billing"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        test: "playwright test",
+      },
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        "react-dom": "^19.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "fixtures/billing-summary.json"),
+    '{"created-at": "2026-01-01", "total": 1}',
+  );
+  await writeFile(
+    path.join(root, "src/pages/billing/BillingPage.tsx"),
+    "export function BillingPage() { return <button>Open billing</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/billing-payments"]);
+  await writeFile(
+    path.join(root, "src/pages/billing/BillingPage.tsx"),
+    [
+      "export async function loadSummary() {",
+      "  const response = await fetch('/api/payments/summary');",
+      "  return response.json();",
+      "}",
+      "export function BillingPage() { return <button data-testid=\"open-billing\">Open billing</button>; }",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "load payments summary"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const draftFile = draft.files.find((file) => file.fixtureReadinessStatus === "partial");
+  assert.ok(draftFile);
+  const spec = await readFile(path.join(root, draftFile.path), "utf8");
+  assert.match(spec, /"created-at": "qamap-created-at"/);
+  assert.match(spec, /total: "qamap-total"/);
+  assert.match(spec, /Response shape keys reuse fixtures\/billing-summary\.json/);
+});
+
+test("fixture guidance names the mock handler file to extend and shapes mock payloads", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/mocks"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/billing"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        test: "playwright test",
+      },
+      dependencies: {
+        "@playwright/test": "^1.56.0",
+        "react-dom": "^19.0.0",
+      },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/mocks/handlers.ts"),
+    [
+      'import { http, HttpResponse } from "msw";',
+      "export const billingHandlers = [",
+      '  http.get("/api/invoices", () => HttpResponse.json({ invoices: [], total: 0 })),',
+      "];",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "src/pages/billing/BillingPage.tsx"),
+    "export function BillingPage() { return <button>Open billing</button>; }\n",
+  );
+  await mkdir(path.join(root, "src/utils"), { recursive: true });
+  await mkdir(path.join(root, "src/features/seedling-catalog"), { recursive: true });
+  await writeFile(
+    path.join(root, "src/utils/errorHandler.ts"),
+    "export function handleApiError(error) { return { message: String(error) }; }\n",
+  );
+  await writeFile(
+    path.join(root, "src/features/seedling-catalog/useSeedlingCatalog.ts"),
+    "export function useSeedlingCatalog() { return fetch('/api/catalog'); }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/billing-summary"]);
+  await writeFile(
+    path.join(root, "src/pages/billing/BillingPage.tsx"),
+    [
+      "export async function loadBilling() {",
+      "  const invoices = await fetch('/api/invoices');",
+      "  const summary = await fetch('/api/payments/summary');",
+      "  return { invoices: await invoices.json(), summary: await summary.json() };",
+      "}",
+      "export function BillingPage() { return <button data-testid=\"open-billing\">Open billing</button>; }",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "load billing summary"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const flow = plan.flows.find((item) => item.fixtureReadiness.status === "partial");
+
+  assert.ok(flow);
+  assert.ok(flow.fixtureReadiness.mockSignals.includes("src/mocks/handlers.ts"));
+  // Whole-token matching: neither the "handler" suffix nor a "seed" substring
+  // may pull ordinary source files into mock evidence.
+  assert.equal(flow.fixtureReadiness.mockSignals.includes("src/utils/errorHandler.ts"), false);
+  assert.equal(flow.fixtureReadiness.mockSignals.includes("src/features/seedling-catalog/useSeedlingCatalog.ts"), false);
+  assert.match(
+    flow.fixtureReadiness.nextActions[0],
+    /Extend src\/mocks\/handlers\.ts \(already handles \/api\/invoices\) to also cover \/api\/payments\/summary/,
+  );
+  assert.ok(flow.fixtureReadiness.mockInsights);
+  assert.deepEqual(flow.fixtureReadiness.mockInsights[0].handledEndpoints, ["/api/invoices"]);
+  assert.deepEqual(flow.fixtureReadiness.mockInsights[0].exports, ["billingHandlers"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: "tests/e2e",
+    runner: "playwright",
+  });
+  const draftFile = draft.files.find((file) => file.fixtureReadinessStatus === "partial");
+  assert.ok(draftFile);
+  const spec = await readFile(path.join(root, draftFile.path), "utf8");
+  assert.match(spec, /invoices: "qamap-invoices"/);
+  assert.match(spec, /total: "qamap-total"/);
+  assert.match(spec, /Response shape keys reuse src\/mocks\/handlers\.ts/);
+  assert.doesNotMatch(spec, /source: "qamap-draft"/);
 });
 
 test("generateE2ePlan builds a bootstrap plan for projects without tests", async () => {
