@@ -15,6 +15,14 @@ const ignoredDirectories = new Set([
   ".turbo",
   ".cache",
   "vendor",
+  // Mobile vendor/derived trees: on React Native and Expo repos these hold
+  // tens of thousands of files and, because the walk is alphabetical and
+  // capped, they can starve the scan before it ever reaches src/.
+  "Pods",
+  ".expo",
+  ".gradle",
+  "DerivedData",
+  "Carthage",
 ]);
 
 const textExtensions = new Set([
@@ -44,6 +52,8 @@ const textExtensions = new Set([
   ".ts",
   ".tsx",
   ".txt",
+  ".vue",
+  ".svelte",
   ".yaml",
   ".yml",
   ".zsh",
@@ -59,6 +69,7 @@ const textBasenames = new Set([
   "CODE_OF_CONDUCT.md",
   "Dockerfile",
   "Makefile",
+  "setup.cfg",
 ]);
 
 const maxReadableBytes = 256 * 1024;

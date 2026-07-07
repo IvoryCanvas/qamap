@@ -28,6 +28,7 @@ import {
   formatMarkdownVerifyReport,
   formatReviewReport,
   formatSarifReport,
+  formatVerificationManifestInitResult,
   generateAgentContext,
   generateE2eDraft,
   generateE2ePlan,
@@ -4307,6 +4308,362 @@ test("manifest init creates a baseline verification manifest", async () => {
 
   const cliOutput = await execFileAsync(process.execPath, [cliPath, "manifest", "init", root, "--force"]);
   assert.match(cliOutput.stdout, /Review and commit this file/);
+  assert.match(cliOutput.stdout, /Scanned files: \d+/);
+  assert.doesNotMatch(cliOutput.stdout, /Warning: the scan stopped/);
+});
+
+test("manifest init warns when the file scan hits the max-files cap", async () => {
+  const root = await makeTempRepo();
+  // Alphabetically-early vendor noise starves the capped walk before it
+  // reaches src/, mirroring iOS Pods on mobile repos.
+  await mkdir(path.join(root, "aaa-noise"), { recursive: true });
+  for (let index = 0; index < 8; index += 1) {
+    await writeFile(path.join(root, `aaa-noise/file-${index}.txt`), "noise\n");
+  }
+  await mkdir(path.join(root, "src/pages/orders"), { recursive: true });
+  await writeFile(path.join(root, "src/pages/orders/index.tsx"), "export default function OrdersPage() { return <div />; }\n");
+
+  const result = await writeVerificationManifestBaseline(root, { maxFiles: 5 });
+  assert.equal(result.scan.truncated, true);
+  assert.equal(result.scan.maxFiles, 5);
+  assert.equal(result.scan.files, 5);
+  const formatted = formatVerificationManifestInitResult(result);
+  assert.match(formatted, /Warning: the scan stopped at the 5-file limit/);
+  assert.match(formatted, /--max-files 20 --force/);
+
+  const validation = await validateVerificationManifest(root);
+  const domainIssue = validation.issues.find((item) => item.message === "No domains are declared.");
+  assert.ok(domainIssue);
+  assert.match(domainIssue.recommendation, /--max-files/);
+});
+
+test("manifest init ignores mobile vendor trees and gitignored-style build output", async () => {
+  const root = await makeTempRepo();
+  await mkdir(path.join(root, "ios/Pods/SomeSDK"), { recursive: true });
+  for (let index = 0; index < 30; index += 1) {
+    await writeFile(path.join(root, `ios/Pods/SomeSDK/module-${index}.swift`), "// vendored\n");
+  }
+  await mkdir(path.join(root, "services/admin/out/_next/static/chunks"), { recursive: true });
+  await writeFile(
+    path.join(root, "services/admin/out/_next/static/chunks/app-1a2b3c.js"),
+    "export const generated = true;\n",
+  );
+  await mkdir(path.join(root, "src/features/orders"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ dependencies: { "react-native": "^0.75.0" }, scripts: { test: "jest --runInBand" } }),
+  );
+  await writeFile(
+    path.join(root, "src/features/orders/OrdersScreen.tsx"),
+    "export function OrdersScreen() { return <button>주문 확인</button>; }\n",
+  );
+
+  const result = await writeVerificationManifestBaseline(root, { maxFiles: 25 });
+  const manifest = await loadVerificationManifest(root);
+
+  // Pods never enters the walk, so the small cap still reaches src/.
+  assert.equal(result.scan.truncated, false);
+  assert.ok(manifest.domains.some((domain) => domain.id === "orders"));
+  // Build-output chunks are not behavior files, so no domain forms around them.
+  assert.equal(manifest.domains.some((domain) => domain.paths.some((glob) => glob.includes("/out/"))), false);
+  assert.ok(manifest.context?.validationCommands.includes("npm run test"));
+});
+
+test("manifest init ranks product journeys ahead of alphabetical UI plumbing", async () => {
+  const root = await makeTempRepo();
+  await mkdir(path.join(root, "src/pages/aaa-admin/archive"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/api"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/user/login"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/checkout/_orderId"), { recursive: true });
+  await mkdir(path.join(root, "src/components/shared"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ dependencies: { vue: "^2.7.0" }, scripts: { lint: "eslint src" } }),
+  );
+  await writeFile(path.join(root, "src/pages/index.vue"), "<template><button data-testid=\"go-login\">시작</button></template>\n");
+  await writeFile(path.join(root, "src/pages/aaa-admin/archive/index.vue"), "<template><div /></template>\n");
+  await writeFile(path.join(root, "src/pages/api/health.ts"), "export default function handler() {}\n");
+  await writeFile(path.join(root, "src/pages/user/login/index.vue"), "<template><form /></template>\n");
+  await writeFile(path.join(root, "src/pages/checkout/_orderId/edit.vue"), "<template><div /></template>\n");
+  await writeFile(
+    path.join(root, "src/components/shared/ConfirmModal.vue"),
+    "<template><div /></template>\n<script>export default { name: 'ConfirmModal' }</script>\n",
+  );
+
+  const result = await writeVerificationManifestBaseline(root);
+  const manifest = await loadVerificationManifest(root);
+
+  // Root index becomes "/", Nuxt dynamic segments become :params, API
+  // handlers and generic modal primitives never become flows.
+  assert.ok(manifest.flows.some((flow) => flow.entry?.route === "/"));
+  assert.ok(manifest.flows.some((flow) => flow.entry?.route === "/checkout/:orderId/edit"));
+  assert.equal(manifest.flows.some((flow) => flow.entry?.route?.startsWith("/api")), false);
+  assert.equal(manifest.flows.some((flow) => /confirm modal/i.test(flow.name)), false);
+
+  // The login journey ranks ahead of the alphabetically-first admin leaf.
+  const names = manifest.flows.map((flow) => flow.name);
+  assert.ok(names.findIndex((name) => /login/i.test(name)) < names.findIndex((name) => /archive/i.test(name)));
+
+  // The observed test id lands on the happy-path check as a selector.
+  const homeFlow = manifest.flows.find((flow) => flow.entry?.route === "/");
+  assert.equal(homeFlow?.checks[0]?.selector, '[data-testid="go-login"]');
+  assert.equal(result.summary.flows > 0, true);
+});
+
+test("manifest init never mints domains from colocated files or non-Python marker dirs", async () => {
+  const root = await makeTempRepo();
+  // Next.js App Router colocation: components/hooks/utils under app/.
+  await mkdir(path.join(root, "src/app/components"), { recursive: true });
+  await mkdir(path.join(root, "src/app/hooks"), { recursive: true });
+  await mkdir(path.join(root, "src/app/utils"), { recursive: true });
+  await mkdir(path.join(root, "src/app/api/health"), { recursive: true });
+  await mkdir(path.join(root, "src/app/orders"), { recursive: true });
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ dependencies: { next: "^15.0.0", react: "^19.0.0" } }));
+  await writeFile(path.join(root, "src/app/components/Button.tsx"), "export function Button() { return null; }\n");
+  await writeFile(path.join(root, "src/app/hooks/useCart.ts"), "export function useCart() { return null; }\n");
+  await writeFile(path.join(root, "src/app/utils/format.ts"), "export function format() { return null; }\n");
+  await writeFile(path.join(root, "src/app/api/health/route.ts"), "export async function GET() { return Response.json({}); }\n");
+  await writeFile(path.join(root, "src/app/orders/page.tsx"), "export default function OrdersPage() { return null; }\n");
+  // Rails-shaped tree: marker dirs with non-Python contents.
+  await mkdir(path.join(root, "server/models"), { recursive: true });
+  await mkdir(path.join(root, "server/views/users"), { recursive: true });
+  await writeFile(path.join(root, "server/models/user.rb"), "class User; end\n");
+  await writeFile(path.join(root, "server/views/users/index.html.erb"), "<div></div>\n");
+
+  const manifest = (await writeVerificationManifestBaseline(root)).manifest;
+
+  assert.deepEqual(manifest.domains.map((domain) => domain.id), ["orders"]);
+  // route.* handlers are never navigable flows, even outside app/api.
+  assert.equal(manifest.flows.some((flow) => flow.entry?.route?.includes("health")), false);
+  const validation = await validateVerificationManifest(root);
+  assert.equal(validation.issues.some((item) => item.severity === "error"), false);
+});
+
+test("manifest init merges same-id domains from the JS and Django passes", async () => {
+  const root = await makeTempRepo();
+  await mkdir(path.join(root, "src/features/orders"), { recursive: true });
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ dependencies: { react: "^19.0.0" } }));
+  await writeFile(path.join(root, "src/features/orders/OrdersPage.tsx"), "export function OrdersPage() { return null; }\n");
+  await mkdir(path.join(root, "backend/orders"), { recursive: true });
+  await writeFile(path.join(root, "backend/orders/models.py"), "class Order: pass\n");
+  await writeFile(path.join(root, "backend/orders/views.py"), "def index(request): return None\n");
+
+  const manifest = (await writeVerificationManifestBaseline(root)).manifest;
+  const ordersDomains = manifest.domains.filter((domain) => domain.id === "orders");
+  assert.equal(ordersDomains.length, 1);
+  // Nested Django apps are recognized and merged into the JS-derived domain.
+  assert.ok(ordersDomains[0].paths.some((glob) => glob === "backend/orders/**"));
+  assert.ok(ordersDomains[0].source.from.some((label) => label.startsWith("django-")));
+  const validation = await validateVerificationManifest(root);
+  assert.equal(validation.issues.some((item) => item.severity === "error"), false);
+});
+
+test("manifest flows keep bare product-action components and wrapped default exports", async () => {
+  const root = await makeTempRepo();
+  await mkdir(path.join(root, "src/features/billing"), { recursive: true });
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ dependencies: { react: "^19.0.0" } }));
+  // Bare product action survives; bare structural noun does not.
+  await writeFile(path.join(root, "src/features/billing/Checkout.tsx"), "export function Checkout() { return null; }\n");
+  await writeFile(path.join(root, "src/features/billing/Modal.tsx"), "export function Modal() { return null; }\n");
+  // Wrapped default export resolves to the component, not the first const.
+  await writeFile(
+    path.join(root, "src/features/billing/PaymentForm.tsx"),
+    [
+      "import { memo } from 'react';",
+      "export const layoutConfig = { wide: true };",
+      "const PaymentForm = () => null;",
+      "export default memo(PaymentForm);",
+    ].join("\n"),
+  );
+
+  const manifest = (await writeVerificationManifestBaseline(root)).manifest;
+  const names = manifest.flows.map((flow) => flow.name);
+  assert.ok(names.includes("Checkout"));
+  assert.equal(names.includes("Modal"), false);
+  const paymentFlow = manifest.flows.find((flow) => flow.name === "Payment Form");
+  assert.equal(paymentFlow?.anchors[0]?.symbol, "PaymentForm");
+});
+
+test("manifest runner detects Expo workspaces through member package.json files", async () => {
+  const root = await makeTempRepo();
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ private: true, workspaces: ["apps/*"] }));
+  await mkdir(path.join(root, "apps/mobile/src/screens"), { recursive: true });
+  await writeFile(path.join(root, "apps/mobile/package.json"), JSON.stringify({ dependencies: { expo: "~51.0.0" } }));
+  await writeFile(path.join(root, "apps/mobile/app.json"), JSON.stringify({ expo: { slug: "mobile" } }));
+  await writeFile(
+    path.join(root, "apps/mobile/src/screens/OrdersScreen.tsx"),
+    "export function OrdersScreen() { return null; }\n",
+  );
+
+  const manifest = (await writeVerificationManifestBaseline(root)).manifest;
+  assert.ok(manifest.flows.length > 0);
+  assert.ok(manifest.flows.every((flow) => flow.runner === "maestro"));
+});
+
+test("manifest init derives domains from Django app structure", async () => {
+  const root = await makeTempRepo();
+  for (const app of ["orders", "payments"]) {
+    await mkdir(path.join(root, app), { recursive: true });
+    await writeFile(path.join(root, `${app}/models.py`), "class Placeholder: pass\n");
+    await writeFile(path.join(root, `${app}/views.py`), "def index(request): return None\n");
+    await writeFile(path.join(root, `${app}/urls.py`), "urlpatterns = []\n");
+  }
+  await mkdir(path.join(root, "scripts"), { recursive: true });
+  await writeFile(path.join(root, "scripts/tasks.py"), "def run(): pass\n");
+  await writeFile(path.join(root, "manage.py"), "#!/usr/bin/env python\n");
+  await writeFile(path.join(root, "pytest.ini"), "[pytest]\n");
+
+  const manifest = (await writeVerificationManifestBaseline(root)).manifest;
+
+  const orders = manifest.domains.find((domain) => domain.id === "orders");
+  const payments = manifest.domains.find((domain) => domain.id === "payments");
+  assert.ok(orders);
+  assert.ok(payments);
+  assert.deepEqual(orders.paths, ["orders/**"]);
+  assert.ok(orders.source.from.includes("django-models"));
+  // Revenue-bearing areas rank high; a single stray .py marker is not an app.
+  assert.equal(payments.criticality, "high");
+  assert.equal(manifest.domains.some((domain) => domain.id === "scripts"), false);
+  assert.ok(manifest.context?.validationCommands.includes("pytest"));
+});
+
+test("manifest validation scripts exclude blocking and mutating variants but keep segment lookalikes", async () => {
+  const root = await makeTempRepo();
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: {
+        test: "jest",
+        "test:server": "jest --config server.jest.config.js",
+        "e2e:device": "maestro test flows/",
+        "check:fixtures": "node scripts/check-fixtures.mjs",
+        "test:watch": "jest --watch",
+        "test:debug": "node --inspect-brk jest --runInBand",
+        "e2e:open": "cypress open",
+        "test:update": "jest -u",
+        "lint:fix": "eslint --fix src",
+      },
+    }),
+  );
+  await mkdir(path.join(root, "src/pages/orders"), { recursive: true });
+  await writeFile(path.join(root, "src/pages/orders/index.tsx"), "export default function OrdersPage() { return null; }\n");
+
+  const context = (await writeVerificationManifestBaseline(root)).manifest.context;
+  assert.ok(context);
+  // Segment lookalikes survive: server != serve, device != dev, fixtures != fix.
+  assert.ok(context.validationCommands.includes("npm run test"));
+  assert.ok(context.validationCommands.includes("npm run test:server"));
+  assert.ok(context.validationCommands.includes("npm run e2e:device"));
+  assert.ok(context.validationCommands.includes("npm run check:fixtures"));
+  // Blocking, interactive, and mutating scripts stay out.
+  for (const rejected of ["test:watch", "test:debug", "e2e:open", "test:update", "lint:fix"]) {
+    assert.equal(context.validationCommands.some((command) => command.endsWith(rejected)), false, rejected);
+  }
+
+  const placeholderRoot = await makeTempRepo();
+  await writeFile(
+    path.join(placeholderRoot, "package.json"),
+    JSON.stringify({ scripts: { test: 'echo "Error: no test specified" && exit 1' } }),
+  );
+  await mkdir(path.join(placeholderRoot, "src/pages/home"), { recursive: true });
+  await writeFile(path.join(placeholderRoot, "src/pages/home/index.tsx"), "export default function HomePage() { return null; }\n");
+  const placeholderContext = (await writeVerificationManifestBaseline(placeholderRoot)).manifest.context;
+  assert.equal(placeholderContext?.validationCommands.includes("npm run test") ?? false, false);
+});
+
+test("manifest runner inference reads dependency keys, not raw text", async () => {
+  const root = await makeTempRepo();
+  // "react" appears in prose and plugin names, and app.json exists, but the
+  // project is neither a web app nor a mobile app.
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      description: "A react to incidents toolkit",
+      devDependencies: { "eslint-plugin-react": "^7.0.0" },
+    }),
+  );
+  await writeFile(path.join(root, "app.json"), JSON.stringify({ name: "not-expo" }));
+  await mkdir(path.join(root, "src/pages/orders"), { recursive: true });
+  await writeFile(path.join(root, "src/pages/orders/index.tsx"), "export default function OrdersPage() { return null; }\n");
+
+  const manifest = (await writeVerificationManifestBaseline(root)).manifest;
+  assert.ok(manifest.flows.length > 0);
+  assert.ok(manifest.flows.every((flow) => flow.runner === "manual"));
+
+  const expoRoot = await makeTempRepo();
+  await writeFile(path.join(expoRoot, "package.json"), JSON.stringify({ dependencies: { expo: "~51.0.0", react: "18.2.0" } }));
+  await mkdir(path.join(expoRoot, "src/screens/orders"), { recursive: true });
+  await writeFile(
+    path.join(expoRoot, "src/screens/orders/OrdersScreen.tsx"),
+    "export function OrdersScreen() { return null; }\n",
+  );
+  const expoManifest = (await writeVerificationManifestBaseline(expoRoot)).manifest;
+  assert.ok(expoManifest.flows.length > 0);
+  assert.ok(expoManifest.flows.every((flow) => flow.runner === "maestro"));
+  // Component anchors carry the real exported identifier.
+  assert.ok(
+    expoManifest.flows.some((flow) => flow.anchors.some((anchor) => anchor.symbol === "OrdersScreen")),
+  );
+});
+
+test("manifest context extraction keeps prose fragments out of commands and safety rules", async () => {
+  const root = await makeTempRepo();
+  await mkdir(path.join(root, "docs"), { recursive: true });
+  await writeFile(
+    path.join(root, "docs/testing-runbook.md"),
+    [
+      "# Testing Runbook",
+      "",
+      "pytest.ini has the marker list, and pytest is configured through conftest.py fixtures.",
+      "",
+      "1. 개발 및 커밋",
+      "2. ECR에 푸시",
+      "",
+      "```mermaid",
+      "graph TD",
+      "  D --> E[registry push]",
+      "```",
+      "",
+      "```yaml",
+      "uses: actions/checkout@v4",
+      "run: pytest -v",
+      "aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}",
+      "```",
+      "",
+      "```ts",
+      "import { spacing } from '@acme/tokens';",
+      "```",
+      "",
+      "```bash",
+      "pytest --maxfail=5 --tb=short",
+      "```",
+      "",
+      "- Never run destructive migrations against shared databases.",
+      "- 배포 브랜치에는 절대 직접 커밋하지 않습니다.",
+      "- payment-provider: 설정 값은 대시보드에서 관리합니다.",
+    ].join("\n"),
+  );
+  await writeFile(path.join(root, "pytest.ini"), "[pytest]\naddopts = --maxfail=5\n");
+
+  const result = await writeVerificationManifestBaseline(root);
+  const context = result.manifest.context;
+  assert.ok(context);
+
+  // Commands: fenced shell line and pytest.ini presence qualify; the prose
+  // sentence starting with "pytest.ini" does not.
+  assert.ok(context.validationCommands.includes("pytest --maxfail=5 --tb=short"));
+  assert.ok(context.validationCommands.includes("pytest"));
+  assert.equal(context.validationCommands.some((command) => command.includes("configured")), false);
+  assert.equal(context.validationCommands.some((command) => command.includes("궁금")), false);
+
+  // Safety rules: prohibition prose survives, structure does not.
+  assert.ok(context.safetyRules.some((rule) => rule.includes("Never run destructive migrations")));
+  assert.ok(context.safetyRules.some((rule) => rule.includes("절대 직접 커밋")));
+  assert.equal(context.safetyRules.some((rule) => rule.includes("-->")), false);
+  assert.equal(context.safetyRules.some((rule) => rule.includes("${{")), false);
+  assert.equal(context.safetyRules.some((rule) => rule.includes("import")), false);
+  assert.equal(context.safetyRules.some((rule) => rule.includes("개발 및 커밋")), false);
+  assert.equal(context.safetyRules.some((rule) => rule.startsWith("payment-provider:")), false);
 });
 
 test("manifest init captures advisory instruction context", async () => {
@@ -4389,6 +4746,7 @@ test("manifest init captures advisory instruction context", async () => {
   assert.ok(manifest.context?.source.from.includes("verification-rubric-context"));
   assert.ok(manifest.context.instructionFiles.some((file) => file.path === "docs/adr/checkout-flow.md" && file.kind === "adr"));
   assert.ok(manifest.context.validationCommands.includes("pnpm test"));
+  assert.ok(manifest.context.validationCommands.includes("npm run test"));
   assert.ok(manifest.context.safetyRules.some((rule) => /Never write generated E2E drafts/.test(rule)));
   assert.ok(manifest.context.safetyRules.some((rule) => /TOKEN=\[redacted\]/.test(rule)));
   assert.ok(checkoutDomain?.source.from.includes("adr-context"));
@@ -4398,7 +4756,7 @@ test("manifest init captures advisory instruction context", async () => {
   assert.match(manifestText, /validationCommands:/);
   assert.match(manifestText, /safetyRules:/);
   assert.equal(contextResult.summary.contextSources >= 4, true);
-  assert.equal(contextResult.summary.validationCommands, 1);
+  assert.equal(contextResult.summary.validationCommands, 2);
   assert.equal(contextResult.summary.safetyRules, 2);
   assert.ok(
     contextResult.roleSummary.some(

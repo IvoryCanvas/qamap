@@ -143,6 +143,11 @@ export interface VerificationManifestInitResult {
     validationCommands: number;
     safetyRules: number;
   };
+  scan: {
+    files: number;
+    maxFiles: number;
+    truncated: boolean;
+  };
 }
 
 export interface VerificationManifestMatch {
@@ -284,7 +289,12 @@ export async function writeVerificationManifestBaseline(
     throw new Error(`Refusing to overwrite ${outputPath}. Pass --force to replace it.`);
   }
 
-  const files = await collectProjectFiles(root, options.maxFiles ?? defaultMaxManifestFiles);
+  const maxFiles = options.maxFiles ?? defaultMaxManifestFiles;
+  // Probe one file past the cap so a repo with exactly maxFiles files is not
+  // reported as truncated.
+  const collected = await collectProjectFiles(root, maxFiles + 1);
+  const truncated = collected.length > maxFiles;
+  const files = truncated ? collected.slice(0, maxFiles) : collected;
   const manifest = buildVerificationManifestBaseline(root, manifestRoot, files);
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, formatVerificationManifestYaml(manifest), "utf8");
@@ -301,6 +311,11 @@ export async function writeVerificationManifestBaseline(
     generatedAt: new Date().toISOString(),
     manifest,
     summary: summarizeManifest(manifest),
+    scan: {
+      files: files.length,
+      maxFiles,
+      truncated,
+    },
   };
 }
 
@@ -401,7 +416,7 @@ export function changedFilesRelativeToManifestRoot(
 }
 
 export function formatVerificationManifestInitResult(result: VerificationManifestInitResult): string {
-  return [
+  const lines = [
     `Wrote ${result.path}`,
     `Domains: ${result.summary.domains}`,
     `Flows: ${result.summary.flows}`,
@@ -410,8 +425,25 @@ export function formatVerificationManifestInitResult(result: VerificationManifes
     `Context sources: ${result.summary.contextSources}`,
     `Validation commands: ${result.summary.validationCommands}`,
     `Safety rules: ${result.summary.safetyRules}`,
-    "Review and commit this file when the baseline should become team verification policy.",
-  ].join("\n");
+    `Scanned files: ${result.scan.files}`,
+  ];
+  if (result.scan.truncated) {
+    const rerun = [
+      `qamap manifest init ${result.root}`,
+      result.workspaceRoot !== undefined && result.workspaceRoot !== result.root ? `--workspace-root ${result.workspaceRoot}` : "",
+      `--write ${result.path}`,
+      `--max-files ${result.scan.maxFiles * 4}`,
+      "--force",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    lines.push(
+      `Warning: the scan stopped at the ${result.scan.maxFiles}-file limit before reading the whole project, so domains and flows may be missing.`,
+      `Rerun with a larger limit, for example: ${rerun}`,
+    );
+  }
+  lines.push("Review and commit this file when the baseline should become team verification policy.");
+  return lines.join("\n");
 }
 
 export async function validateVerificationManifest(
@@ -677,7 +709,7 @@ function buildVerificationManifestBaseline(
       path: toPosixPath(path.relative(manifestRoot, path.join(root, file.path))),
     }))
     .filter((file) => !file.path.startsWith("../"));
-  const domains = buildBaselineDomains(behaviorFiles, context).slice(0, 12);
+  const domains = mergeDomainsById(buildBaselineDomains(behaviorFiles, context), buildPythonAppDomains(files, manifestRoot, root)).slice(0, 12);
   const flows = buildBaselineFlows(behaviorFiles, domains, inferRunner(files), context).slice(0, 16);
 
   return {
@@ -704,7 +736,14 @@ function validateManifestMetadata(
 
 function validateDomainDefinitions(manifest: LoadedVerificationManifest, issues: VerificationManifestValidationIssue[]): void {
   if (manifest.domains.length === 0) {
-    issues.push(issue("warning", `${manifest.path} > domains`, "No domains are declared.", "Run `qamap manifest init .` or add product domains manually."));
+    issues.push(
+      issue(
+        "warning",
+        `${manifest.path} > domains`,
+        "No domains are declared.",
+        "Add product domains manually, or rerun `qamap manifest init . --force` with a larger `--max-files` if the scan was truncated.",
+      ),
+    );
   }
   const ids = new Set<string>();
   for (const domain of manifest.domains) {
@@ -1355,7 +1394,12 @@ function buildManifestContext(
     safetyRules.push(...rules);
   }
 
-  if (instructionFiles.length === 0 && validationCommands.length === 0 && safetyRules.length === 0) {
+  const projectCommands = extractProjectValidationCommands(files);
+  const allValidationCommands = dropRedundantCompoundCommands(
+    uniqueStrings([...projectCommands, ...validationCommands]),
+  ).slice(0, 12);
+
+  if (instructionFiles.length === 0 && allValidationCommands.length === 0 && safetyRules.length === 0) {
     return undefined;
   }
 
@@ -1363,7 +1407,7 @@ function buildManifestContext(
     instructionFiles: instructionFiles
       .sort((left, right) => contextKindRank(left.kind) - contextKindRank(right.kind) || left.path.localeCompare(right.path))
       .slice(0, 24),
-    validationCommands: uniqueStrings(validationCommands).slice(0, 12),
+    validationCommands: allValidationCommands,
     safetyRules: uniqueStrings(safetyRules).slice(0, 12),
     source: {
       kind: "inferred",
@@ -1404,17 +1448,116 @@ function buildBaselineDomains(
 
   return [...grouped.entries()]
     .sort((left, right) => right[1].files.length - left[1].files.length)
-    .map(([id, value]) => ({
-      id,
-      name: value.name,
-      paths: domainPatterns(value.files).slice(0, 5),
-      criticality: "medium",
-      source: {
-        kind: "inferred",
-        confidence: value.files.length > 1 || value.from.some((item) => item.endsWith("-context")) ? "medium" : "low",
-        from: uniqueStrings(value.from).slice(0, 4),
-      },
-    }));
+    .map(([id, value]) => {
+      const paths = dropSubsumedPatterns(domainPatterns(value.files)).slice(0, 5);
+      return {
+        id,
+        name: value.name,
+        paths,
+        criticality: domainCriticality(id, paths),
+        source: {
+          kind: "inferred" as const,
+          confidence: (value.files.length > 1 || value.from.some((item) => item.endsWith("-context")) ? "medium" : "low") as
+            | "medium"
+            | "low",
+          from: uniqueStrings(value.from).slice(0, 4),
+        },
+      };
+    });
+}
+
+// Same-id domains from different inference passes (JS structure vs Django
+// structure) must merge, not duplicate: duplicate ids fail manifest validate.
+function mergeDomainsById(
+  ...groups: VerificationManifestDomain[][]
+): VerificationManifestDomain[] {
+  const byId = new Map<string, VerificationManifestDomain>();
+  for (const domain of groups.flat()) {
+    const existing = byId.get(domain.id);
+    if (!existing) {
+      byId.set(domain.id, domain);
+      continue;
+    }
+    existing.paths = dropSubsumedPatterns(uniqueStrings([...existing.paths, ...domain.paths])).slice(0, 5);
+    existing.criticality = existing.criticality === "high" || domain.criticality === "high" ? "high" : existing.criticality;
+    existing.source = {
+      ...existing.source,
+      confidence: existing.source.confidence === "medium" || domain.source.confidence === "medium" ? "medium" : existing.source.confidence,
+      from: uniqueStrings([...existing.source.from, ...domain.source.from]).slice(0, 4),
+    };
+  }
+  return [...byId.values()];
+}
+
+// A child glob adds nothing when a parent glob in the same list already
+// covers it; the survivors read as curated when they are not.
+function dropSubsumedPatterns(patterns: string[]): string[] {
+  return patterns.filter(
+    (pattern) =>
+      !patterns.some(
+        (other) => other !== pattern && other.endsWith("/**") && pattern.startsWith(other.slice(0, -2)),
+      ),
+  );
+}
+
+// Revenue- and identity-bearing areas deserve a stronger default than a flat
+// "medium"; internal design/tooling packages deserve a weaker one.
+function domainCriticality(id: string, paths: string[]): "high" | "medium" | "low" {
+  const haystack = `${id} ${paths.join(" ")}`.toLowerCase();
+  if (/payment|billing|checkout|subscription|purchase|order|cart|auth|login|signup|credit|account/.test(haystack)) {
+    return "high";
+  }
+  if (/icons?|tokens|design-system|storybook|figma|tooling/.test(haystack)) {
+    return "low";
+  }
+  return "medium";
+}
+
+// Django-style backends: an app directory with several framework marker files
+// is a product domain even though no JS behavior file ever names it.
+function buildPythonAppDomains(files: ProjectFile[], manifestRoot: string, root: string): VerificationManifestDomain[] {
+  const markers = new Map<string, { appPaths: Set<string>; found: Set<string>; name: string }>();
+  for (const file of files) {
+    const relative = toPosixPath(path.relative(manifestRoot, path.join(root, file.path)));
+    if (relative.startsWith("../")) {
+      continue;
+    }
+    // Only actual Python files count: Rails app/models/user.rb and Vue
+    // client/views/Home.vue must not fabricate Django evidence.
+    if (!relative.endsWith(".py")) {
+      continue;
+    }
+    const match = relative.match(/^((?:[\w.-]+\/)*)([\w-]+)\/(models|views|urls|serializers|forms|admin|apps|tasks)(?:\/|\.py$)/);
+    if (!match) {
+      continue;
+    }
+    const appPath = `${match[1]}${match[2]}`;
+    const id = slugify(match[2]);
+    if (!id || structuralDomainIds.has(id)) {
+      continue;
+    }
+    const existing = markers.get(id) ?? { appPaths: new Set<string>(), found: new Set<string>(), name: match[2] };
+    existing.appPaths.add(appPath);
+    existing.found.add(match[3]);
+    markers.set(id, existing);
+  }
+  return [...markers.entries()]
+    .filter(([, value]) => value.found.size >= 2)
+    .sort((left, right) => right[1].found.size - left[1].found.size || left[0].localeCompare(right[0]))
+    .map(([id, value]) => {
+      const paths = [...value.appPaths].sort().map((appPath) => `${appPath}/**`).slice(0, 5);
+      return {
+        id,
+        name: titleCase(value.name),
+        paths,
+        criticality: domainCriticality(id, paths),
+        source: {
+          kind: "inferred" as const,
+          confidence: "medium" as const,
+          from: [...value.found].slice(0, 4).map((marker) => `django-${marker}`),
+        },
+      };
+    });
 }
 
 function buildBaselineFlows(
@@ -1423,7 +1566,7 @@ function buildBaselineFlows(
   runner: VerificationManifestRunner,
   context?: VerificationManifestContext,
 ): VerificationManifestFlow[] {
-  const flows: VerificationManifestFlow[] = [];
+  const scored: Array<{ flow: VerificationManifestFlow; score: number }> = [];
   for (const file of files) {
     const route = routeFromFile(file.path);
     const component = componentNameFromFile(file.path);
@@ -1431,7 +1574,7 @@ function buildBaselineFlows(
       continue;
     }
     const domain = bestDomainForFile(domains, file.path);
-    const inferredSubject = route ? titleCase(route.replace(/^\/+/, "").replace(/[:/]+/g, " ")) : component ?? "Changed UI";
+    const inferredSubject = route ? titleCase(route.replace(/^\/+/, "").replace(/[:/]+/g, " ")) || "Home" : component ?? "Changed UI";
     const subject = contextFlowSubjectForTerms(
       context,
       [inferredSubject, domain?.id, domain?.name].filter(Boolean) as string[],
@@ -1439,41 +1582,123 @@ function buildBaselineFlows(
     );
     const id = slugify([domain?.id, subject].filter(Boolean).join(" "));
     const contextEvidence = contextEvidenceForTerms(context, [subject, domain?.name, domain?.id].filter(Boolean) as string[]);
+    const symbol = route
+      ? undefined
+      : (exportedSymbolFromText(file.text, path.basename(file.path).replace(/\.[^.]+$/, "")) ?? undefined);
     const anchors: VerificationManifestAnchor[] = [
       {
         kind: route ? "route" : "component",
         path: file.path,
         route,
-        symbol: route ? undefined : component,
+        symbol,
         source: "inferred",
         confidence: route ? "high" : "medium",
       },
     ];
 
-    flows.push({
-      id,
-      domain: domain?.id,
-      name: subject,
-      entry: route ? { route, source: "inferred" } : undefined,
-      runner,
-      anchors,
-      checks: checksForFlow(subject, file.text),
-      source: {
-        kind: "inferred",
-        confidence: route || contextEvidence.length > 0 ? "medium" : "low",
-        from: uniqueStrings([route ? "route-file" : "component-file", ...contextEvidence]),
+    scored.push({
+      score: flowCandidateScore(file.path, route, subject),
+      flow: {
+        id,
+        domain: domain?.id,
+        name: subject,
+        entry: route ? { route, source: "inferred" } : undefined,
+        runner,
+        anchors,
+        checks: checksForFlow(subject, file.text),
+        source: {
+          kind: "inferred",
+          confidence: route || contextEvidence.length > 0 ? "medium" : "low",
+          from: uniqueStrings([route ? "route-file" : "component-file", ...contextEvidence]),
+        },
       },
     });
   }
-  return dedupeFlows(flows);
+  scored.sort((left, right) => right.score - left.score);
+  return interleaveFlowsByDomain(dedupeFlows(scored.map((entry) => entry.flow)));
+}
+
+const productSignalMatcher =
+  /login|signin|sign-in|signup|sign-up|register|auth|password|payment|pay\b|checkout|billing|subscription|purchase|order|cart|onboarding|settings|account|profile|search|upload|home/i;
+
+// Rank flow candidates by product signal so the flow cap keeps core journeys
+// instead of whichever files sort first alphabetically.
+function flowCandidateScore(file: string, route: string | undefined, subject: string): number {
+  let score = 0;
+  if (route) {
+    score += 40;
+    // Shallow routes tend to be core journeys; deep admin leaves are not.
+    score += Math.max(0, 10 - (route.split("/").filter(Boolean).length - 1) * 3);
+  }
+  if (productSignalMatcher.test(`${file} ${subject}`)) {
+    score += 25;
+  }
+  return score;
+}
+
+// Round-robin across domains (in best-candidate order) so a single large area
+// cannot occupy every slot under the flow cap.
+function interleaveFlowsByDomain(flows: VerificationManifestFlow[]): VerificationManifestFlow[] {
+  const groups = new Map<string, VerificationManifestFlow[]>();
+  for (const flow of flows) {
+    const key = flow.domain ?? "";
+    const existing = groups.get(key) ?? [];
+    existing.push(flow);
+    groups.set(key, existing);
+  }
+  const result: VerificationManifestFlow[] = [];
+  let picked = true;
+  while (picked) {
+    picked = false;
+    for (const group of groups.values()) {
+      const next = group.shift();
+      if (next) {
+        result.push(next);
+        picked = true;
+      }
+    }
+  }
+  return result;
+}
+
+// The real exported identifier, so anchor symbols are greppable code names
+// rather than humanized guesses; absent when it cannot be resolved. The
+// default export wins; otherwise only a named export that matches the file's
+// basename qualifies — the first export in the file is often an unrelated
+// constant.
+function exportedSymbolFromText(text: string | undefined, basename: string): string | undefined {
+  if (!text) {
+    return undefined;
+  }
+  const defaultMatch =
+    text.match(/export\s+default\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/) ??
+    text.match(/export\s+default\s+class\s+([A-Za-z_$][\w$]*)/) ??
+    // Bare or wrapped identifier defaults: `export default PaymentForm;`,
+    // `export default memo(PaymentForm)`.
+    text.match(/export\s+default\s+(?:(?!function\b|class\b|async\b|new\b|await\b|typeof\b)[A-Za-z_$][\w$]*\s*\(\s*)*(?!function\b|class\b|async\b|new\b|await\b|typeof\b)([A-Z][\w$]*)/);
+  if (defaultMatch) {
+    return defaultMatch[1];
+  }
+  const normalizedBasename = basename.replace(/[-_.]/g, "").toLowerCase();
+  const named = [...text.matchAll(/export\s+(?:async\s+)?(?:function|const|class)\s+([A-Za-z_$][\w$]*)/g)]
+    .map((match) => match[1])
+    .find((identifier) => identifier.replace(/[-_$]/g, "").toLowerCase() === normalizedBasename);
+  if (named) {
+    return named;
+  }
+  return text.match(/\bname:\s*["']([\w-]+)["']/)?.[1];
 }
 
 function checksForFlow(subject: string, text?: string): VerificationManifestCheck[] {
+  // A stable test id observed in the file makes the check concrete instead of
+  // a name-substituted template.
+  const observedTestId = text?.match(/data-testid=["']([\w:-]+)["']/)?.[1];
   const checks: VerificationManifestCheck[] = [
     {
       id: "happy-path",
       title: `${subject} happy path works`,
       type: "success",
+      ...(observedTestId ? { selector: `[data-testid="${observedTestId}"]` } : {}),
     },
   ];
   if (text && /\b(?:fetch|axios|graphql|mutation|query|api|request)\b/i.test(text)) {
@@ -1617,10 +1842,17 @@ function classifyInstructionRoles(
 
 function extractValidationCommands(text: string): string[] {
   const commands: string[] = [];
+  let inCodeFence = false;
   for (const line of text.split(/\r?\n/)) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
     const candidates = [...line.matchAll(/`([^`\n]+)`/g)].map((match) => match[1]);
     const stripped = cleanMarkdownLine(line);
-    if (/^(?:pnpm|npm|yarn|bun|npx|node|pytest|go|cargo|maestro|playwright|gradle|mvn|\.\/gradlew)\b/i.test(stripped)) {
+    // A bare line only counts as a command inside a fenced code block; in
+    // prose, a sentence that merely starts with a tool name is not a command.
+    if (inCodeFence && /^(?:pnpm|npm|yarn|bun|npx|node|pytest|go|cargo|maestro|playwright|gradle|mvn|\.\/gradlew)\b/i.test(stripped)) {
       candidates.push(stripped);
     }
     for (const candidate of candidates) {
@@ -1633,9 +1865,87 @@ function extractValidationCommands(text: string): string[] {
   return uniqueStrings(commands).slice(0, 12);
 }
 
+// Ground-truth validation commands read from project config rather than doc
+// prose: package.json scripts and pytest markers. These rank ahead of
+// doc-extracted commands because they cannot drift from what actually runs.
+function extractProjectValidationCommands(files: ProjectFile[]): string[] {
+  const commands: string[] = [];
+  const packageJson = files.find((file) => file.path === "package.json");
+  if (packageJson?.text !== undefined) {
+    const packageManager = files.some((file) => file.path === "pnpm-lock.yaml")
+      ? "pnpm"
+      : files.some((file) => file.path === "yarn.lock")
+        ? "yarn"
+        : files.some((file) => file.path === "bun.lockb" || file.path === "bun.lock")
+          ? "bun"
+          : "npm";
+    try {
+      const parsed = JSON.parse(packageJson.text) as { scripts?: Record<string, unknown> };
+      for (const [name, script] of Object.entries(parsed.scripts ?? {})) {
+        if (typeof script !== "string") {
+          continue;
+        }
+        // Verification-shaped scripts only. Bare "build" qualifies, but build
+        // variants (build:android-apk) are packaging, not verification.
+        if (!/^(?:test|lint|typecheck|type-check|check-types?|check|e2e|coverage|verify|format:check)(?:[:.][\w:.-]+)?$/.test(name) && name !== "build") {
+          continue;
+        }
+        // Name segments that mutate, block, or open a UI disqualify the
+        // script — matched per segment so test:server or e2e:device survive.
+        const nameSegments = name.split(/[:._-]/);
+        if (nameSegments.some((segment) => /^(?:fix|fixes|watch|dev|debug|start|serve|open|update|record|snapshot|snapshots|inspect|ui)$/i.test(segment))) {
+          continue;
+        }
+        // The script body is the ground truth for blocking/mutating behavior,
+        // and npm-init's placeholder test script is not a verification run.
+        if (/--inspect|--watch\b|--ui\b|--update-?snapshots?|(?:^|\s)-u\b|\bopen\b|no test specified/i.test(script)) {
+          continue;
+        }
+        commands.push(`${packageManager} run ${name}`);
+      }
+    } catch {
+      // Unreadable package.json: fall back to doc-extracted commands only.
+    }
+  }
+  const hasPytestConfig = files.some(
+    (file) =>
+      file.path === "pytest.ini" ||
+      file.path === "conftest.py" ||
+      file.path === "tests/conftest.py" ||
+      (file.path === "pyproject.toml" && (file.text?.includes("[tool.pytest") ?? false)) ||
+      (file.path === "setup.cfg" && (file.text?.includes("[tool:pytest]") ?? false)),
+  );
+  if (hasPytestConfig) {
+    commands.push("pytest");
+  }
+  return uniqueStrings(commands).slice(0, 12);
+}
+
+// "a && b" adds nothing when a and b are already listed individually.
+function dropRedundantCompoundCommands(commands: string[]): string[] {
+  const seen = new Set(commands);
+  return commands.filter((command) => {
+    const parts = command.split(/\s*&&\s*/);
+    if (parts.length < 2) {
+      return true;
+    }
+    return !parts.every((part) => seen.has(part.trim()));
+  });
+}
+
 function extractSafetyRules(text: string): string[] {
   const rules: string[] = [];
+  let inCodeFence = false;
   for (const line of text.split(/\r?\n/)) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+    // Code blocks hold examples (imports, CI YAML, mermaid diagrams), never
+    // the team's prose rules.
+    if (inCodeFence) {
+      continue;
+    }
     const cleaned = redactSensitiveText(cleanMarkdownLine(line));
     if (cleaned.length < 8 || cleaned.length > 220) {
       continue;
@@ -1643,11 +1953,14 @@ function extractSafetyRules(text: string): string[] {
     if (/\bdo not (?:belong|require|show)\b/i.test(cleaned)) {
       continue;
     }
-    if (
-      /(?:do not|don't|never|must not|read-only|\/tmp|token|secret|credential|절대|금지|하지 말|하면 안|커밋|푸시|PR 생성)/i.test(
-        cleaned,
-      )
-    ) {
+    // Structural fragments are never rules: mermaid edges, YAML keys and
+    // template expressions, code statements, markup.
+    if (/-->|\$\{\{|^[A-Za-z0-9_."'-]+:\s|^(?:import|export|from|const|let|var|function|class|return|if|for|uses:|run:|with:|<)\b/.test(cleaned)) {
+      continue;
+    }
+    // Only prohibition/obligation language qualifies; topic words alone
+    // (commit, push, token) pulled in list items and diagram labels.
+    if (/(?:do not|don't|never|must not|read-only|절대|금지|하지 ?마|하지 ?말|하지 않|하면 안|해서는 안)/i.test(cleaned)) {
       rules.push(cleaned);
     }
   }
@@ -1659,6 +1972,12 @@ function normalizeCommand(value: string): string | undefined {
   if (!command || command.length > 140 || /(?:publish|login|token|secret|password|rm\s+-rf)/i.test(command)) {
     return undefined;
   }
+  // Commas, parentheses, and Hangul mark prose fragments, not shell commands;
+  // == marks dependency version pins; a bare version number or --version
+  // probe is not a verification run.
+  if (/[,()]|==|[ᄀ-ᇿ㄰-㆏가-힣]|--version\b|^\S+\s+v?\d+(?:\.\d+)+\s*$/.test(command)) {
+    return undefined;
+  }
   return command.replace(/\s+/g, " ");
 }
 
@@ -1668,7 +1987,8 @@ function isValidationCommand(command: string): boolean {
     /^(?:npx\s+)?playwright\s+test\b/i.test(command) ||
     /^maestro\s+test\b/i.test(command) ||
     /^node\s+--test\b/i.test(command) ||
-    /^pytest\b/i.test(command) ||
+    // "pytest" alone or with arguments — not "pytest.ini" or "pytest-django".
+    /^pytest(?:\s|$)/i.test(command) ||
     /^go\s+test\b/i.test(command) ||
     /^cargo\s+test\b/i.test(command) ||
     /^(?:gradle|\.\/gradlew)\s+(?:test|check)\b/i.test(command) ||
@@ -1678,8 +1998,9 @@ function isValidationCommand(command: string): boolean {
 
 function cleanMarkdownLine(value: string): string {
   return value
-    .replace(/^\s{0,3}(?:[-*]|\d+\.)\s+/, "")
     .replace(/^\s{0,3}#+\s*/, "")
+    .replace(/^\s{0,3}(?:[-*]|\d+\.)\s+/, "")
+    .replace(/\s*\{#[\w-]+\}\s*$/, "")
     .trim();
 }
 
@@ -1785,11 +2106,34 @@ function contextKindRank(kind: VerificationManifestInstructionKind): number {
 }
 
 function inferRunner(files: ProjectFile[]): VerificationManifestRunner {
-  const packageText = files.find((file) => file.path === "package.json")?.text ?? "";
-  if (/\b(?:expo|react-native)\b/i.test(packageText) || files.some((file) => /(?:^|\/)app\.json$/.test(file.path))) {
+  // Decide from dependency KEYS across every collected package.json, not raw
+  // text: the word "react" in a description or an eslint-plugin-react entry
+  // is not a web app. app.json only counts as mobile evidence when it has a
+  // top-level "expo" key.
+  const dependencies: Record<string, unknown> = {};
+  let hasExpoAppJson = false;
+  for (const file of files) {
+    if (file.text === undefined) {
+      continue;
+    }
+    const basename = path.basename(file.path);
+    try {
+      if (basename === "package.json") {
+        const parsed = JSON.parse(file.text) as { dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown> };
+        Object.assign(dependencies, parsed.dependencies, parsed.devDependencies);
+      } else if (basename === "app.json") {
+        const parsed = JSON.parse(file.text) as Record<string, unknown>;
+        hasExpoAppJson ||= parsed.expo !== undefined;
+      }
+    } catch {
+      // Unreadable JSON: contributes no signal.
+    }
+  }
+  if (dependencies["expo"] !== undefined || dependencies["react-native"] !== undefined || hasExpoAppJson || files.some((file) => file.path.startsWith(".maestro/"))) {
     return "maestro";
   }
-  if (/\b(?:next|react|vite|vue|nuxt|svelte|remix|astro|angular|playwright)\b/i.test(packageText)) {
+  const webDependencies = ["next", "react", "react-dom", "vue", "nuxt", "svelte", "astro", "vite", "@remix-run/react", "@angular/core", "@playwright/test", "playwright"];
+  if (webDependencies.some((name) => dependencies[name] !== undefined) || files.some((file) => /(?:^|\/)playwright\.config\.[cm]?[jt]s$/.test(file.path))) {
     return "playwright";
   }
   return "manual";
@@ -1799,10 +2143,23 @@ function routeFromFile(file: string): string | undefined {
   const normalized = toPosixPath(file);
   const pagesMatch = normalized.match(/(?:^|\/)(?:src\/)?pages\/(.+)\.(?:[cm]?[jt]sx?|vue|svelte)$/);
   if (pagesMatch && !pagesMatch[1].startsWith("_")) {
-    return normalizeRouteSegments(pagesMatch[1].replace(/\/index$/, ""));
+    // pages/api/** are HTTP handlers, not navigable UI routes.
+    if (/^api(?:\/|$)/.test(pagesMatch[1])) {
+      return undefined;
+    }
+    return normalizeRouteSegments(pagesMatch[1].replace(/^index$|\/index$/, ""));
   }
-  const appMatch = normalized.match(/(?:^|\/)(?:src\/)?app\/(.+)\/(?:page|route)\.(?:[cm]?[jt]sx?)$/);
+  const appRootMatch = normalized.match(/(?:^|\/)(?:src\/)?app\/page\.(?:[cm]?[jt]sx?)$/);
+  if (appRootMatch) {
+    return "/";
+  }
+  // Only page.* files are navigable; route.* files are HTTP handlers even
+  // outside app/api (App Router allows them anywhere).
+  const appMatch = normalized.match(/(?:^|\/)(?:src\/)?app\/(.+)\/page\.(?:[cm]?[jt]sx?)$/);
   if (appMatch) {
+    if (/^api(?:\/|$)/.test(appMatch[1])) {
+      return undefined;
+    }
     const withoutGroups = appMatch[1]
       .split("/")
       .filter((segment) => !/^\(.+\)$/.test(segment))
@@ -1816,14 +2173,64 @@ function normalizeRouteSegments(value: string): string {
   const route = value
     .split("/")
     .filter(Boolean)
-    .map((segment) => segment.replace(/^\[(\.\.\.)?(.+)\]$/, ":$2"))
+    .map((segment) =>
+      segment
+        .replace(/^\[(\.\.\.)?(.+)\]$/, ":$2")
+        // Nuxt-style dynamic segments: _orderId -> :orderId, so entry
+        // routes read as navigable specs rather than file paths.
+        .replace(/^_(.+)$/, ":$1"),
+    )
     .join("/");
   return `/${route || ""}`;
 }
 
+// Component basenames that are UI plumbing rather than product behavior; a
+// flow named after them tests a primitive, not a user journey.
+const genericComponentPrefixes = new Set([
+  "app",
+  "base",
+  "common",
+  "default",
+  "error",
+  "generic",
+  "index",
+  "loading",
+  "logger",
+  "main",
+  "mock",
+  "root",
+  "sample",
+  "shared",
+  "story",
+  "test",
+  "ui",
+]);
+
+// Suffixes that are structural nouns: bare "Modal.tsx" or "Page.tsx" is a
+// primitive, while a bare product action like "Checkout.tsx" is a flow.
+const structuralComponentSuffixMatcher = /^(?:page|screen|view|modal|form|flow)$/i;
+
 function componentNameFromFile(file: string): string | undefined {
-  const basename = path.basename(file).replace(/\.[^.]+$/, "");
-  if (!/(?:page|screen|view|modal|form|flow|checkout|submit|complete)$/i.test(basename)) {
+  const normalized = toPosixPath(file);
+  // Icon sets, mocks, and generic component buckets never hold product flows.
+  if (/(?:^|\/)(?:icons?|__mocks__|\.storybook|storybook|constants|hooks)\//i.test(normalized)) {
+    return undefined;
+  }
+  if (/\/components\/(?:shared|common|ui|base|lib)\//i.test(normalized)) {
+    return undefined;
+  }
+  const basename = path.basename(normalized).replace(/\.[^.]+$/, "");
+  const suffixMatch = basename.match(/(page|screen|view|modal|form|flow|checkout|submit|complete)$/i);
+  if (!suffixMatch) {
+    return undefined;
+  }
+  const prefix = basename.slice(0, basename.length - suffixMatch[1].length).replace(/[-_.]+$/, "");
+  // A bare structural noun (Modal, Page) is a primitive; a bare product
+  // action (Checkout, Submit, Complete) is a real funnel step.
+  if (prefix === "") {
+    return structuralComponentSuffixMatcher.test(basename) ? undefined : titleCase(basename);
+  }
+  if (genericComponentPrefixes.has(prefix.toLowerCase())) {
     return undefined;
   }
   return titleCase(basename);
@@ -1839,20 +2246,74 @@ function domainCandidateFromPath(file: string): { id: string; name: string; from
   }
   const routeIndex = segments.findIndex((segment) => ["app", "pages", "screens"].includes(segment));
   if (routeIndex >= 0) {
-    const segment = segments
-      .slice(routeIndex + 1)
-      .find((item) => item && !item.startsWith("_") && !item.startsWith("+") && !/^\(.+\)$/.test(item));
-    if (segment) {
-      return domainCandidate(segment, segments[routeIndex]);
+    // Walk past structural DIRECTORY segments (navigations, providers,
+    // layout) toward the first product-shaped one instead of giving up on
+    // the first miss — but never descend into the file basename, or every
+    // colocated components/hooks/utils file mints its own garbage domain.
+    for (const segment of segments.slice(routeIndex + 1, -1)) {
+      if (!segment || segment.startsWith("_") || segment.startsWith("+") || /^\(.+\)$/.test(segment)) {
+        continue;
+      }
+      // pages/api and app/api are HTTP handler trees, not product areas.
+      if (segment === "api") {
+        return undefined;
+      }
+      const candidate = domainCandidate(segment, segments[routeIndex]);
+      if (candidate) {
+        return candidate;
+      }
+    }
+    // The basename may only speak for itself when the file sits directly
+    // under the route dir (app/SentimentChatPage.tsx), not when a
+    // structural directory owns the subtree. Router-convention names
+    // (_layout, +not-found, (group)) never qualify.
+    if (segments.length === routeIndex + 2) {
+      const basename = segments[routeIndex + 1];
+      if (basename && !basename.startsWith("_") && !basename.startsWith("+") && !/^\(.+\)$/.test(basename)) {
+        return domainCandidate(basename, segments[routeIndex]);
+      }
     }
   }
   return undefined;
 }
 
+// Architecture-layer directory names: they organize code, not the product.
+const structuralDomainIds = new Set([
+  "api",
+  "assets",
+  "common",
+  "components",
+  "config",
+  "constants",
+  "contexts",
+  "core",
+  "helpers",
+  "hooks",
+  "i18n",
+  "index",
+  "layout",
+  "layouts",
+  "lib",
+  "locales",
+  "navigation",
+  "navigations",
+  "page",
+  "providers",
+  "shared",
+  "src",
+  "state",
+  "styles",
+  "theme",
+  "themes",
+  "types",
+  "ui",
+  "utils",
+]);
+
 function domainCandidate(value: string, from: string): { id: string; name: string; from: string } | undefined {
   const clean = value.replace(/\.[^.]+$/, "").replace(/^\[(.+)\]$/, "$1");
   const id = slugify(clean);
-  if (!id || ["api", "components", "hooks", "lib", "shared", "src", "utils"].includes(id)) {
+  if (!id || structuralDomainIds.has(id)) {
     return undefined;
   }
   return { id, name: titleCase(clean), from };
@@ -1917,7 +2378,10 @@ function matchesPathPattern(file: string, pattern: string): boolean {
 }
 
 function isBehaviorFile(file: string): boolean {
-  return /\.(?:[cm]?[jt]sx?|vue|svelte)$/.test(file) && !/(?:^|\/)(?:tests?|__tests__|e2e|dist|build)\//i.test(file);
+  return (
+    /\.(?:[cm]?[jt]sx?|vue|svelte)$/.test(file) &&
+    !/(?:^|\/)(?:tests?|__tests__|e2e|dist|build|out|\.output|storybook-static|__generated__)\//i.test(file)
+  );
 }
 
 function normalizeVerificationManifest(value: unknown, manifestPath: string): VerificationManifest {
