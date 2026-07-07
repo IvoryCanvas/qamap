@@ -28,6 +28,7 @@ import {
   formatMarkdownVerifyReport,
   formatReviewReport,
   formatSarifReport,
+  formatVerificationManifestInitResult,
   generateAgentContext,
   generateE2eDraft,
   generateE2ePlan,
@@ -4307,6 +4308,125 @@ test("manifest init creates a baseline verification manifest", async () => {
 
   const cliOutput = await execFileAsync(process.execPath, [cliPath, "manifest", "init", root, "--force"]);
   assert.match(cliOutput.stdout, /Review and commit this file/);
+  assert.match(cliOutput.stdout, /Scanned files: \d+/);
+  assert.doesNotMatch(cliOutput.stdout, /Warning: the scan stopped/);
+});
+
+test("manifest init warns when the file scan hits the max-files cap", async () => {
+  const root = await makeTempRepo();
+  // Alphabetically-early vendor noise starves the capped walk before it
+  // reaches src/, mirroring iOS Pods on mobile repos.
+  await mkdir(path.join(root, "aaa-noise"), { recursive: true });
+  for (let index = 0; index < 8; index += 1) {
+    await writeFile(path.join(root, `aaa-noise/file-${index}.txt`), "noise\n");
+  }
+  await mkdir(path.join(root, "src/pages/orders"), { recursive: true });
+  await writeFile(path.join(root, "src/pages/orders/index.tsx"), "export default function OrdersPage() { return <div />; }\n");
+
+  const result = await writeVerificationManifestBaseline(root, { maxFiles: 5 });
+  assert.equal(result.scan.truncated, true);
+  assert.equal(result.scan.maxFiles, 5);
+  assert.equal(result.scan.files, 5);
+  const formatted = formatVerificationManifestInitResult(result);
+  assert.match(formatted, /Warning: the scan stopped at the 5-file limit/);
+  assert.match(formatted, /--max-files 20 --force/);
+
+  const validation = await validateVerificationManifest(root);
+  const domainIssue = validation.issues.find((item) => item.message === "No domains are declared.");
+  assert.ok(domainIssue);
+  assert.match(domainIssue.recommendation, /--max-files/);
+});
+
+test("manifest init ignores mobile vendor trees and gitignored-style build output", async () => {
+  const root = await makeTempRepo();
+  await mkdir(path.join(root, "ios/Pods/SomeSDK"), { recursive: true });
+  for (let index = 0; index < 30; index += 1) {
+    await writeFile(path.join(root, `ios/Pods/SomeSDK/module-${index}.swift`), "// vendored\n");
+  }
+  await mkdir(path.join(root, "services/admin/out/_next/static/chunks"), { recursive: true });
+  await writeFile(
+    path.join(root, "services/admin/out/_next/static/chunks/app-1a2b3c.js"),
+    "export const generated = true;\n",
+  );
+  await mkdir(path.join(root, "src/features/orders"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ dependencies: { "react-native": "^0.75.0" }, scripts: { test: "jest --runInBand" } }),
+  );
+  await writeFile(
+    path.join(root, "src/features/orders/OrdersScreen.tsx"),
+    "export function OrdersScreen() { return <button>주문 확인</button>; }\n",
+  );
+
+  const result = await writeVerificationManifestBaseline(root, { maxFiles: 25 });
+  const manifest = await loadVerificationManifest(root);
+
+  // Pods never enters the walk, so the small cap still reaches src/.
+  assert.equal(result.scan.truncated, false);
+  assert.ok(manifest.domains.some((domain) => domain.id === "orders"));
+  // Build-output chunks are not behavior files, so no domain forms around them.
+  assert.equal(manifest.domains.some((domain) => domain.paths.some((glob) => glob.includes("/out/"))), false);
+  assert.ok(manifest.context?.validationCommands.includes("npm run test"));
+});
+
+test("manifest context extraction keeps prose fragments out of commands and safety rules", async () => {
+  const root = await makeTempRepo();
+  await mkdir(path.join(root, "docs"), { recursive: true });
+  await writeFile(
+    path.join(root, "docs/testing-runbook.md"),
+    [
+      "# Testing Runbook",
+      "",
+      "pytest.ini has the marker list, and pytest is configured through conftest.py fixtures.",
+      "",
+      "1. 개발 및 커밋",
+      "2. ECR에 푸시",
+      "",
+      "```mermaid",
+      "graph TD",
+      "  D --> E[registry push]",
+      "```",
+      "",
+      "```yaml",
+      "uses: actions/checkout@v4",
+      "run: pytest -v",
+      "aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}",
+      "```",
+      "",
+      "```ts",
+      "import { spacing } from '@acme/tokens';",
+      "```",
+      "",
+      "```bash",
+      "pytest --maxfail=5 --tb=short",
+      "```",
+      "",
+      "- Never run destructive migrations against shared databases.",
+      "- 배포 브랜치에는 절대 직접 커밋하지 않습니다.",
+      "- payment-provider: 설정 값은 대시보드에서 관리합니다.",
+    ].join("\n"),
+  );
+  await writeFile(path.join(root, "pytest.ini"), "[pytest]\naddopts = --maxfail=5\n");
+
+  const result = await writeVerificationManifestBaseline(root);
+  const context = result.manifest.context;
+  assert.ok(context);
+
+  // Commands: fenced shell line and pytest.ini presence qualify; the prose
+  // sentence starting with "pytest.ini" does not.
+  assert.ok(context.validationCommands.includes("pytest --maxfail=5 --tb=short"));
+  assert.ok(context.validationCommands.includes("pytest"));
+  assert.equal(context.validationCommands.some((command) => command.includes("configured")), false);
+  assert.equal(context.validationCommands.some((command) => command.includes("궁금")), false);
+
+  // Safety rules: prohibition prose survives, structure does not.
+  assert.ok(context.safetyRules.some((rule) => rule.includes("Never run destructive migrations")));
+  assert.ok(context.safetyRules.some((rule) => rule.includes("절대 직접 커밋")));
+  assert.equal(context.safetyRules.some((rule) => rule.includes("-->")), false);
+  assert.equal(context.safetyRules.some((rule) => rule.includes("${{")), false);
+  assert.equal(context.safetyRules.some((rule) => rule.includes("import")), false);
+  assert.equal(context.safetyRules.some((rule) => rule.includes("개발 및 커밋")), false);
+  assert.equal(context.safetyRules.some((rule) => rule.startsWith("payment-provider:")), false);
 });
 
 test("manifest init captures advisory instruction context", async () => {
@@ -4389,6 +4509,7 @@ test("manifest init captures advisory instruction context", async () => {
   assert.ok(manifest.context?.source.from.includes("verification-rubric-context"));
   assert.ok(manifest.context.instructionFiles.some((file) => file.path === "docs/adr/checkout-flow.md" && file.kind === "adr"));
   assert.ok(manifest.context.validationCommands.includes("pnpm test"));
+  assert.ok(manifest.context.validationCommands.includes("npm run test"));
   assert.ok(manifest.context.safetyRules.some((rule) => /Never write generated E2E drafts/.test(rule)));
   assert.ok(manifest.context.safetyRules.some((rule) => /TOKEN=\[redacted\]/.test(rule)));
   assert.ok(checkoutDomain?.source.from.includes("adr-context"));
@@ -4398,7 +4519,7 @@ test("manifest init captures advisory instruction context", async () => {
   assert.match(manifestText, /validationCommands:/);
   assert.match(manifestText, /safetyRules:/);
   assert.equal(contextResult.summary.contextSources >= 4, true);
-  assert.equal(contextResult.summary.validationCommands, 1);
+  assert.equal(contextResult.summary.validationCommands, 2);
   assert.equal(contextResult.summary.safetyRules, 2);
   assert.ok(
     contextResult.roleSummary.some(

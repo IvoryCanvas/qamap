@@ -143,6 +143,11 @@ export interface VerificationManifestInitResult {
     validationCommands: number;
     safetyRules: number;
   };
+  scan: {
+    files: number;
+    maxFiles: number;
+    truncated: boolean;
+  };
 }
 
 export interface VerificationManifestMatch {
@@ -284,7 +289,8 @@ export async function writeVerificationManifestBaseline(
     throw new Error(`Refusing to overwrite ${outputPath}. Pass --force to replace it.`);
   }
 
-  const files = await collectProjectFiles(root, options.maxFiles ?? defaultMaxManifestFiles);
+  const maxFiles = options.maxFiles ?? defaultMaxManifestFiles;
+  const files = await collectProjectFiles(root, maxFiles);
   const manifest = buildVerificationManifestBaseline(root, manifestRoot, files);
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, formatVerificationManifestYaml(manifest), "utf8");
@@ -301,6 +307,11 @@ export async function writeVerificationManifestBaseline(
     generatedAt: new Date().toISOString(),
     manifest,
     summary: summarizeManifest(manifest),
+    scan: {
+      files: files.length,
+      maxFiles,
+      truncated: files.length >= maxFiles,
+    },
   };
 }
 
@@ -401,7 +412,7 @@ export function changedFilesRelativeToManifestRoot(
 }
 
 export function formatVerificationManifestInitResult(result: VerificationManifestInitResult): string {
-  return [
+  const lines = [
     `Wrote ${result.path}`,
     `Domains: ${result.summary.domains}`,
     `Flows: ${result.summary.flows}`,
@@ -410,8 +421,16 @@ export function formatVerificationManifestInitResult(result: VerificationManifes
     `Context sources: ${result.summary.contextSources}`,
     `Validation commands: ${result.summary.validationCommands}`,
     `Safety rules: ${result.summary.safetyRules}`,
-    "Review and commit this file when the baseline should become team verification policy.",
-  ].join("\n");
+    `Scanned files: ${result.scan.files}`,
+  ];
+  if (result.scan.truncated) {
+    lines.push(
+      `Warning: the scan stopped at the ${result.scan.maxFiles}-file limit before reading the whole project, so domains and flows may be missing.`,
+      `Rerun with a larger limit, for example: qamap manifest init . --max-files ${result.scan.maxFiles * 4} --force`,
+    );
+  }
+  lines.push("Review and commit this file when the baseline should become team verification policy.");
+  return lines.join("\n");
 }
 
 export async function validateVerificationManifest(
@@ -704,7 +723,14 @@ function validateManifestMetadata(
 
 function validateDomainDefinitions(manifest: LoadedVerificationManifest, issues: VerificationManifestValidationIssue[]): void {
   if (manifest.domains.length === 0) {
-    issues.push(issue("warning", `${manifest.path} > domains`, "No domains are declared.", "Run `qamap manifest init .` or add product domains manually."));
+    issues.push(
+      issue(
+        "warning",
+        `${manifest.path} > domains`,
+        "No domains are declared.",
+        "Add product domains manually, or rerun `qamap manifest init . --force` with a larger `--max-files` if the scan was truncated.",
+      ),
+    );
   }
   const ids = new Set<string>();
   for (const domain of manifest.domains) {
@@ -1355,7 +1381,12 @@ function buildManifestContext(
     safetyRules.push(...rules);
   }
 
-  if (instructionFiles.length === 0 && validationCommands.length === 0 && safetyRules.length === 0) {
+  const projectCommands = extractProjectValidationCommands(files);
+  const allValidationCommands = dropRedundantCompoundCommands(
+    uniqueStrings([...projectCommands, ...validationCommands]),
+  ).slice(0, 12);
+
+  if (instructionFiles.length === 0 && allValidationCommands.length === 0 && safetyRules.length === 0) {
     return undefined;
   }
 
@@ -1363,7 +1394,7 @@ function buildManifestContext(
     instructionFiles: instructionFiles
       .sort((left, right) => contextKindRank(left.kind) - contextKindRank(right.kind) || left.path.localeCompare(right.path))
       .slice(0, 24),
-    validationCommands: uniqueStrings(validationCommands).slice(0, 12),
+    validationCommands: allValidationCommands,
     safetyRules: uniqueStrings(safetyRules).slice(0, 12),
     source: {
       kind: "inferred",
@@ -1617,10 +1648,17 @@ function classifyInstructionRoles(
 
 function extractValidationCommands(text: string): string[] {
   const commands: string[] = [];
+  let inCodeFence = false;
   for (const line of text.split(/\r?\n/)) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
     const candidates = [...line.matchAll(/`([^`\n]+)`/g)].map((match) => match[1]);
     const stripped = cleanMarkdownLine(line);
-    if (/^(?:pnpm|npm|yarn|bun|npx|node|pytest|go|cargo|maestro|playwright|gradle|mvn|\.\/gradlew)\b/i.test(stripped)) {
+    // A bare line only counts as a command inside a fenced code block; in
+    // prose, a sentence that merely starts with a tool name is not a command.
+    if (inCodeFence && /^(?:pnpm|npm|yarn|bun|npx|node|pytest|go|cargo|maestro|playwright|gradle|mvn|\.\/gradlew)\b/i.test(stripped)) {
       candidates.push(stripped);
     }
     for (const candidate of candidates) {
@@ -1633,9 +1671,79 @@ function extractValidationCommands(text: string): string[] {
   return uniqueStrings(commands).slice(0, 12);
 }
 
+// Ground-truth validation commands read from project config rather than doc
+// prose: package.json scripts and pytest markers. These rank ahead of
+// doc-extracted commands because they cannot drift from what actually runs.
+function extractProjectValidationCommands(files: ProjectFile[]): string[] {
+  const commands: string[] = [];
+  const packageJson = files.find((file) => file.path === "package.json");
+  if (packageJson?.text !== undefined) {
+    const packageManager = files.some((file) => file.path === "pnpm-lock.yaml")
+      ? "pnpm"
+      : files.some((file) => file.path === "yarn.lock")
+        ? "yarn"
+        : files.some((file) => file.path === "bun.lockb" || file.path === "bun.lock")
+          ? "bun"
+          : "npm";
+    try {
+      const parsed = JSON.parse(packageJson.text) as { scripts?: Record<string, unknown> };
+      for (const [name, script] of Object.entries(parsed.scripts ?? {})) {
+        if (typeof script !== "string") {
+          continue;
+        }
+        // Verification-shaped scripts only. Bare "build" qualifies, but build
+        // variants (build:android-apk) are packaging, not verification; and
+        // anything with fix/watch/dev mutates or never exits.
+        if (!/^(?:test|lint|typecheck|type-check|check-types?|check|e2e|coverage|verify|format:check)(?:[:.][\w:.-]+)?$/.test(name) && name !== "build") {
+          continue;
+        }
+        if (/fix|watch|dev|start|serve/i.test(name)) {
+          continue;
+        }
+        commands.push(`${packageManager} run ${name}`);
+      }
+    } catch {
+      // Unreadable package.json: fall back to doc-extracted commands only.
+    }
+  }
+  const hasPytestConfig = files.some(
+    (file) =>
+      file.path === "pytest.ini" ||
+      file.path === "conftest.py" ||
+      (file.path === "pyproject.toml" && (file.text?.includes("[tool.pytest") ?? false)) ||
+      (file.path === "setup.cfg" && (file.text?.includes("[tool:pytest]") ?? false)),
+  );
+  if (hasPytestConfig) {
+    commands.push("pytest");
+  }
+  return uniqueStrings(commands).slice(0, 12);
+}
+
+// "a && b" adds nothing when a and b are already listed individually.
+function dropRedundantCompoundCommands(commands: string[]): string[] {
+  const seen = new Set(commands);
+  return commands.filter((command) => {
+    const parts = command.split(/\s*&&\s*/);
+    if (parts.length < 2) {
+      return true;
+    }
+    return !parts.every((part) => seen.has(part.trim()));
+  });
+}
+
 function extractSafetyRules(text: string): string[] {
   const rules: string[] = [];
+  let inCodeFence = false;
   for (const line of text.split(/\r?\n/)) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+    // Code blocks hold examples (imports, CI YAML, mermaid diagrams), never
+    // the team's prose rules.
+    if (inCodeFence) {
+      continue;
+    }
     const cleaned = redactSensitiveText(cleanMarkdownLine(line));
     if (cleaned.length < 8 || cleaned.length > 220) {
       continue;
@@ -1643,11 +1751,14 @@ function extractSafetyRules(text: string): string[] {
     if (/\bdo not (?:belong|require|show)\b/i.test(cleaned)) {
       continue;
     }
-    if (
-      /(?:do not|don't|never|must not|read-only|\/tmp|token|secret|credential|절대|금지|하지 말|하면 안|커밋|푸시|PR 생성)/i.test(
-        cleaned,
-      )
-    ) {
+    // Structural fragments are never rules: mermaid edges, YAML keys and
+    // template expressions, code statements, markup.
+    if (/-->|\$\{\{|^[A-Za-z0-9_."'-]+:\s|^(?:import|export|from|const|let|var|function|class|return|if|for|uses:|run:|with:|<)\b/.test(cleaned)) {
+      continue;
+    }
+    // Only prohibition/obligation language qualifies; topic words alone
+    // (commit, push, token) pulled in list items and diagram labels.
+    if (/(?:do not|don't|never|must not|read-only|절대|금지|하지 마|하지 말|하면 안|해서는 안)/i.test(cleaned)) {
       rules.push(cleaned);
     }
   }
@@ -1659,6 +1770,12 @@ function normalizeCommand(value: string): string | undefined {
   if (!command || command.length > 140 || /(?:publish|login|token|secret|password|rm\s+-rf)/i.test(command)) {
     return undefined;
   }
+  // Commas, parentheses, and Hangul mark prose fragments, not shell commands;
+  // == marks dependency version pins; a bare version number or --version
+  // probe is not a verification run.
+  if (/[,()]|==|[ᄀ-ᇿ㄰-㆏가-힣]|--version\b|^\S+\s+v?\d+(?:\.\d+)+\s*$/.test(command)) {
+    return undefined;
+  }
   return command.replace(/\s+/g, " ");
 }
 
@@ -1668,7 +1785,8 @@ function isValidationCommand(command: string): boolean {
     /^(?:npx\s+)?playwright\s+test\b/i.test(command) ||
     /^maestro\s+test\b/i.test(command) ||
     /^node\s+--test\b/i.test(command) ||
-    /^pytest\b/i.test(command) ||
+    // "pytest" alone or with arguments — not "pytest.ini" or "pytest-django".
+    /^pytest(?:\s|$)/i.test(command) ||
     /^go\s+test\b/i.test(command) ||
     /^cargo\s+test\b/i.test(command) ||
     /^(?:gradle|\.\/gradlew)\s+(?:test|check)\b/i.test(command) ||
@@ -1678,8 +1796,9 @@ function isValidationCommand(command: string): boolean {
 
 function cleanMarkdownLine(value: string): string {
   return value
-    .replace(/^\s{0,3}(?:[-*]|\d+\.)\s+/, "")
     .replace(/^\s{0,3}#+\s*/, "")
+    .replace(/^\s{0,3}(?:[-*]|\d+\.)\s+/, "")
+    .replace(/\s*\{#[\w-]+\}\s*$/, "")
     .trim();
 }
 
@@ -1917,7 +2036,10 @@ function matchesPathPattern(file: string, pattern: string): boolean {
 }
 
 function isBehaviorFile(file: string): boolean {
-  return /\.(?:[cm]?[jt]sx?|vue|svelte)$/.test(file) && !/(?:^|\/)(?:tests?|__tests__|e2e|dist|build)\//i.test(file);
+  return (
+    /\.(?:[cm]?[jt]sx?|vue|svelte)$/.test(file) &&
+    !/(?:^|\/)(?:tests?|__tests__|e2e|dist|build|out|\.output|storybook-static|__generated__)\//i.test(file)
+  );
 }
 
 function normalizeVerificationManifest(value: unknown, manifestPath: string): VerificationManifest {

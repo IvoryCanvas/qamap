@@ -106,6 +106,10 @@ The bootstrap section answers what must happen before generated drafts can be tr
 
 Run `qamap manifest init .` to create a baseline verification manifest. QAMap infers domains, flows, route/component anchors, checks, runner hints, source, and confidence from the current checkout.
 
+The scan reads up to 2,500 files by default (alphabetically, skipping vendor trees such as `node_modules`, `Pods`, `.gradle`, and build output). The init summary reports how many files were scanned, and warns when the scan stopped at the cap — on very large repositories rerun with `--max-files` so domains and flows are inferred from the whole project.
+
+Validation commands come from two sources, ground truth first: `package.json` scripts whose names look like verification (`test`, `lint`, `typecheck`, `check`, `e2e`, `coverage`, `build`, …) plus a detected pytest setup, then command lines found inside fenced code blocks of instruction docs. Prose sentences that merely mention a tool name are not treated as commands. Safety rules are only harvested from prose lines that state a prohibition or obligation (`never …`, `do not …`, `절대/금지 …`); code blocks, CI YAML, and diagram fragments inside instruction docs are ignored.
+
 > **Important:** create the shared team baseline from the repository's default branch, after pulling the latest changes. QAMap does not silently switch branches or rewrite the repository state, so running `manifest init` from a feature branch creates a feature-branch snapshot, not the team's default QA map.
 
 ```sh
@@ -115,7 +119,7 @@ qamap manifest context .
 qamap manifest init . --write .qamap/manifest.yaml
 ```
 
-`qamap manifest context .` is a read-only preview of the repo-local knowledge QAMap can see before writing the manifest. It reports context sources such as `CONTEXT.md`, ADRs, goals, runbooks, agent instructions, harness files, and skills, then shows role classifications, validation commands, safety rules, and diagnostics for stale or missing context.
+`qamap manifest context .` is a read-only preview of the repo-local knowledge QAMap can see before writing the manifest. It reports context sources such as `CONTEXT.md`, ADRs, goals, runbooks, agent instructions, harness files, and skills under agent directories (`.claude/`, `.codex/`, `.agent-core/`, `.github/instructions/`), then shows role classifications, validation commands, safety rules, and diagnostics for stale or missing context.
 
 After the baseline is committed, feature branches should usually run `manifest explain`, `e2e plan`, or `e2e draft` against the PR base such as `origin/main`. The manifest is not meant to be perfect on the first run. It is meant to start the feedback loop: QAMap recommends E2E work from the manifest, shows why a recommendation happened, and points to the manifest path to edit when the recommendation is wrong.
 
