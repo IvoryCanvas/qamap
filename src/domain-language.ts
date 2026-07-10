@@ -684,6 +684,7 @@ function isTestLikeFile(file: string): boolean {
     /(?:\.|-)(?:test|spec)\.[cm]?[jt]sx?$/i.test(file) ||
     /(?:^|\/)test_[^/]+\.py$/i.test(file) ||
     /(?:^|\/)[^/]+_test\.(?:py|go)$/i.test(file)
+    || /(?:^|\/)\.maestro\/[^/]+\.ya?ml$/i.test(file)
   );
 }
 

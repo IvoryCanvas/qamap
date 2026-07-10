@@ -1,0 +1,16 @@
+{
+  "name": "benchmark-expo-config-only",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "start": "expo start",
+    "lint": "eslint .",
+    "build:apk": "cd android && ./gradlew assembleRelease",
+    "build:ios": "cd ios && xcodebuild -workspace app.xcworkspace -scheme app archive"
+  },
+  "dependencies": {
+    "expo": "54.0.0",
+    "react": "19.0.0",
+    "react-native": "0.81.0"
+  }
+}

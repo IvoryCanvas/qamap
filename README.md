@@ -28,9 +28,12 @@ Every report now opens with the verdict (trimmed real output):
 ```txt
 ## At a Glance
 
-- Affected: Orders Submit, Orders API contract smoke flow
-- Do next: `qamap e2e setup . --runner playwright`
-- Blocking 1: Configure Playwright execution — create playwright.config.ts (...)
+- Affected behavior: Checkout Submit
+- Verify before merge: ... this outcome is verified: visible text "Order confirmed" appears?
+- Evidence found: changed file src/pages/checkout/index.tsx; route: /checkout (high); web-test-id: checkout-submit (...)
+- Proposed draft: `tests/e2e/checkout-submit.spec.ts` (near runnable)
+- Next command: `qamap e2e setup . --runner playwright`
+- Missing before trust: Add deterministic fixture or mock data for /api/checkout (...)
 ```
 
 ## Install & Quick Start
@@ -59,7 +62,7 @@ One minified JSON object (`schema: qamap.qa`, ~2 KB for a small PR) with affecte
 
 - **Judgment first, generation second.** LLMs write test code well; deciding *what deserves testing* for a given diff is the missing layer. QAMap fills it statically, deterministically, for free.
 - **The repo remembers.** Team QA knowledge lives in `.qamap/manifest.yaml`, reviewed once and reused on every PR — instead of re-prompting an agent each session.
-- **Honest output.** Drafts state what blocks them from being trusted; changed endpoints are observed, never mocked away; generated specs never assert what cannot pass.
+- **Honest output.** Drafts state what blocks them from being trusted; changed endpoints are observed, never mocked away; generated specs never assert what cannot pass. Configuration, docs, generated artifacts, and changed tests stay in verification mode instead of fabricating a product-journey E2E.
 
 Positioning against recorders, LLM test generation, and impact-analysis tools: [where QAMap fits](docs/adoption.md#where-qamap-fits).
 

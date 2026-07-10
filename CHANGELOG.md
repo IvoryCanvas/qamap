@@ -2,8 +2,12 @@
 
 ## Unreleased
 
+## 0.3.4 - 2026-07-10
+
 ### Added
 
+- Added a committed Benchmark Contract v1: eight synthetic `base`/`head` PR fixtures cover testless web, existing Playwright, Expo/Maestro, API service, design tokens, reverse-imported shared components, native configuration-only changes, and Maestro test-only changes. `pnpm bench:ci` materializes each fixture as a temporary Git repository and fails when runner choice, affected-flow reach, product naming, draft paths, selectors, evidence, commands, blank actions, generic titles, or agent payload limits regress. The gate now runs in CI and `release:check`; private pinned repositories remain an optional local smoke layer.
+- Agent-format flows now carry compact `changedFiles`, `reviewQuestion`, `successSignal`, and `evidence` fields. These are additive `qamap.qa` v1 fields, documented in the public contract and JSON Schema, so an agent can see why a flow was selected without re-reading the repository.
 - The `--format agent` output is now a documented, versioned contract. A machine-readable JSON Schema ships at `schema/qamap-agent.schema.json`, the field-by-field spec with a stability policy lives at `docs/agent-format.md` (within `qamap.qa` version 1, fields are only ever added — never removed or retyped; breaking changes bump `schema.version`), and the test suite validates real CLI output against the published schema so the contract cannot drift silently.
 - `qamap manifest init` now reports how many files it scanned and warns explicitly when the scan stopped at the `--max-files` cap (with the exact rerun command), instead of silently producing an empty-looking baseline on large repositories. The JSON result carries a `scan` block (`files`, `maxFiles`, `truncated`), and `manifest validate`'s "No domains" advice now points at `--max-files` instead of circularly suggesting the same `manifest init` run that produced the empty manifest.
 - Manifest validation commands now come from ground truth first: verification-shaped `package.json` scripts (`test`, `lint`, `typecheck`, `check`, `e2e`, `coverage`, `build`, …, invoked via the detected package manager) and a detected pytest setup (`pytest.ini`, `conftest.py`, `[tool.pytest]`) are listed ahead of commands found in instruction docs. Scripts that block, open a UI, or mutate state (`test:watch`, `test:debug`, `e2e:open`, `test:update`, `lint:fix`, npm-init placeholder tests) are excluded, while segment lookalikes such as `test:server`, `e2e:device`, and `check:fixtures` survive.
@@ -21,11 +25,20 @@
 
 ### Changed
 
+- `qamap qa` now opens with the affected behavior, a concrete reviewer question, repository evidence, proposed draft path, next command, and missing trust requirements. Diff-visible outcome copy such as `Order confirmed` or `Profile saved` is preferred over generic success wording; simple React state output (`setStatus("Orders refreshed")` rendered through `{status}`) is recognized as visible evidence; and stable action selectors are shown ahead of plain input placeholders.
+- Verification-only diffs no longer enter the product-journey bootstrap loop. Configuration, documentation, generated artifacts, and changed tests expose a compact `verificationMode`; configuration changes prefer existing platform build scripts, while changed test files are returned as `existingEvidence` to run directly. The agent payload omits `firstDraftCommand` and treats the backward-compatible `draft` field as a fallback artifact path when generating a new E2E would duplicate or invent coverage.
+- Shared component changes that reach a page through imports are named after the consuming surface and retain both the changed component and reached page as evidence, instead of producing duplicate `primary journey`/`UI smoke flow` drafts named after the component.
+- API-service route modules under `routes/` stay in contract analysis instead of being mistaken for frontend route surfaces.
 - The project file walk skips mobile vendor/derived trees (`Pods`, `.expo`, `.gradle`, `DerivedData`, `Carthage`). On React Native and Expo repositories these directories could exhaust the capped alphabetical scan before it ever reached `src/`, which made `manifest init` produce zero domains and zero flows.
 - Manifest context extraction got precision-first rules: bare command lines in instruction docs only count inside fenced code blocks (prose sentences that start with a tool name are no longer "commands"), commands containing commas, parentheses, or Hangul prose are rejected, redundant `a && b` compounds are dropped when both halves are already listed, and safety rules are only harvested from prose prohibition/obligation lines — code blocks, CI YAML fragments, mermaid edges, and topic words like `커밋`/`token` alone no longer produce fake team rules.
 - Build-output directories (`out/`, `.output/`, `storybook-static/`, `__generated__/`) are excluded from manifest domain/flow inference, so exported build artifacts with hashed filenames no longer surface as product-domain key paths.
 - Human reports now describe draft readiness as a stage on a fixed four-step journey (`Stage: setup needed (1 of 4) — readiness 0/100`) instead of a verdict (`Readiness: blocked (0/100)`), and the blocked-level recommendation says "keep these drafts review-only and start with X" instead of "do not treat these drafts as runnable". A fresh repository reads as being at the start of a path, not as failing. Machine formats are unchanged: `readiness.level` keeps the `blocked`/`needs-work`/`near-runnable`/`ready` values, and the stage-to-level mapping is documented in `docs/commands.md`.
 - Slimmed the README from ~640 lines to ~100: it now carries only the demo, quick start, agent usage, positioning, and a documentation index. The full command reference moved to `docs/commands.md`, the guardrails scanner section to `docs/guardrails.md`, and positioning tables into `docs/adoption.md`.
+
+### Fixed
+
+- Expo native version and build metadata changes are grouped into one `Mobile build configuration verification checklist` instead of filename-derived user journeys such as `Build Gradle primary journey` or `Info Plist primary journey`. Native project files no longer fabricate screen entrypoints or selector requirements.
+- `.maestro/*.yaml` changes are recognized as existing test evidence. QAMap recommends `maestro test .maestro`, names the changed flow files, and no longer asks for duplicate fixtures, selectors, entrypoints, manifest promotion, or a second generated Maestro journey.
 
 ## 0.3.3 - 2026-07-05
 

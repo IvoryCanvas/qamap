@@ -1,0 +1,13 @@
+{
+  "name": "benchmark-maestro-test-only",
+  "private": true,
+  "scripts": {
+    "start": "expo start",
+    "lint": "biome check ."
+  },
+  "dependencies": {
+    "expo": "54.0.0",
+    "react": "19.0.0",
+    "react-native": "0.81.0"
+  }
+}

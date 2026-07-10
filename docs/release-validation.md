@@ -1,5 +1,19 @@
 # Release Validation
 
+## 0.3.4 - 2026-07-10
+
+Validated before publishing `0.3.4` with a committed, CI-enforced recommendation contract instead of relying only on private smoke repositories:
+
+| Gate | Current result |
+| --- | --- |
+| `pnpm test` | 124/124 passing |
+| `pnpm bench:ci` | Eight public PR fixtures pass runner, flow naming, file reach, selector/evidence, command, generic-title, blank-action, and agent payload requirements |
+| Coverage | Lines 86.19%, branches 83.37%, functions 94.87% |
+| Reverse import fixture | Shared component change reaches and names the consuming checkout page |
+| API service fixture | Backend route changes produce an API contract, not a browser UI journey |
+| Agent contract | Real output validates against `schema/qamap-agent.schema.json` and stays below the 4KB fixture limit |
+| Verification-only regressions | Native config changes use existing build commands without fabricated journeys; changed Maestro files are returned as existing evidence without duplicate drafts or selector/fixture noise |
+
 ## 0.3.3 - 2026-07-05
 
 Validated before publishing `0.3.3` (at-a-glance qa verdict, diff-anchored action naming incl. button/link text and logic-only fallbacks, observed-response assertions with diff-derived status bounds, Vue bound-attribute/i18n selector fixes):
@@ -33,7 +47,7 @@ QAMap should not publish a patch or minor version only because the CLI commands 
 
 ## Release Bar
 
-QAMap is ready for `0.2.1` when the commands below produce useful, reviewable output for each representative repository type:
+QAMap is ready for the next public release when the commands below produce useful, reviewable output for each representative repository type:
 
 - manifest-free `qamap qa` output that works as a PR comment/checklist draft
 - packaged `skills/qamap-pr-qa/SKILL.md` template included in the npm tarball
@@ -71,7 +85,7 @@ Run these from a clean checkout of QAMap before any release candidate:
 pnpm run release:check
 ```
 
-`release:check` expands to the required local suite: `pnpm test`, `pnpm scan`, `git diff --check`, coverage thresholds, and `pnpm pack --dry-run`. If a release candidate fails, run the individual command directly to inspect the failure.
+`release:check` expands to the required local suite: `pnpm test`, `pnpm scan`, `pnpm bench:ci`, `git diff --check`, coverage thresholds, and `pnpm pack --dry-run`. If a release candidate fails, run the individual command directly to inspect the failure.
 
 Run the npm publish preview after the local release gate passes:
 
@@ -231,7 +245,7 @@ The same follow-up also showed the next quality gap. External manifest previews 
 | Design token repository | `main` to `HEAD`, working tree included | Detected `design-tokens`, selected manual output, avoided browser/device selector requirements, and produced review-only artifact validation output. | Docs-only or style-only changes may still surface content/theme wording instead of token artifact language. |
 | Taxonomy / data catalog repository | `main` to `HEAD`, working tree included | Detected `data-catalog`, selected manual output, avoided API mock requirements, and produced review-only checklist output with no TODOs. | Catalog-specific changes are handled, but docs/config-only changes should be labeled more explicitly as low-signal. |
 
-Interpretation: the `0.2.1` release should be described as a planner that removes blank-page verification work by combining static analysis with repo-local manifest memory. The smoke results are useful, but they also show that many real repositories will start at `review-only` or `near-runnable` until teams add runner config, selectors, fixtures, validation evidence, and durable manifests.
+Interpretation: the next release should be described as a planner that removes blank-page verification work by combining static analysis with repo-local manifest memory. The smoke results are useful, but they also show that many real repositories will start at `review-only` or `near-runnable` until teams add runner config, selectors, fixtures, validation evidence, and durable manifests.
 
 ## Ongoing Validation Notes
 
