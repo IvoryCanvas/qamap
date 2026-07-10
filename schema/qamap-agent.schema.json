@@ -73,7 +73,7 @@
     },
     "firstDraftCommand": {
       "type": "string",
-      "description": "One command that creates the first E2E draft. Only present when the repository has no test suite."
+      "description": "One command that creates the first E2E draft. Only present when the repository has no test suite and the diff reaches a product journey."
     },
     "flows": {
       "type": "array",
@@ -87,7 +87,12 @@
             "type": "string",
             "description": "Where the flow came from, for example verification-manifest, core-flow, domain-language, heuristic."
           },
-          "draft": { "type": "string", "description": "Path of the generated draft file for this flow." },
+          "draft": { "type": "string", "description": "Path of the fallback draft artifact for this flow. When verificationMode is present, run existing repository evidence first instead of generating it by default." },
+          "verificationMode": {
+            "type": "string",
+            "enum": ["existing-test-evidence", "configuration", "documentation", "generated-artifact"],
+            "description": "Why this flow should validate existing evidence instead of generating a new product-journey E2E draft."
+          },
           "runnable": {
             "type": "string",
             "enum": ["runnable-candidate", "near-runnable", "review-only"],
@@ -109,6 +114,11 @@
           },
           "steps": { "type": "array", "items": { "type": "string" } },
           "selectors": { "type": "array", "items": { "type": "string" } },
+          "existingEvidence": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Changed test files to execute instead of generating another draft. Present for test-evidence-only changes."
+          },
           "evidence": {
             "type": "array",
             "items": { "type": "string" },

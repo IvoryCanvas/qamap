@@ -60,7 +60,8 @@ export async function generateTestPlan(rootInput: string, options: TestPlanOptio
   const changedFiles = scopeChangedFiles(await getChangedFiles(gitRoot, base, head, includeWorkingTree), relativeRoot);
   const suggestedCommands = uniqueCommands([
     ...normalizeValidationCommands(options.validationCommands),
-    ...(await discoverSuggestedCommands(root, workspaceRoot)),
+    ...commandsForChangedTestEvidence(changedFiles),
+    ...(await discoverSuggestedCommands(root, workspaceRoot, changedFiles)),
   ]);
   const items = buildPlanItems(changedFiles);
 
@@ -318,9 +319,13 @@ function buildTestCoverageItem(files: string[]): TestPlanItem | undefined {
   };
 }
 
-async function discoverSuggestedCommands(root: string, workspaceRoot: string | undefined): Promise<string[]> {
+async function discoverSuggestedCommands(
+  root: string,
+  workspaceRoot: string | undefined,
+  changedFiles: TestPlanChangedFile[],
+): Promise<string[]> {
   const commandGroups = await Promise.all([
-    discoverJavaScriptCommands(root, workspaceRoot),
+    discoverJavaScriptCommands(root, workspaceRoot, changedFiles),
     discoverPythonCommands(root),
     discoverGoCommands(root),
     discoverRustCommands(root),
@@ -329,7 +334,11 @@ async function discoverSuggestedCommands(root: string, workspaceRoot: string | u
   return uniqueCommands(commandGroups.flat());
 }
 
-async function discoverJavaScriptCommands(root: string, workspaceRoot: string | undefined): Promise<string[]> {
+async function discoverJavaScriptCommands(
+  root: string,
+  workspaceRoot: string | undefined,
+  changedFiles: TestPlanChangedFile[],
+): Promise<string[]> {
   const packageJsonPath = path.join(root, "package.json");
   let parsed: { packageManager?: string; scripts?: Record<string, string> };
   try {
@@ -342,10 +351,56 @@ async function discoverJavaScriptCommands(root: string, workspaceRoot: string | 
   }
 
   const packageManager = await detectPackageManager(root, parsed.packageManager, workspaceRoot);
-  const preferredScripts = ["test", "typecheck", "lint", "build", "test:e2e", "e2e"];
+  const platformBuildScripts = discoverPlatformBuildScripts(parsed.scripts ?? {}, changedFiles.map((file) => file.path));
+  const preferredScripts = uniqueCommands([
+    ...platformBuildScripts,
+    "test",
+    "typecheck",
+    "lint",
+    "build",
+    "test:e2e",
+    "e2e",
+  ]);
   return preferredScripts
     .filter((script) => isUsableScript(parsed.scripts?.[script]))
     .map((script) => (script === "test" ? `${packageManager} test` : `${packageManager} run ${script}`));
+}
+
+function discoverPlatformBuildScripts(scripts: Record<string, string>, changedFiles: string[]): string[] {
+  const names = Object.keys(scripts).filter((name) => isUsableScript(scripts[name]));
+  const androidChanged = changedFiles.some((file) => /(?:^|\/)android(?:\/|$)|AndroidManifest|\.gradle(?:\.kts)?$/i.test(file));
+  const iosChanged = changedFiles.some((file) => /(?:^|\/)ios(?:\/|$)|Info\.plist$|\.xcodeproj(?:\/|$)|\.xcworkspace(?:\/|$)/i.test(file));
+  const selected: string[] = [];
+
+  if (androidChanged) {
+    const androidScript = preferredPlatformScript(names, /(?:^|:)(?:android|apk|aab)(?::|$)/i);
+    if (androidScript) {
+      selected.push(androidScript);
+    }
+  }
+  if (iosChanged) {
+    const iosScript = preferredPlatformScript(names, /(?:^|:)(?:ios|archive)(?::|$)/i);
+    if (iosScript) {
+      selected.push(iosScript);
+    }
+  }
+  return uniqueCommands(selected);
+}
+
+function preferredPlatformScript(names: string[], pattern: RegExp): string | undefined {
+  return names
+    .filter((name) => pattern.test(name))
+    .sort((left, right) => platformScriptRank(left) - platformScriptRank(right) || left.localeCompare(right))[0];
+}
+
+function platformScriptRank(name: string): number {
+  if (/^build(?::|$)/i.test(name)) {
+    return 0;
+  }
+  if (/(?:^|:)clean(?:$|:)/i.test(name)) {
+    return 1;
+  }
+  return 2;
 }
 
 async function discoverPythonCommands(root: string): Promise<string[]> {
@@ -518,6 +573,13 @@ function uniqueCommands(commands: string[]): string[] {
   return commands.filter((command, index) => commands.indexOf(command) === index);
 }
 
+function commandsForChangedTestEvidence(files: TestPlanChangedFile[]): string[] {
+  if (files.some((file) => /(?:^|\/)\.maestro\/[^/]+\.ya?ml$/i.test(file.path))) {
+    return ["maestro test .maestro"];
+  }
+  return [];
+}
+
 function normalizeValidationCommands(commands: string[] | undefined): string[] {
   return (commands ?? []).map((command) => command.trim()).filter(Boolean);
 }
@@ -529,7 +591,8 @@ function isTestLikeFile(filePath: string): boolean {
     /(?:^|\/)test_[^/]+\.py$/i.test(filePath) ||
     /(?:^|\/)[^/]+_test\.(?:py|go)$/i.test(filePath) ||
     /(?:^|\/)[^/]+(?:Test|Tests|Spec)\.(?:java|kt|cs|swift)$/i.test(filePath) ||
-    /(?:^|\/)[^/]+_(?:test|spec)\.rs$/i.test(filePath)
+    /(?:^|\/)[^/]+_(?:test|spec)\.rs$/i.test(filePath) ||
+    /(?:^|\/)\.maestro\/[^/]+\.ya?ml$/i.test(filePath)
   );
 }
 

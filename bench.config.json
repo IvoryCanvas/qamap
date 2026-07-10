@@ -100,6 +100,48 @@
         "maxGenericTitles": 0,
         "maxAgentBytes": 4096
       }
+    },
+    {
+      "name": "expo-config-only",
+      "fixture": "test/benchmarks/expo-config-only",
+      "expect": {
+        "runner": "manual",
+        "minFlows": 1,
+        "mustReachFiles": [
+          "android/app/build.gradle",
+          "app.json",
+          "ios/app.xcodeproj/project.pbxproj",
+          "ios/app/Info.plist",
+          "package.json"
+        ],
+        "mustNameFlows": ["mobile build configuration verification"],
+        "mustNotNameFlows": ["Build Gradle primary journey", "Info Plist primary journey"],
+        "mustFindSuccessSignals": ["build or runtime variant"],
+        "mustRecommendCommands": ["build:apk", "build:ios"],
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 4096
+      }
+    },
+    {
+      "name": "maestro-test-only",
+      "fixture": "test/benchmarks/maestro-test-only",
+      "expect": {
+        "runner": "maestro",
+        "minFlows": 1,
+        "mustReachFiles": [
+          ".maestro/notification-primary-journey.yaml",
+          ".maestro/search-primary-journey.yaml"
+        ],
+        "mustNameFlows": ["Changed test evidence"],
+        "mustNotNameFlows": ["Notification primary journey", "Search primary journey"],
+        "mustNotFindEvidence": ["fixture", "selector", "entrypoint", "manifest"],
+        "mustFindSuccessSignals": ["changed test evidence runs"],
+        "mustRecommendCommands": ["maestro test .maestro"],
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 4096
+      }
     }
   ]
 }

@@ -1,0 +1,5 @@
+appId: dev.qamap.benchmark.journeys
+---
+- launchApp
+- tapOn: "Notifications"
+- assertVisible: "Notification settings"

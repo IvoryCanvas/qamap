@@ -1,0 +1,8 @@
+{
+  "expo": {
+    "name": "Benchmark Journeys",
+    "slug": "benchmark-journeys",
+    "ios": { "bundleIdentifier": "dev.qamap.benchmark.journeys" },
+    "android": { "package": "dev.qamap.benchmark.journeys" }
+  }
+}

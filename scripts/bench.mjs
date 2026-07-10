@@ -148,11 +148,13 @@ function evaluateContract(expect, result, plan, qa) {
     failures.push(`expected at least ${expect.minDiffAnchoredFlows} diff-anchored flow(s), got ${result.diffAnchoredFlows}`);
   }
   appendMissingTerms(failures, "flow title", result.flowTitles, expect.mustNameFlows);
+  appendUnexpectedTerms(failures, "flow title", result.flowTitles, expect.mustNotNameFlows);
   appendMissingTerms(failures, "draft path", result.draftPaths, expect.mustDraftFiles);
   appendMissingTerms(failures, "step", steps, expect.mustIncludeSteps);
   appendMissingTerms(failures, "selector", selectors, expect.mustFindSelectors);
   appendMissingTerms(failures, "success signal", result.successSignals, expect.mustFindSuccessSignals);
   appendMissingTerms(failures, "evidence", evidence, expect.mustFindEvidence);
+  appendUnexpectedTerms(failures, "evidence", evidence, expect.mustNotFindEvidence);
   appendMissingTerms(failures, "command", commands, expect.mustRecommendCommands);
 
   if (result.mustReachMissing.length > 0) {
@@ -174,6 +176,14 @@ function appendMissingTerms(failures, label, actualValues, expectedTerms = []) {
   for (const term of expectedTerms) {
     if (!includesTerm(actualValues, term)) {
       failures.push(`${label} missing "${term}"`);
+    }
+  }
+}
+
+function appendUnexpectedTerms(failures, label, actualValues, rejectedTerms = []) {
+  for (const term of rejectedTerms) {
+    if (includesTerm(actualValues, term)) {
+      failures.push(`${label} unexpectedly contains "${term}"`);
     }
   }
 }

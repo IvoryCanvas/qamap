@@ -1,17 +1,18 @@
 # Release Validation
 
-## Unreleased benchmark contract
+## 0.3.4 - 2026-07-10
 
-The next release adds a committed, CI-enforced recommendation contract instead of relying only on private smoke repositories:
+Validated before publishing `0.3.4` with a committed, CI-enforced recommendation contract instead of relying only on private smoke repositories:
 
 | Gate | Current result |
 | --- | --- |
-| `pnpm test` | 122/122 passing |
-| `pnpm bench:ci` | Six public PR fixtures pass runner, flow naming, file reach, selector/evidence, generic-title, blank-action, and agent payload requirements |
-| Coverage | Lines 86.13%, branches 82.91%, functions 94.91% |
+| `pnpm test` | 124/124 passing |
+| `pnpm bench:ci` | Eight public PR fixtures pass runner, flow naming, file reach, selector/evidence, command, generic-title, blank-action, and agent payload requirements |
+| Coverage | Lines 86.19%, branches 83.37%, functions 94.87% |
 | Reverse import fixture | Shared component change reaches and names the consuming checkout page |
 | API service fixture | Backend route changes produce an API contract, not a browser UI journey |
 | Agent contract | Real output validates against `schema/qamap-agent.schema.json` and stays below the 4KB fixture limit |
+| Verification-only regressions | Native config changes use existing build commands without fabricated journeys; changed Maestro files are returned as existing evidence without duplicate drafts or selector/fixture noise |
 
 ## 0.3.3 - 2026-07-05
 

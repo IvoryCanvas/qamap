@@ -1192,6 +1192,89 @@ test("generateE2ePlan assigns configuration changes to release operators", async
   assert.match(flow.languageBrief.reviewQuestion, /affected build, startup, or release variant/);
 });
 
+test("generateE2eDraft keeps Expo native version changes in one mobile build configuration flow", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "android/app"), { recursive: true });
+  await mkdir(path.join(root, "ios/app.xcodeproj"), { recursive: true });
+  await mkdir(path.join(root, "ios/app"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      version: "1.0.0",
+      scripts: {
+        start: "expo start",
+        lint: "eslint .",
+        "build:apk": "cd android && ./gradlew assembleRelease",
+        "build:ios": "cd ios && xcodebuild -workspace app.xcworkspace -scheme app archive",
+      },
+      dependencies: { expo: "^54.0.0", react: "^19.0.0", "react-native": "^0.81.0" },
+    }),
+  );
+  await writeFile(path.join(root, "app.json"), JSON.stringify({ expo: { version: "1.0.0" } }));
+  await writeFile(path.join(root, "android/app/build.gradle"), "versionCode 1\nversionName '1.0.0'\n");
+  await writeFile(path.join(root, "ios/app/Info.plist"), "<string>1.0.0</string>\n");
+  await writeFile(path.join(root, "ios/app.xcodeproj/project.pbxproj"), "MARKETING_VERSION = 1.0.0;\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "baseline mobile version"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "release/mobile-version"]);
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      version: "1.0.1",
+      scripts: {
+        start: "expo start",
+        lint: "eslint .",
+        "build:apk": "cd android && ./gradlew assembleRelease",
+        "build:ios": "cd ios && xcodebuild -workspace app.xcworkspace -scheme app archive",
+      },
+      dependencies: { expo: "^54.0.0", react: "^19.0.0", "react-native": "^0.81.0" },
+    }),
+  );
+  await writeFile(path.join(root, "app.json"), JSON.stringify({ expo: { version: "1.0.1" } }));
+  await writeFile(path.join(root, "android/app/build.gradle"), "versionCode 2\nversionName '1.0.1'\n");
+  await writeFile(path.join(root, "ios/app/Info.plist"), "<string>1.0.1</string>\n");
+  await writeFile(path.join(root, "ios/app.xcodeproj/project.pbxproj"), "MARKETING_VERSION = 1.0.1;\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "bump native versions"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", dryRun: true });
+  const qa = await generateQaDraft(root, { base: "main", head: "HEAD" });
+  const qaMarkdown = formatMarkdownQaDraft(qa);
+  const agentSummary = JSON.parse(formatAgentQaDraft(qa));
+
+  assert.equal(plan.project.type, "expo-react-native");
+  assert.equal(plan.recommendedRunner.name, "manual");
+  assert.deepEqual(plan.flows.map((flow) => flow.title), ["Mobile build configuration verification checklist"]);
+  assert.deepEqual(
+    [...plan.flows[0].files].sort(),
+    [
+      "android/app/build.gradle",
+      "app.json",
+      "ios/app.xcodeproj/project.pbxproj",
+      "ios/app/Info.plist",
+      "package.json",
+    ].sort(),
+  );
+  assert.equal(draft.files.length, 1);
+  assert.equal(draft.files[0].flowTitle, "Mobile build configuration verification checklist");
+  assert.equal(plan.flows[0].entrypoints.length, 0);
+  assert.equal(plan.flows[0].selectors.length, 0);
+  assert.equal(draft.files.some((file) => /primary journey|UI smoke/i.test(file.flowTitle)), false);
+  assert.equal(agentSummary.firstDraftCommand, undefined);
+  assert.equal(typeof agentSummary.flows[0].draft, "string");
+  assert.equal(agentSummary.flows[0].verificationMode, "configuration");
+  const agentSchema = JSON.parse(await readFile(path.join(repositoryRoot, "schema/qamap-agent.schema.json"), "utf8"));
+  assert.deepEqual(collectSchemaViolations(agentSchema, agentSummary), []);
+  assert.deepEqual(plan.suggestedCommands.slice(0, 2), ["npm run build:apk", "npm run build:ios"]);
+  assert.equal(qa.bootstrap.steps.some((step) => step.title === "Create the first changed-flow E2E draft"), false);
+  assert.doesNotMatch(qaMarkdown, /## First E2E Draft Bootstrap/);
+  assert.doesNotMatch(qaMarkdown, /Proposed draft:/);
+});
+
 test("generateE2ePlan avoids turning release metadata into domain journeys", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
@@ -1263,7 +1346,8 @@ test("generateE2ePlan keeps package release metadata out of product workflows", 
   const titles = plan.flows.map((flow) => flow.title);
 
   assert.equal(plan.project.type, "web");
-  assert.ok(titles.includes("Release metadata configuration verification flow"));
+  assert.equal(plan.recommendedRunner.name, "manual");
+  assert.ok(titles.includes("Release metadata configuration verification checklist"));
   assert.equal(titles.some((title) => /workflow smoke|UI smoke|React workflow/i.test(title)), false);
   assert.ok(plan.flows.every((flow) => flow.languageBrief.actor === "Maintainer or release operator"));
 });
@@ -1379,6 +1463,59 @@ test("generateE2ePlan treats test-only changes as evidence verification, not pro
   const spec = await readFile(path.join(root, draftFile.path), "utf8");
   assert.match(spec, /Flow: Changed test evidence verification checklist/);
   assert.doesNotMatch(spec, /Domain scenario: Admin/);
+});
+
+test("generateE2ePlan treats Maestro-only changes as test evidence", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, ".maestro"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: { start: "expo start", lint: "biome check ." },
+      dependencies: { expo: "^54.0.0", react: "^19.0.0", "react-native": "^0.81.0" },
+    }),
+  );
+  await writeFile(path.join(root, "app.json"), JSON.stringify({ expo: { android: { package: "dev.qamap.fixture" } } }));
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "baseline mobile app"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "test/mobile-journeys"]);
+  await writeFile(
+    path.join(root, ".maestro/notification-primary-journey.yaml"),
+    "appId: dev.qamap.fixture\n---\n- launchApp\n- assertVisible: Notifications\n",
+  );
+  await writeFile(
+    path.join(root, ".maestro/search-primary-journey.yaml"),
+    "appId: dev.qamap.fixture\n---\n- launchApp\n- assertVisible: Search\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "add maestro coverage"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", dryRun: true });
+  const qa = await generateQaDraft(root, { base: "main", head: "HEAD" });
+  const qaMarkdown = formatMarkdownQaDraft(qa);
+
+  assert.equal(plan.recommendedRunner.name, "maestro");
+  assert.deepEqual(plan.flows.map((flow) => flow.title), ["Changed test evidence verification checklist"]);
+  assert.equal(plan.domainLanguage.scenarios.length, 0);
+  assert.equal(plan.flows[0].fixtureReadiness.status, "not-needed");
+  assert.equal(plan.suggestedCommands[0], "maestro test .maestro");
+  assert.equal(draft.files.some((file) => /Notification primary journey|Search primary journey/.test(file.flowTitle)), false);
+  assert.equal(draft.files[0].flowTitle, "Changed test evidence verification checklist");
+  assert.deepEqual(qa.flows[0].existingEvidencePaths, [
+    ".maestro/notification-primary-journey.yaml",
+    ".maestro/search-primary-journey.yaml",
+  ]);
+  assert.equal(qa.suggestedCommands[0], "maestro test .maestro");
+  assert.equal(qa.missingEvidence.some((item) => item.kind === "selector"), false);
+  assert.equal(qa.missingEvidence.some((item) => item.kind === "manifest"), false);
+  assert.equal(qa.missingEvidence.some((item) => /entrypoint/i.test(`${item.title} ${item.detail}`)), false);
+  assert.equal(qa.bootstrap.steps.some((step) => step.title === "Create the first changed-flow E2E draft"), false);
+  assert.match(qaMarkdown, /Existing test evidence:/);
+  assert.doesNotMatch(qaMarkdown, /Proposed draft: `.maestro\/changed-test-evidence/);
 });
 
 test("generateE2ePlan treats docs-only changes as documentation verification", async () => {

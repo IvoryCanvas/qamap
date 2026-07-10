@@ -1,0 +1,9 @@
+{
+  "expo": {
+    "name": "Benchmark Mobile",
+    "slug": "benchmark-mobile",
+    "version": "1.0.0",
+    "ios": { "bundleIdentifier": "dev.qamap.benchmark.mobile", "buildNumber": "1" },
+    "android": { "package": "dev.qamap.benchmark.mobile", "versionCode": 1 }
+  }
+}

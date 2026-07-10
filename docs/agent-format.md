@@ -35,8 +35,8 @@ The intended loop for a coding agent:
 | `manifest` | string \| null | Verification manifest path in use, or `null` when the run used repo signals and the PR diff only. |
 | `readiness` | object | `score` (0–100) and `level` (`ready` \| `near-runnable` \| `needs-work` \| `blocked`). Human reports render the same value as a four-stage journey; the machine value is stable. |
 | `testSuite` | object | `present` (boolean) and `files` (number of detected test files). |
-| `firstDraftCommand` | string? | One command that creates the first E2E draft. Present only when the repository has no test suite. |
-| `flows` | array | Affected user flows, most relevant first (capped). Each has `title`, `source`, `draft`, optional `runnable` and `entry`, plus `changedFiles`, `reviewQuestion`, `successSignal`, `steps`, `selectors`, and short `evidence` reasons. Optional fields may be absent when the repository does not provide enough static evidence. |
+| `firstDraftCommand` | string? | One command that creates the first E2E draft. Present only when the repository has no test suite and the diff reaches a product journey. |
+| `flows` | array | Affected user flows, most relevant first (capped). Each has `title`, `source`, `draft`, optional `runnable`, `entry`, and `verificationMode`, plus `changedFiles`, `reviewQuestion`, `successSignal`, `steps`, `selectors`, and short `evidence` reasons. Test-only changes expose `existingEvidence`; configuration, docs, generated artifacts, and changed tests use `verificationMode`, keep `draft` only as a fallback artifact path, and omit `firstDraftCommand` rather than inventing a required product journey. |
 | `requiredEvidence` | array | Required-priority QA evidence still missing, capped at 8: `flow`, `kind`, `title`. |
 | `recommendedEvidenceCount` | number | How many recommended-priority items were omitted; run without `--format agent` to see them. |
 | `requiredBootstrap` | array | Setup steps (capped at 3) that must happen before drafts count as regression coverage: `title`, `action`. |

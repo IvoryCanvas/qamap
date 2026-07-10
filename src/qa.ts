@@ -51,10 +51,14 @@ export interface QaDraftFlow {
   coverageTargets: string[];
   entrypointHints: string[];
   selectorHints: string[];
+  existingEvidencePaths: string[];
+  verificationMode?: QaVerificationMode;
   setupHints: string[];
   manifestUpdatePath?: string;
   why: string[];
 }
+
+type QaVerificationMode = "existing-test-evidence" | "configuration" | "documentation" | "generated-artifact";
 
 export interface QaDraftMissingEvidence {
   flowTitle: string;
@@ -123,12 +127,15 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
     manifest: result.manifestPath ?? null,
     readiness: { score: result.readiness.score, level: result.readiness.level },
     testSuite: { present: result.testSuite.hasTestSuite, files: result.testSuite.testFileCount },
-    firstDraftCommand: result.testSuite.hasTestSuite ? undefined : firstDraftCreateCommand(result),
+    firstDraftCommand: !result.testSuite.hasTestSuite && needsGeneratedDraft(result)
+      ? firstDraftCreateCommand(result)
+      : undefined,
     flows: result.flows.slice(0, agentListLimit).map((flow) => ({
       title: truncateForAgent(flow.title, 80),
       source: flow.source,
       draft: flow.draftPath,
       runnable: flow.runnableStatus,
+      verificationMode: flow.verificationMode,
       entry: flow.entrypointHints[0],
       changedFiles: flow.changedFiles.slice(0, 4),
       reviewQuestion: flow.userJourney?.reviewQuestion
@@ -139,6 +146,7 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
         : undefined,
       steps: flow.draftSteps.slice(0, agentListLimit).map((step) => truncateForAgent(step)),
       selectors: flow.selectorHints.slice(0, 5).map((selector) => truncateForAgent(selector, 100)),
+      existingEvidence: flow.existingEvidencePaths.length > 0 ? flow.existingEvidencePaths.slice(0, 4) : undefined,
       evidence: flow.why.slice(0, 2).map((reason) => truncateForAgent(reason)),
     })),
     requiredEvidence,
@@ -172,9 +180,17 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
     if (evidence.length > 0) {
       lines.push(`- Evidence found: ${evidence.map(escapeMarkdownInline).join("; ")}`);
     }
-    lines.push(
-      `- Proposed draft: \`${escapeMarkdownInline(primaryFlow.draftPath)}\` (${formatRunnableStatus(primaryFlow.runnableStatus)})`,
-    );
+    if (primaryFlow.existingEvidencePaths.length > 0) {
+      lines.push(
+        `- Existing test evidence: ${primaryFlow.existingEvidencePaths.slice(0, 3).map((file) => `\`${escapeMarkdownInline(file)}\``).join(", ")}`,
+      );
+    } else if (primaryFlow.verificationMode) {
+      lines.push(`- Verification mode: ${formatVerificationMode(primaryFlow.verificationMode)}; no new product-journey E2E draft is proposed.`);
+    } else {
+      lines.push(
+        `- Proposed draft: \`${escapeMarkdownInline(primaryFlow.draftPath)}\` (${formatRunnableStatus(primaryFlow.runnableStatus)})`,
+      );
+    }
   }
   lines.push(`- Next command: \`${escapeMarkdownInline(nextStepCommand(result))}\``);
   const blocking = result.missingEvidence.filter((item) => item.priority === "required").slice(0, 2);
@@ -200,7 +216,7 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
   lines.push(`- Draft flows: ${result.flows.length}`);
   lines.push("");
 
-  if (!result.testSuite.hasTestSuite) {
+  if (!result.testSuite.hasTestSuite && needsGeneratedDraft(result)) {
     lines.push("## First E2E Draft Bootstrap");
     lines.push("");
     lines.push(
@@ -255,7 +271,15 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
   lines.push("### Suggested E2E / QA Draft");
   lines.push("");
   for (const flow of result.flows) {
-    lines.push(`- \`${escapeMarkdownInline(flow.draftPath)}\`: ${formatRunnableStatus(flow.runnableStatus)}`);
+    if (flow.existingEvidencePaths.length > 0) {
+      lines.push(
+        `- Run existing test evidence: ${flow.existingEvidencePaths.slice(0, 4).map((file) => `\`${escapeMarkdownInline(file)}\``).join(", ")}`,
+      );
+    } else if (flow.verificationMode) {
+      lines.push(`- Run ${formatVerificationMode(flow.verificationMode)} with the suggested repository validation command; no new product-journey E2E draft is proposed.`);
+    } else {
+      lines.push(`- \`${escapeMarkdownInline(flow.draftPath)}\`: ${formatRunnableStatus(flow.runnableStatus)}`);
+    }
     const routeHint = flow.entrypointHints.find((hint) => hint.startsWith("route:"));
     if (routeHint) {
       lines.push(`  - Entrypoint: ${escapeMarkdownInline(routeHint)}`);
@@ -305,7 +329,7 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
 }
 
 function nextStepCommand(result: QaDraftResult): string {
-  if (!result.testSuite.hasTestSuite) {
+  if (!result.testSuite.hasTestSuite && needsGeneratedDraft(result)) {
     return firstDraftCreateCommand(result);
   }
   const validationCommand = result.suggestedCommands[0];
@@ -336,6 +360,7 @@ function firstDraftCreateCommand(result: QaDraftResult): string {
 }
 
 function qaFlowFromDraftFile(file: E2eDraftFile): QaDraftFlow {
+  const verificationMode = verificationModeForTitle(file.flowTitle);
   return {
     title: file.flowTitle,
     source: formatDraftSource(file.source),
@@ -348,6 +373,8 @@ function qaFlowFromDraftFile(file: E2eDraftFile): QaDraftFlow {
     coverageTargets: file.coverageTargets ?? [],
     entrypointHints: file.entrypointHints ?? [],
     selectorHints: file.selectorHints ?? [],
+    existingEvidencePaths: isChangedTestEvidenceTitle(file.flowTitle) ? (file.changedFiles ?? []) : [],
+    verificationMode,
     setupHints: file.setupHints ?? [],
     manifestUpdatePath: file.manifestUpdatePath,
     why: buildFlowReasons(file),
@@ -355,6 +382,19 @@ function qaFlowFromDraftFile(file: E2eDraftFile): QaDraftFlow {
 }
 
 function buildFlowReasons(file: E2eDraftFile): string[] {
+  const verificationMode = verificationModeForTitle(file.flowTitle);
+  if (verificationMode === "existing-test-evidence") {
+    return ["Changed test files are existing QA evidence; run them instead of generating a duplicate draft."];
+  }
+  if (verificationMode === "configuration") {
+    return ["Only build or runtime configuration changed; verify affected variants instead of inventing a product journey."];
+  }
+  if (verificationMode === "documentation") {
+    return ["Documentation changed without a runtime product surface; validate the documented contract against repository behavior."];
+  }
+  if (verificationMode === "generated-artifact") {
+    return ["Generated output changed; reproduce and validate the artifact instead of inventing a product journey."];
+  }
   return [
     file.promotionReason,
     file.primaryEntrypoint ? `Primary entrypoint inferred as ${file.primaryEntrypoint}.` : undefined,
@@ -435,8 +475,12 @@ function buildPrChecklist(
   missingEvidence: QaDraftMissingEvidence[],
 ): string[] {
   const checklist = [
-    flows.length > 0
-      ? `Review the generated draft path: ${flows.map((flow) => flow.draftPath).slice(0, 3).join(", ")}.`
+    flows[0]?.existingEvidencePaths.length
+      ? `Run the changed test evidence: ${flows[0].existingEvidencePaths.slice(0, 4).join(", ")}.`
+      : flows[0]?.verificationMode
+        ? `Run ${formatVerificationMode(flows[0].verificationMode)} with ${draft.plan.suggestedCommands[0] ?? "the nearest repository validation command"}.`
+      : flows.length > 0
+        ? `Review the generated draft path: ${flows.map((flow) => flow.draftPath).slice(0, 3).join(", ")}.`
       : "Run QAMap again after adding branch or working tree changes.",
     flows[0]?.userJourney?.reviewQuestion
       ? `Answer the reviewer question: ${flows[0].userJourney.reviewQuestion}`
@@ -454,7 +498,7 @@ function buildPrChecklist(
     checklist.push(`Run local validation: ${validationCommand}`);
   }
 
-  if (!draft.plan.verificationManifestPath) {
+  if (!draft.plan.verificationManifestPath && flows.some((flow) => !flow.verificationMode)) {
     checklist.push("If this recommendation is useful, run `qamap manifest init .` later and review the generated manifest as team QA memory.");
   }
 
@@ -469,11 +513,56 @@ function buildAgentHandoff(
   const handoff = [
     "Use this as a local PR QA skill result, not as proof that browser or device QA already passed.",
     draft.dryRun ? "No files were written because this command previews QA work only." : undefined,
-    flows.length > 0 ? `Start from ${flows[0].draftPath} and close required evidence before treating it as regression coverage.` : undefined,
-    missingEvidence.length > 0 ? "Prefer fixing required fixture, selector, runner, or assertion gaps before adding broad manual QA notes." : undefined,
-    "A wrong flow recommendation should become a manifest correction, so future PRs improve without another prompt.",
+    flows[0]?.existingEvidencePaths.length
+      ? `Run the changed test evidence (${flows[0].existingEvidencePaths.slice(0, 3).join(", ")}) and record the result before handoff.`
+      : flows[0]?.verificationMode
+        ? `Run ${formatVerificationMode(flows[0].verificationMode)} and record the command and result before handoff; do not invent a product-journey E2E for this diff alone.`
+      : flows.length > 0
+        ? `Start from ${flows[0].draftPath} and close required evidence before treating it as regression coverage.`
+        : undefined,
+    missingEvidence.length > 0 ? "Close required evidence gaps before treating this QA draft as merge proof." : undefined,
+    flows.some((flow) => !flow.verificationMode)
+      ? "A wrong flow recommendation should become a manifest correction, so future PRs improve without another prompt."
+      : undefined,
   ].filter((value): value is string => Boolean(value));
   return uniqueStrings(handoff);
+}
+
+function isChangedTestEvidenceTitle(title: string): boolean {
+  return /^Changed test evidence verification checklist$/i.test(title.trim());
+}
+
+function verificationModeForTitle(title: string): QaVerificationMode | undefined {
+  if (isChangedTestEvidenceTitle(title)) {
+    return "existing-test-evidence";
+  }
+  if (/\bconfiguration verification\b/i.test(title)) {
+    return "configuration";
+  }
+  if (/\bdocumentation verification\b/i.test(title)) {
+    return "documentation";
+  }
+  if (/\bgenerated artifact verification\b/i.test(title)) {
+    return "generated-artifact";
+  }
+  return undefined;
+}
+
+function needsGeneratedDraft(result: QaDraftResult): boolean {
+  return result.flows.some((flow) => !flow.verificationMode);
+}
+
+function formatVerificationMode(mode: QaVerificationMode): string {
+  if (mode === "existing-test-evidence") {
+    return "the changed test evidence";
+  }
+  if (mode === "configuration") {
+    return "build and configuration verification";
+  }
+  if (mode === "documentation") {
+    return "documentation contract verification";
+  }
+  return "generated artifact verification";
 }
 
 function fallbackDraftSteps(flow: QaDraftFlow): string[] {

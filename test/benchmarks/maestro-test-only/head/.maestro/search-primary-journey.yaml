@@ -1,0 +1,6 @@
+appId: dev.qamap.benchmark.journeys
+---
+- launchApp
+- tapOn: "Search"
+- inputText: "coffee"
+- assertVisible: "Search results"

@@ -1,0 +1,7 @@
+android {
+  defaultConfig {
+    applicationId "dev.qamap.benchmark.mobile"
+    versionCode 1
+    versionName "1.0.0"
+  }
+}

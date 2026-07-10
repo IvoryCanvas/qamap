@@ -452,7 +452,10 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
   const root = path.resolve(rootInput);
   const testPlan = await generateTestPlan(root, options);
   const project = await detectProjectProfile(root, testPlan.workspaceRoot);
-  const recommendedRunner = options.runner ? overrideRunner(project, options.runner) : recommendRunner(project);
+  const changedPaths = testPlan.changedFiles.map((file) => file.path);
+  const recommendedRunner = options.runner
+    ? overrideRunner(project, options.runner)
+    : recommendRunnerForChange(project, changedPaths);
   const executionProfile = await buildExecutionProfile(root, testPlan.workspaceRoot, project, recommendedRunner.name);
   const testSuiteInventory = await collectTestSuiteInventory(root);
   const coreFlowRoot = testPlan.workspaceRoot ?? root;
@@ -1116,6 +1119,7 @@ interface E2eBootstrapPlanInput {
 
 function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
   const steps: E2eBootstrapStep[] = [];
+  const verificationOnly = input.flows.length > 0 && input.flows.every(isVerificationOnlyFlow);
   const runnerGap = input.missingTestability.find((gap) => /No \.maestro|No Playwright config/i.test(gap));
   const draftCommand = `qamap e2e draft . --base ${input.base} --head ${input.head}`;
   const planHistoryCommand = `qamap e2e plan . --base ${input.base} --head ${input.head} --record-history`;
@@ -1140,7 +1144,19 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
     );
   }
 
-  if (input.recommendedRunner.name === "manual") {
+  if (verificationOnly) {
+    steps.push(
+      bootstrapStep(
+        "runner",
+        "ready",
+        "Use repository validation for this verification-only change",
+        "The diff maps to configuration, documentation, generated output, or existing test evidence rather than a new product journey.",
+        "Run the nearest repository validation command and attach the result as PR evidence; no UI runner setup is required by this diff alone.",
+        input.suggestedCommands.slice(0, 4),
+        input.flows.flatMap((flow) => flow.files).slice(0, maxFilesPerFlow),
+      ),
+    );
+  } else if (input.recommendedRunner.name === "manual") {
     steps.push(
       bootstrapStep(
         "runner",
@@ -1185,7 +1201,7 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
     );
   }
 
-  if (input.recommendedRunner.name !== "manual" && executionProfileBlockers.length > 0) {
+  if (!verificationOnly && input.recommendedRunner.name !== "manual" && executionProfileBlockers.length > 0) {
     steps.push(
       bootstrapStep(
         "runner",
@@ -1199,7 +1215,19 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
     );
   }
 
-  if (!input.testSuite.hasTestSuite) {
+  if (verificationOnly) {
+    steps.push(
+      bootstrapStep(
+        "draft",
+        "ready",
+        "No new E2E draft required for this change",
+        "The changed files are verification inputs or existing evidence, so generating another product-journey test would duplicate or invent coverage.",
+        "Run the changed evidence or nearest build, lint, typecheck, documentation, or artifact validation command and record its result.",
+        input.suggestedCommands.slice(0, 4),
+        input.flows.flatMap((flow) => flow.files).slice(0, maxFilesPerFlow),
+      ),
+    );
+  } else if (!input.testSuite.hasTestSuite) {
     steps.push(
       bootstrapStep(
         "draft",
@@ -1225,7 +1253,7 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
     );
   }
 
-  if (!input.domainManifestPath && input.domainLanguage.terms.length > 0) {
+  if (!verificationOnly && !input.domainManifestPath && input.domainLanguage.terms.length > 0) {
     steps.push(
       bootstrapStep(
         "domain-language",
@@ -1237,7 +1265,7 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
         input.domainLanguage.terms.flatMap((term) => term.files).slice(0, maxFilesPerFlow),
       ),
     );
-  } else if (input.domainManifestPath || input.domains.length > 0) {
+  } else if (!verificationOnly && (input.domainManifestPath || input.domains.length > 0)) {
     steps.push(
       bootstrapStep(
         "domain-language",
@@ -1253,7 +1281,7 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
     );
   }
 
-  if (!input.coreFlowManifestPath) {
+  if (!verificationOnly && !input.coreFlowManifestPath) {
     steps.push(
       bootstrapStep(
         "core-flow",
@@ -1265,7 +1293,7 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
         input.flows.flatMap((flow) => flow.files).slice(0, maxFilesPerFlow),
       ),
     );
-  } else {
+  } else if (!verificationOnly) {
     steps.push(
       bootstrapStep(
         "core-flow",
@@ -1307,7 +1335,7 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
   }
 
   const nonRunnerTestabilityGaps = input.missingTestability.filter((gap) => !/No \.maestro|No Playwright config/i.test(gap));
-  if (nonRunnerTestabilityGaps.length > 0) {
+  if (!verificationOnly && nonRunnerTestabilityGaps.length > 0) {
     steps.push(
       bootstrapStep(
         "testability",
@@ -1319,7 +1347,7 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
         input.flows.flatMap((flow) => flow.files).slice(0, maxFilesPerFlow),
       ),
     );
-  } else if (input.flows.some((flow) => flow.selectors.length > 0 || flow.entrypoints.length > 0)) {
+  } else if (!verificationOnly && input.flows.some((flow) => flow.selectors.length > 0 || flow.entrypoints.length > 0)) {
     steps.push(
       bootstrapStep(
         "testability",
@@ -1342,7 +1370,9 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
         input.validationMatrix.summary.missing === 1
           ? "1 validation row is missing evidence."
           : `${input.validationMatrix.summary.missing} validation rows are missing evidence.`,
-        "Resolve missing coverage, fixture, setup, and testability rows before calling generated E2E coverage sufficient.",
+        verificationOnly
+          ? "Run or record the missing repository validation checks before treating this change as verified."
+          : "Resolve missing coverage, fixture, setup, and testability rows before calling generated E2E coverage sufficient.",
         [],
         input.validationMatrix.rows.filter((row) => row.status === "missing").flatMap((row) => row.files).slice(0, maxFilesPerFlow),
       ),
@@ -1356,7 +1386,9 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
         input.validationMatrix.summary.partial === 1
           ? "1 validation row is only partial."
           : `${input.validationMatrix.summary.partial} validation rows are only partial.`,
-        "Expand the generated draft or existing tests until the critical rows have concrete evidence.",
+        verificationOnly
+          ? "Run or record the partial repository checks until each critical row has concrete evidence."
+          : "Expand the generated draft or existing tests until the critical rows have concrete evidence.",
         [],
         input.validationMatrix.rows.filter((row) => row.status === "partial").flatMap((row) => row.files).slice(0, maxFilesPerFlow),
       ),
@@ -1368,7 +1400,9 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
         "ready",
         "Validation matrix is ready",
         "All validation matrix rows currently have ready evidence.",
-        "Keep the matrix linked in PR evidence when the generated draft is promoted.",
+        verificationOnly
+          ? "Keep the completed repository checks linked in PR evidence."
+          : "Keep the matrix linked in PR evidence when the generated draft is promoted.",
         [],
         [],
       ),
@@ -1408,7 +1442,7 @@ function buildE2eBootstrapPlan(input: E2eBootstrapPlanInput): E2eBootstrapPlan {
     ready: sortedSteps.filter((step) => step.status === "ready").length,
   };
   return {
-    summary: bootstrapSummary(counts, sortedSteps),
+    summary: bootstrapSummary(counts, sortedSteps, verificationOnly),
     steps: sortedSteps,
     counts,
   };
@@ -1532,9 +1566,13 @@ function bootstrapCategoryRank(category: E2eBootstrapStepCategory): number {
 function bootstrapSummary(
   counts: E2eBootstrapPlan["counts"],
   steps: E2eBootstrapStep[],
+  verificationOnly = false,
 ): string {
   const firstRequired = steps.find((step) => step.status === "required");
   if (firstRequired) {
+    if (verificationOnly) {
+      return `${counts.required} required verification step${counts.required === 1 ? "" : "s"} must be resolved before this change has repeatable PR evidence. Start with: ${firstRequired.title}.`;
+    }
     return `${counts.required} required bootstrap step${counts.required === 1 ? "" : "s"} must be resolved before generated E2E drafts should be treated as regression coverage. Start with: ${firstRequired.title}.`;
   }
   const firstRecommended = steps.find((step) => step.status === "recommended");
@@ -1834,6 +1872,7 @@ function buildDraftActionItems(
   selfCheck?: E2eDraftSelfCheck,
 ): E2eDraftActionItem[] {
   const items: E2eDraftActionItem[] = [];
+  const verificationOnly = isVerificationOnlyFlow(flow);
   const runnerGap = runnerSetupGap(plan, runner);
   if (runnerGap) {
     const setupCommand = plan.runnerSetup.setupCommand ? ` Run \`${plan.runnerSetup.setupCommand}\` after accepting this runner setup.` : "";
@@ -1849,7 +1888,7 @@ function buildDraftActionItems(
     ));
   }
   const executionBlockers = remainingExecutionProfileBlockers(plan.executionProfile.blockers, runnerGap);
-  if (runner !== "manual" && executionBlockers.length > 0) {
+  if (!verificationOnly && runner !== "manual" && executionBlockers.length > 0) {
     items.push(draftActionItem(
       "runner",
       "required",
@@ -1892,14 +1931,14 @@ function buildDraftActionItems(
     ));
   }
 
-  if (flow.missingTestability.length > 0) {
+  if (!verificationOnly && flow.missingTestability.length > 0) {
     items.push(draftActionItem(
       "selector",
       "required",
       "Replace weak or missing selectors",
       flow.missingTestability[0],
     ));
-  } else if (flow.selectors.length === 0 && runner !== "manual") {
+  } else if (!verificationOnly && flow.selectors.length === 0 && runner !== "manual") {
     items.push(draftActionItem(
       "selector",
       "recommended",
@@ -1908,7 +1947,7 @@ function buildDraftActionItems(
     ));
   }
 
-  if (flow.steps.length > 0 && draftNeedsAssertionWork(selfCheck)) {
+  if (!verificationOnly && flow.steps.length > 0 && draftNeedsAssertionWork(selfCheck)) {
     items.push(draftActionItem(
       "assertion",
       "required",
@@ -1917,14 +1956,14 @@ function buildDraftActionItems(
     ));
   }
 
-  if (selfCheck?.status === "fail") {
+  if (!verificationOnly && selfCheck?.status === "fail") {
     items.push(draftActionItem(
       "validation",
       "required",
       "Resolve generated draft self-check",
       selfCheck.blockers[0] ?? selfCheck.summary,
     ));
-  } else if (selfCheck?.status === "warning") {
+  } else if (!verificationOnly && selfCheck?.status === "warning") {
     items.push(draftActionItem(
       "validation",
       "recommended",
@@ -1938,18 +1977,22 @@ function buildDraftActionItems(
       "validation",
       "required",
       "Resolve missing validation evidence",
-      `${validationSummary.blockingGapCount} blocking validation gap${validationSummary.blockingGapCount === 1 ? "" : "s"} must be closed before using this draft as PR evidence.`,
+      verificationOnly
+        ? `${validationSummary.blockingGapCount} blocking validation gap${validationSummary.blockingGapCount === 1 ? "" : "s"} must be closed before treating this change as verified PR evidence.`
+        : `${validationSummary.blockingGapCount} blocking validation gap${validationSummary.blockingGapCount === 1 ? "" : "s"} must be closed before using this draft as PR evidence.`,
     ));
   } else if (validationSummary.gapCount > 0) {
     items.push(draftActionItem(
       "validation",
       "recommended",
       "Close partial validation evidence",
-      `${validationSummary.gapCount} validation gap${validationSummary.gapCount === 1 ? "" : "s"} remain before this draft is stable regression coverage.`,
+      verificationOnly
+        ? `${validationSummary.gapCount} validation gap${validationSummary.gapCount === 1 ? "" : "s"} remain before this change has stable verification evidence.`
+        : `${validationSummary.gapCount} validation gap${validationSummary.gapCount === 1 ? "" : "s"} remain before this draft is stable regression coverage.`,
     ));
   }
 
-  if (promotionGuidance.status !== "commit-candidate") {
+  if (!verificationOnly && promotionGuidance.status !== "commit-candidate") {
     items.push(draftActionItem(
       "manifest",
       "recommended",
@@ -3364,6 +3407,27 @@ function recommendRunner(project: E2eProjectProfile): E2eRunnerRecommendation {
   };
 }
 
+function recommendRunnerForChange(
+  project: E2eProjectProfile,
+  changedFiles: string[],
+): E2eRunnerRecommendation {
+  if (isConfigurationOnlyChange(changedFiles)) {
+    return {
+      name: "manual",
+      reason:
+        "Use repository build and configuration validation because this diff changes configuration only; a browser or device journey would invent product coverage.",
+    };
+  }
+  if (isDocumentationOnlyChange(changedFiles) || isGeneratedOutputOnlyChange(changedFiles)) {
+    return {
+      name: "manual",
+      reason:
+        "Use repository documentation or artifact validation because this diff does not change a runtime product surface.",
+    };
+  }
+  return recommendRunner(project);
+}
+
 function overrideRunner(project: E2eProjectProfile, runner: E2eRunnerName): E2eRunnerRecommendation {
   if (runner === "maestro") {
     return {
@@ -4592,6 +4656,8 @@ function buildFlowCandidates(
   if (configFiles.length > 0) {
     const subject = isReleaseMetadataOnlyChange(configFiles)
       ? "Release metadata"
+      : (projectType === "expo-react-native" || projectType === "react-native") && configFiles.some(isMobileNativeConfigFile)
+        ? "Mobile build"
       : summarizeFlowSubject(configFiles, "Changed", domainLanguage);
     candidates.push({
       kind: "config",
@@ -4746,7 +4812,10 @@ async function buildFlow(
   }
   const coverage = buildCoverageTargets(candidate.kind, files, runner);
   const setupHints = await inferFlowSetupHints(root, files, candidate.kind);
-  const selectors = await inferFlowSelectors(root, files, runner, addedDiffText);
+  const interactionEvidenceApplies = !isVerificationOnlyKind(candidate.kind);
+  const selectors = interactionEvidenceApplies
+    ? await inferFlowSelectors(root, files, runner, addedDiffText)
+    : [];
   const flow: Omit<E2eFlow, "languageBrief"> = {
     title: candidate.title,
     reason: candidate.reason,
@@ -4754,16 +4823,20 @@ async function buildFlow(
     steps: refineStepsForInferredSelectors(candidate.steps, selectors),
     coverage,
     coverageEvidence: evaluateFlowCoverageEvidence({ title: candidate.title, files, coverage }, testSuiteInventory),
-    entrypoints: await inferFlowEntrypoints(root, files, runner),
+    entrypoints: interactionEvidenceApplies ? await inferFlowEntrypoints(root, files, runner) : [],
     setupHints,
     fixtureReadiness: await inferFlowFixtureReadiness(root, files, candidate.kind, setupHints, fixtureContext),
     selectors,
-    missingTestability: await findFlowTestabilityGaps(root, files, runner),
+    missingTestability: interactionEvidenceApplies ? await findFlowTestabilityGaps(root, files, runner) : [],
   };
   return {
     ...flow,
     languageBrief: buildFlowLanguageBrief(flow),
   };
+}
+
+function isVerificationOnlyKind(kind: E2eFlowKind): boolean {
+  return kind === "config" || kind === "test-evidence" || kind === "documentation" || kind === "generated-artifact";
 }
 
 function preferDiffAdded(
@@ -5803,7 +5876,7 @@ async function buildSetupNotes(
 }
 
 function isUserFacingFile(file: string): boolean {
-  if (isApiRouteFile(file)) {
+  if (isApiRouteFile(file) || isConfigLikeFile(file) || isTestLikeFile(file)) {
     return false;
   }
   return (
@@ -5883,9 +5956,16 @@ function isCatalogDataFile(file: string): boolean {
 }
 
 function isConfigLikeFile(file: string): boolean {
-  return isReleaseMetadataFile(file) || /(?:(?:^|\/)(?:\.agents?|\.claude|\.cursor|\.dev|\.gemini|\.github|docs?)\/|(?:^|\/)(?:AGENTS|CLAUDE|CODEX|DECISIONS|GEMINI|PLAN|README|SKILL)\.md$|\.gitignore|package\.json|pnpm-lock\.yaml|yarn\.lock|package-lock\.json|bun\.lockb|pyproject\.toml|requirements\.txt|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|gradle\.properties|vite|webpack|babel|tsconfig|next\.config|app\.config|eas\.json|release-please|docker|env|feature-?flags?|experiments?)/i.test(
+  return isReleaseMetadataFile(file) || isMobileNativeConfigFile(file) || /(?:(?:^|\/)(?:\.agents?|\.claude|\.cursor|\.dev|\.gemini|\.github|docs?)\/|(?:^|\/)(?:AGENTS|CLAUDE|CODEX|DECISIONS|GEMINI|PLAN|README|SKILL)\.md$|\.gitignore|package\.json|pnpm-lock\.yaml|yarn\.lock|package-lock\.json|bun\.lockb|pyproject\.toml|requirements\.txt|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|build\.gradle|gradle\.properties|vite|webpack|babel|tsconfig|next\.config|app\.config|eas\.json|release-please|docker|env|feature-?flags?|experiments?)/i.test(
     file,
   );
+}
+
+function isMobileNativeConfigFile(file: string): boolean {
+  return /(?:^|\/)(?:app\.json|eas\.json|Podfile(?:\.lock)?|Info\.plist|project\.pbxproj|AndroidManifest\.xml|[^/]+\.entitlements)$/i.test(file) ||
+    /(?:^|\/)app\.config\.[cm]?[jt]s$/i.test(file) ||
+    /(?:^|\/)android\/.+\.(?:gradle|properties)$/i.test(file) ||
+    /(?:^|\/)ios\/[^/]+\.xcodeproj\/project\.pbxproj$/i.test(file);
 }
 
 function isReleaseMetadataFile(file: string): boolean {
@@ -5927,8 +6007,13 @@ function isTestLikeFile(file: string): boolean {
     /(?:^|\/)test_[^/]+\.py$/i.test(file) ||
     /(?:^|\/)[^/]+_test\.(?:py|go)$/i.test(file) ||
     /(?:^|\/)[^/]+(?:Test|Tests|Spec)\.(?:java|kt|cs|swift)$/i.test(file) ||
-    /(?:^|\/)[^/]+_(?:test|spec)\.rs$/i.test(file)
+    /(?:^|\/)[^/]+_(?:test|spec)\.rs$/i.test(file) ||
+    /(?:^|\/)\.maestro\/[^/]+\.ya?ml$/i.test(file)
   );
+}
+
+function isConfigurationOnlyChange(files: string[]): boolean {
+  return files.length > 0 && files.every(isConfigLikeFile);
 }
 
 function isDocumentationFile(file: string): boolean {
@@ -6367,7 +6452,7 @@ function isImportantBaseDraftFlow(flow: E2eFlow): boolean {
 
 function shouldUseDomainScenariosForDraft(plan: E2ePlanResult): boolean {
   const files = plan.changedFiles.map((file) => file.path);
-  if (isLowSignalVerificationOnlyChange(files)) {
+  if (isLowSignalVerificationOnlyChange(files) || isConfigurationOnlyChange(files)) {
     return false;
   }
   return !plan.flows.every(isEvidenceVerificationFocusedFlow);
@@ -6375,6 +6460,10 @@ function shouldUseDomainScenariosForDraft(plan: E2ePlanResult): boolean {
 
 function isEvidenceVerificationFocusedFlow(flow: Omit<E2eFlow, "languageBrief">): boolean {
   return isTestEvidenceFocusedFlow(flow) || isDocumentationFocusedFlow(flow) || isGeneratedArtifactFocusedFlow(flow);
+}
+
+function isVerificationOnlyFlow(flow: Omit<E2eFlow, "languageBrief">): boolean {
+  return isEvidenceVerificationFocusedFlow(flow) || /\bconfiguration verification\b/i.test(flow.title);
 }
 
 function dedupeDraftFlowsByOutputPath(flows: DraftE2eFlow[], runner: E2eRunnerName): DraftE2eFlow[] {
@@ -6881,7 +6970,7 @@ function draftStability(
   plan: E2ePlanResult,
   flow: E2eFlow,
 ): "ready" | "needs-selector" | "needs-setup" | "needs-selector-and-setup" {
-  const needsSelector = flow.missingTestability.length > 0;
+  const needsSelector = !isVerificationOnlyFlow(flow) && flow.missingTestability.length > 0;
   const needsSetup = plan.missingTestability.some((gap) => /No \.maestro|No Playwright config/i.test(gap));
   if (needsSelector && needsSetup) {
     return "needs-selector-and-setup";
@@ -6902,14 +6991,15 @@ function draftExecutionBlockers(
   validationSummary: ReturnType<typeof summarizeDraftValidation>,
   selfCheck?: E2eDraftSelfCheck,
 ): string[] {
-  const blockers = [...plan.executionProfile.blockers];
-  if (runner !== "manual" && flow.entrypoints.length === 0) {
+  const verificationOnly = isVerificationOnlyFlow(flow);
+  const blockers = verificationOnly ? [] : [...plan.executionProfile.blockers];
+  if (!verificationOnly && runner !== "manual" && flow.entrypoints.length === 0) {
     blockers.push("No runnable route, screen, or command entrypoint was inferred for this flow.");
   }
-  if (flow.missingTestability.length > 0) {
+  if (!verificationOnly && flow.missingTestability.length > 0) {
     blockers.push(flow.missingTestability[0]);
   }
-  if (flow.fixtureReadiness.status === "missing") {
+  if (!verificationOnly && flow.fixtureReadiness.status === "missing") {
     blockers.push(flow.fixtureReadiness.nextActions[0] ?? flow.fixtureReadiness.reason);
   }
   if (validationSummary.blockingGapCount > 0) {
@@ -6933,7 +7023,7 @@ function draftRunnableStatus(
   executionBlockers: string[],
   selfCheck?: E2eDraftSelfCheck,
 ): "runnable-candidate" | "near-runnable" | "review-only" {
-  if (runner === "manual") {
+  if (runner === "manual" || isVerificationOnlyFlow(flow)) {
     return "review-only";
   }
   if (selfCheck?.status === "fail") {

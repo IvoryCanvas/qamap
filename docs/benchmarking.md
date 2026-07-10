@@ -17,7 +17,9 @@ The command fails when any target violates its declared expectations. The initia
 - an Expo app with Maestro;
 - an API service that should produce a contract checklist instead of a browser journey;
 - a design-token repository that should stay on artifact verification;
-- a shared component change that must reach its consuming page through reverse imports.
+- a shared component change that must reach its consuming page through reverse imports;
+- an Expo native configuration-only change that must stay out of product journeys and prefer existing build commands;
+- a Maestro test-only change that must run existing evidence instead of generating a duplicate journey.
 
 ## Expectations
 
@@ -31,11 +33,13 @@ Each target can declare:
 | `minDiffAnchoredFlows` | Minimum flows using selector evidence introduced by the diff. |
 | `mustReachFiles` | Files that the selected flows must reach. |
 | `mustNameFlows` | Product terms that must appear in a user-facing flow title. |
+| `mustNotNameFlows` | Misleading flow-title terms that must not be emitted. |
 | `mustDraftFiles` | Expected generated draft path fragments. |
 | `mustIncludeSteps` | Behavior terms that must appear in draft steps. |
 | `mustFindSelectors` | Stable selector evidence that must be recovered from the repository. |
 | `mustFindSuccessSignals` | Observable outcome text that must appear in the flow's success criteria. |
 | `mustFindEvidence` | Required evidence or fixture terms that must be reported. |
+| `mustNotFindEvidence` | Evidence terms that would be false positives for this change. |
 | `mustRecommendCommands` | Commands the setup or validation path must expose. |
 | `maxBlankActions` | Maximum malformed or empty draft steps; public fixtures keep this at zero. |
 | `maxGenericTitles` | Maximum titles ending in generic `primary journey` or `smoke flow` wording. |
