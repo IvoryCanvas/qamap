@@ -3300,8 +3300,9 @@ async function detectProjectProfile(root: string, workspaceRoot?: string): Promi
     "admin.py",
   ]);
   const projectFilePaths = (await collectProjectFiles(root, 2000)).map((file) => file.path);
-  const hasDesignTokenProject = projectFilePaths.some(isDesignTokenFile);
-  const hasDataCatalogProject = projectFilePaths.some(isCatalogDataFile);
+  const projectProfileArtifactFiles = projectFilePaths.filter((file) => !isTestLikeFile(file));
+  const hasDesignTokenProject = projectProfileArtifactFiles.some(isDesignTokenFile);
+  const hasDataCatalogProject = projectProfileArtifactFiles.some(isCatalogDataFile);
   const hasCliBin = packageJsonHasCliBin(packageJson);
 
   if (hasExpoDependency) {
@@ -3362,14 +3363,14 @@ async function detectProjectProfile(root: string, workspaceRoot?: string): Promi
   if (apiServiceDependency || hasApiServiceConfig || hasDjangoEntrypoint || hasPythonServiceDependency || hasPythonServiceModule) {
     return { type: "api-service", evidence };
   }
+  if (hasCliBin) {
+    return { type: "cli", evidence };
+  }
   if (hasDesignTokenProject) {
     return { type: "design-tokens", evidence };
   }
   if (hasDataCatalogProject) {
     return { type: "data-catalog", evidence };
-  }
-  if (hasCliBin) {
-    return { type: "cli", evidence };
   }
   return {
     type: "unknown",
