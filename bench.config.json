@@ -41,6 +41,44 @@
       }
     },
     {
+      "name": "web-vue-account",
+      "fixture": "test/benchmarks/web-vue-account",
+      "expect": {
+        "runner": "playwright",
+        "minFlows": 1,
+        "minDiffAnchoredFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "surface", "source", "assertion", "locator"],
+        "mustReachFiles": ["src/pages/account.vue"],
+        "mustNameFlows": ["account"],
+        "mustDraftFiles": ["tests/e2e/account-save.spec.ts"],
+        "mustFindEntrypoints": ["/account"],
+        "mustFindSelectors": ["account-save"],
+        "mustFindSuccessSignals": ["Account saved"],
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 4096
+      }
+    },
+    {
+      "name": "web-sveltekit-settings",
+      "fixture": "test/benchmarks/web-sveltekit-settings",
+      "expect": {
+        "runner": "playwright",
+        "minFlows": 1,
+        "minDiffAnchoredFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "surface", "source", "assertion", "locator"],
+        "mustReachFiles": ["src/routes/settings/+page.svelte"],
+        "mustNameFlows": ["settings"],
+        "mustDraftFiles": ["tests/e2e/settings-save.spec.ts"],
+        "mustFindEntrypoints": ["/settings"],
+        "mustFindSelectors": ["settings-save"],
+        "mustFindSuccessSignals": ["Settings saved"],
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 4096
+      }
+    },
+    {
       "name": "expo-maestro-profile",
       "fixture": "test/benchmarks/expo-maestro-profile",
       "expect": {

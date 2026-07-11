@@ -14,6 +14,7 @@ The command fails when any target violates its declared expectations. The initia
 
 - a web app with no tests;
 - a web app with Playwright and an existing mock handler;
+- Vue and SvelteKit web changes with framework-native route files;
 - an Expo app with Maestro;
 - an API service that should produce a contract checklist instead of a browser journey;
 - a design-token repository that should stay on artifact verification;
@@ -43,6 +44,7 @@ Each target can declare:
 | `mustIncludeSteps` | Behavior terms that must appear in draft steps. |
 | `mustFindSelectors` | Stable selector evidence that must be recovered from the repository. |
 | `mustFindSuccessSignals` | Observable outcome text that must appear in the flow's success criteria. |
+| `mustFindEntrypoints` | Route, screen, or command entrypoints that affected flows must recover. |
 | `mustFindEvidence` | Required evidence or fixture terms that must be reported. |
 | `mustNotFindEvidence` | Evidence terms that would be false positives for this change. |
 | `mustRecommendCommands` | Commands the setup or validation path must expose. |

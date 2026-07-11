@@ -6,10 +6,18 @@
 
 - Added the first framework-neutral Behavior Graph contract with stable content-derived node and edge ids, evidence provenance, direct and propagated impact, deterministic graph merging, adapter diagnostics, and an analyzer adapter interface for future language and framework support.
 - Added a compatibility adapter that maps existing inferred flows, entrypoints, steps, assertions, selectors, fixtures, and changed source files into the graph. `generateE2ePlan` now exposes this additive graph without changing current runner recommendations or human reports.
+- Added a verification-manifest Behavior Graph adapter. Matched domains, flows, checks, routes, selectors, and source files now retain reviewed manifest provenance and package-scoped impact inside the graph.
+- Added public Vue and SvelteKit branch fixtures that require changed selectors, success signals, exact routes, draft paths, and Behavior Graph node kinds to remain useful without React-specific assumptions.
+- Added a shipped Behavior Graph JSON Schema and exported runtime enum constants so local consumers and future adapters can validate graph version 1 without an LLM or cloud service.
 
 ### Changed
 
 - Documented the architecture and conservative pre-1.0 version policy: compatible graph and adapter improvements remain patch work, while the next minor is reserved for a complete explicit diff-to-evidence execution slice.
+
+### Fixed
+
+- Test and benchmark fixtures no longer make a CLI repository look like a design-token or data-catalog project, and a real `package.json` bin entry takes precedence over incidental artifact files.
+- SvelteKit convention files such as `+page.svelte` now resolve to their containing route (`/settings`) instead of adding a false `/page` segment.
 
 ## 0.3.5 - 2026-07-11
 

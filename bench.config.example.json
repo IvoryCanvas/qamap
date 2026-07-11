@@ -12,6 +12,7 @@
         "mustReachFiles": ["app/checkout/page.tsx"],
         "mustNameFlows": ["checkout"],
         "mustDraftFiles": ["checkout"],
+        "mustFindEntrypoints": ["/checkout"],
         "mustFindSelectors": ["apply-coupon"],
         "mustFindSuccessSignals": ["Discount applied"],
         "maxBlankActions": 0,

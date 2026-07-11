@@ -94,6 +94,7 @@ function scoreTarget(target, plan, qa, durationMs) {
   const successSignals = qa.flows
     .map((flow) => flow.userJourney?.successSignal)
     .filter(Boolean);
+  const entrypoints = plan.flows.flatMap((flow) => flow.entrypoints.map((entrypoint) => entrypoint.value));
   const mustName = expect.mustNameFlows ?? [];
   const named = mustName.filter((name) => includesTerm(flowTitles, name));
 
@@ -106,6 +107,7 @@ function scoreTarget(target, plan, qa, durationMs) {
     planFlowTitles,
     flowTitles,
     successSignals,
+    entrypoints,
     draftPaths: qa.flows.map((flow) => normalizePath(flow.draftPath)),
     genericTitles: qa.flows.filter((flow) => genericTitlePattern.test(flow.title)).length,
     importPropagatedFlows: plan.flows.filter((flow) => flow.reason.includes("through imports")).length,
@@ -209,6 +211,7 @@ function evaluateContract(expect, result, plan, qa) {
   appendMissingTerms(failures, "step", steps, expect.mustIncludeSteps);
   appendMissingTerms(failures, "selector", selectors, expect.mustFindSelectors);
   appendMissingTerms(failures, "success signal", result.successSignals, expect.mustFindSuccessSignals);
+  appendMissingTerms(failures, "entrypoint", result.entrypoints, expect.mustFindEntrypoints);
   appendMissingTerms(failures, "evidence", evidence, expect.mustFindEvidence);
   appendUnexpectedTerms(failures, "evidence", evidence, expect.mustNotFindEvidence);
   appendMissingTerms(failures, "command", commands, expect.mustRecommendCommands);

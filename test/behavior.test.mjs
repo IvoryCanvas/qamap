@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
   analyzeBehaviorGraph,
+  behaviorEdgeKinds,
+  behaviorEvidenceKinds,
+  behaviorGraphSchemaUrl,
+  behaviorNodeKinds,
+  behaviorSurfaceKinds,
   createBehaviorEdge,
   createBehaviorNodeId,
   createInferredFlowBehaviorAdapter,
@@ -61,6 +66,7 @@ test("behavior graph is deterministic and keeps impact provenance", async () => 
   const second = await analyzeBehaviorGraph(baseContext, [adapter]);
 
   assert.deepEqual(first, second);
+  assert.equal(first.$schema, behaviorGraphSchemaUrl);
   assert.equal(first.schemaVersion, 1);
   assert.equal(first.adapters[0].status, "used");
   assert.equal(first.summary.byKind.flow, 1);
@@ -74,6 +80,19 @@ test("behavior graph is deterministic and keeps impact provenance", async () => 
   assert.deepEqual(source?.impact, { kind: "direct", changedFiles: ["src/pages/checkout.tsx"] });
   const ids = new Set(first.nodes.map((node) => node.id));
   assert.ok(first.edges.every((edge) => ids.has(edge.from) && ids.has(edge.to)));
+});
+
+test("behavior graph JSON schema stays aligned with runtime enums", async () => {
+  const schema = JSON.parse(await readFile(path.join(process.cwd(), "schema/qamap-behavior.schema.json"), "utf8"));
+
+  assert.equal(schema.$id, behaviorGraphSchemaUrl);
+  assert.equal(schema.properties.$schema.const, behaviorGraphSchemaUrl);
+  assert.equal(schema.properties.schemaVersion.const, 1);
+  assert.deepEqual(schema.$defs.surface.enum, behaviorSurfaceKinds);
+  assert.deepEqual(schema.$defs.nodeKind.enum, behaviorNodeKinds);
+  assert.deepEqual(schema.$defs.edgeKind.enum, behaviorEdgeKinds);
+  assert.deepEqual(schema.$defs.evidenceKind.enum, behaviorEvidenceKinds);
+  assert.ok(schema.required.includes("$schema"));
 });
 
 test("behavior adapter failures are isolated and dangling edges are removed", async () => {

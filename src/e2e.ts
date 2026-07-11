@@ -5748,11 +5748,11 @@ function normalizeRouteSegment(segment: string): string | undefined {
   if (!stem || /^\([^)]*\)$/.test(stem) || stem.startsWith("_") || stem.startsWith("@")) {
     return undefined;
   }
-  const routeStem = stem.replace(/^\((?:\.{1,3})\)/, "");
+  const routeStem = stem.replace(/^\+/, "").replace(/^\((?:\.{1,3})\)/, "");
   if (!routeStem) {
     return undefined;
   }
-  if (/^(?:index|page|route|layout|template|loading|error|not-found|404|500)$/i.test(routeStem)) {
+  if (/^(?:index|page|route|server|layout|template|loading|error|not-found|404|500)$/i.test(routeStem)) {
     return undefined;
   }
   const dynamic = dynamicRouteSegmentName(routeStem);

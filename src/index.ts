@@ -1,7 +1,12 @@
 export { buildAgentQaSection, formatAgentInitReport, initAgentSetup } from "./agent-init.js";
 export {
   analyzeBehaviorGraph,
+  behaviorEdgeKinds,
+  behaviorEvidenceKinds,
   behaviorGraphSchemaVersion,
+  behaviorGraphSchemaUrl,
+  behaviorNodeKinds,
+  behaviorSurfaceKinds,
   createBehaviorEdge,
   createBehaviorNodeId,
   createInferredFlowBehaviorAdapter,

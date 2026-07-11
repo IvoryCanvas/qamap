@@ -20,6 +20,8 @@ The repository, not a model session, is the source of truth. Source code supplie
 
 `src/behavior.ts` defines the framework-neutral intermediate representation. A graph contains stable nodes, typed edges, confidence, evidence, and direct or propagated change impact.
 
+Generated graphs identify the shipped contract through `schema/qamap-behavior.schema.json` and `schemaVersion: 1`. The schema URL and node, edge, surface, and evidence enums are exported from the package so adapters and consumers can reject unsupported shapes deterministically.
+
 Initial node kinds cover:
 
 - domains and flows;

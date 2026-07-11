@@ -1,32 +1,41 @@
 import { createHash } from "node:crypto";
 
 export const behaviorGraphSchemaVersion = 1 as const;
+export const behaviorGraphSchemaUrl =
+  "https://raw.githubusercontent.com/IvoryCanvas/qamap/main/schema/qamap-behavior.schema.json";
+
+export const behaviorSurfaceKinds = ["web", "mobile", "api", "cli", "artifact", "unknown"] as const;
+export const behaviorNodeKinds = [
+  "domain",
+  "flow",
+  "surface",
+  "action",
+  "state",
+  "effect",
+  "contract",
+  "assertion",
+  "fixture",
+  "locator",
+  "source",
+] as const;
+export const behaviorEdgeKinds = [
+  "contains",
+  "enters-at",
+  "precedes",
+  "expects",
+  "uses-fixture",
+  "located-by",
+  "implemented-by",
+  "impacts",
+] as const;
+export const behaviorEvidenceKinds = ["diff", "source", "manifest", "selector", "fixture", "test", "inference"] as const;
 
 export type BehaviorConfidence = "low" | "medium" | "high";
 export type BehaviorAdapterConfidence = "none" | BehaviorConfidence;
-export type BehaviorSurfaceKind = "web" | "mobile" | "api" | "cli" | "artifact" | "unknown";
-export type BehaviorNodeKind =
-  | "domain"
-  | "flow"
-  | "surface"
-  | "action"
-  | "state"
-  | "effect"
-  | "contract"
-  | "assertion"
-  | "fixture"
-  | "locator"
-  | "source";
-export type BehaviorEdgeKind =
-  | "contains"
-  | "enters-at"
-  | "precedes"
-  | "expects"
-  | "uses-fixture"
-  | "located-by"
-  | "implemented-by"
-  | "impacts";
-export type BehaviorEvidenceKind = "diff" | "source" | "manifest" | "selector" | "fixture" | "test" | "inference";
+export type BehaviorSurfaceKind = (typeof behaviorSurfaceKinds)[number];
+export type BehaviorNodeKind = (typeof behaviorNodeKinds)[number];
+export type BehaviorEdgeKind = (typeof behaviorEdgeKinds)[number];
+export type BehaviorEvidenceKind = (typeof behaviorEvidenceKinds)[number];
 export type BehaviorImpactKind = "direct" | "propagated";
 export type BehaviorDiagnosticSeverity = "info" | "warning";
 export type BehaviorAttributeValue = string | number | boolean | string[];
@@ -90,6 +99,7 @@ export interface BehaviorGraphSummary {
 }
 
 export interface BehaviorGraph {
+  $schema?: string;
   schemaVersion: typeof behaviorGraphSchemaVersion;
   root: string;
   workspaceRoot?: string;
@@ -248,6 +258,7 @@ export async function analyzeBehaviorGraph(
   const merged = mergeBehaviorGraphFragments(fragments);
   diagnostics.push(...(merged.diagnostics ?? []));
   return {
+    $schema: behaviorGraphSchemaUrl,
     schemaVersion: behaviorGraphSchemaVersion,
     root: context.root,
     workspaceRoot: context.workspaceRoot,
