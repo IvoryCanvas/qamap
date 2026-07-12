@@ -8,6 +8,7 @@
         "runner": "playwright",
         "minFlows": 1,
         "minDiffAnchoredFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "surface", "source", "assertion", "locator"],
         "mustReachFiles": ["src/pages/checkout/index.tsx"],
         "mustNameFlows": ["checkout"],
         "mustDraftFiles": ["tests/e2e/checkout-submit.spec.ts"],
@@ -27,6 +28,7 @@
         "runner": "playwright",
         "minFlows": 1,
         "minDiffAnchoredFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "surface", "source", "assertion", "locator"],
         "mustReachFiles": ["src/pages/orders/index.tsx"],
         "mustNameFlows": ["orders"],
         "mustDraftFiles": ["tests/e2e/orders-refresh.spec.ts"],
@@ -39,12 +41,106 @@
       }
     },
     {
+      "name": "web-vue-account",
+      "fixture": "test/benchmarks/web-vue-account",
+      "expect": {
+        "runner": "playwright",
+        "minFlows": 1,
+        "minDiffAnchoredFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "surface", "source", "assertion", "locator"],
+        "mustReachFiles": ["src/pages/account.vue"],
+        "mustNameFlows": ["account"],
+        "mustDraftFiles": ["tests/e2e/account-save.spec.ts"],
+        "mustFindEntrypoints": ["/account"],
+        "mustFindSelectors": ["account-save"],
+        "mustFindSuccessSignals": ["Account saved"],
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 4096
+      }
+    },
+    {
+      "name": "web-sveltekit-settings",
+      "fixture": "test/benchmarks/web-sveltekit-settings",
+      "expect": {
+        "runner": "playwright",
+        "minFlows": 1,
+        "minDiffAnchoredFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "surface", "source", "assertion", "locator"],
+        "mustReachFiles": ["src/routes/settings/+page.svelte"],
+        "mustNameFlows": ["settings"],
+        "mustDraftFiles": ["tests/e2e/settings-save.spec.ts"],
+        "mustFindEntrypoints": ["/settings"],
+        "mustFindSelectors": ["settings-save"],
+        "mustFindSuccessSignals": ["Settings saved"],
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 4096
+      }
+    },
+    {
+      "name": "web-preferences-lifecycle",
+      "fixture": "test/benchmarks/web-preferences-lifecycle",
+      "commitMessage": "feat: submit notification preferences, persist the selected timezone, and show the saved state after the request completes",
+      "expect": {
+        "runner": "playwright",
+        "minFlows": 1,
+        "minChangeIntents": 1,
+        "minHighConfidenceIntents": 1,
+        "minCommitBehaviorNodes": 3,
+        "minDiffAnchoredFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "contract", "state", "effect", "assertion", "source", "locator"],
+        "mustReachFiles": ["src/pages/preferences.tsx"],
+        "mustNameIntents": ["submit notification preferences"],
+        "mustNameFlows": ["submit notification preferences"],
+        "mustNotNameFlows": ["primary journey", "smoke flow"],
+        "mustDraftFiles": ["tests/e2e/submit-notification-preferences"],
+        "mustIncludeLifecycle": ["persist the selected timezone", "show the saved state", "after the request completes"],
+        "mustIncludeQaScenarios": ["Failure, timeout, and retry handling", "Re-entry and stale state recovery"],
+        "mustFindIntentEvidence": ["submit notification preferences"],
+        "mustFindEntrypoints": ["/preferences"],
+        "mustFindSelectors": ["preferences-save"],
+        "mustFindSuccessSignals": ["Preferences saved"],
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 8192
+      }
+    },
+    {
+      "name": "mobile-reminder-lifecycle",
+      "fixture": "test/benchmarks/mobile-reminder-lifecycle",
+      "commitMessage": "feat: schedule a summary reminder after survey completion, resync it when preferences change, and open the linked summary when tapped",
+      "expect": {
+        "runner": "maestro",
+        "minFlows": 1,
+        "minChangeIntents": 1,
+        "minHighConfidenceIntents": 1,
+        "minCommitBehaviorNodes": 3,
+        "minDiffAnchoredFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "contract", "state", "effect", "assertion", "source", "locator"],
+        "mustReachFiles": ["src/services/summaryReminder.ts", "src/screens/SurveyCompleteScreen.tsx"],
+        "mustNameIntents": ["schedule a summary reminder"],
+        "mustNameFlows": ["schedule a summary reminder"],
+        "mustNotNameFlows": ["primary journey", "smoke flow"],
+        "mustDraftFiles": [".maestro/schedule-a-summary-reminder-after-survey-completion"],
+        "mustIncludeLifecycle": ["after survey completion", "resync it when preferences change", "open the linked summary"],
+        "mustIncludeQaScenarios": ["Scheduling, calendar, and duplicate boundary", "Entry payload and destination routing"],
+        "mustFindIntentEvidence": ["schedule a summary reminder"],
+        "mustFindSelectors": ["summary-reminder-toggle", "summary-reminder-preview"],
+        "mustFindSuccessSignals": ["Summary reminder scheduled"],
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 8192
+      }
+    },
+    {
       "name": "expo-maestro-profile",
       "fixture": "test/benchmarks/expo-maestro-profile",
       "expect": {
         "runner": "maestro",
         "minFlows": 1,
         "minDiffAnchoredFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "surface", "source", "assertion", "locator"],
         "mustReachFiles": ["src/screens/ProfileScreen.tsx"],
         "mustNameFlows": ["profile"],
         "mustDraftFiles": [".maestro/profile-save.yaml"],
@@ -65,6 +161,8 @@
         "minManifestMatches": 3,
         "minManifestFlowMatches": 1,
         "minManifestBackedFlows": 1,
+        "minManifestBehaviorNodes": 3,
+        "mustHaveBehaviorKinds": ["flow", "source", "assertion"],
         "mustReachFiles": ["src/routes/orders.ts"],
         "mustNameFlows": ["orders"],
         "mustDraftFiles": ["docs/e2e/orders-api-contract.md"],
@@ -79,6 +177,7 @@
       "expect": {
         "runner": "manual",
         "minFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "source", "assertion"],
         "mustReachFiles": ["tokens/color.json"],
         "mustNameFlows": ["color"],
         "mustDraftFiles": ["docs/e2e/color-design-token-contract-checklist.md"],
@@ -98,6 +197,8 @@
         "minManifestMatches": 3,
         "minManifestFlowMatches": 1,
         "minManifestBackedFlows": 1,
+        "minManifestBehaviorNodes": 3,
+        "mustHaveBehaviorKinds": ["flow", "surface", "source", "assertion", "locator"],
         "mustReachFiles": [
           "src/components/SubmitButton.tsx",
           "src/pages/checkout/index.tsx"
@@ -115,6 +216,7 @@
       "expect": {
         "runner": "manual",
         "minFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "source", "assertion"],
         "mustReachFiles": [
           "android/app/build.gradle",
           "app.json",
@@ -137,6 +239,7 @@
       "expect": {
         "runner": "maestro",
         "minFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "source", "assertion"],
         "mustReachFiles": [
           ".maestro/notification-primary-journey.yaml",
           ".maestro/search-primary-journey.yaml"

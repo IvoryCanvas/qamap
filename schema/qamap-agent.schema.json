@@ -45,7 +45,7 @@
     "runner": {
       "type": "string",
       "enum": ["maestro", "playwright", "manual"],
-      "description": "Recommended E2E runner for this repository."
+      "description": "Automation output adapter selected after runner-independent QA intent analysis."
     },
     "manifest": {
       "type": ["string", "null"],
@@ -69,6 +69,47 @@
       "properties": {
         "present": { "type": "boolean" },
         "files": { "type": "number", "minimum": 0 }
+      }
+    },
+    "intents": {
+      "type": "array",
+      "description": "Evidence-backed change intents derived before runner selection (capped).",
+      "items": {
+        "type": "object",
+        "required": ["title", "confidence", "reviewRequired", "evidence", "lifecycle", "scenarios"],
+        "properties": {
+          "title": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
+          "reviewRequired": { "type": "boolean" },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "lifecycle": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["phase", "label"],
+              "properties": {
+                "phase": {
+                  "type": "string",
+                  "enum": ["trigger", "condition", "action", "state-change", "side-effect", "observable-outcome"]
+                },
+                "label": { "type": "string" }
+              }
+            }
+          },
+          "scenarios": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["priority", "kind", "title", "assertions"],
+              "properties": {
+                "priority": { "type": "string", "enum": ["critical", "recommended"] },
+                "kind": { "type": "string", "enum": ["primary", "failure", "boundary", "state-transition"] },
+                "title": { "type": "string" },
+                "assertions": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        }
       }
     },
     "firstDraftCommand": {

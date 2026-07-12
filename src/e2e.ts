@@ -1,6 +1,10 @@
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
+import { analyzeBehaviorGraph, createInferredFlowBehaviorAdapter } from "./behavior.js";
+import { createChangeIntentBehaviorAdapter } from "./behavior-intent.js";
+import { createManifestBehaviorAdapter } from "./behavior-manifest.js";
+import { analyzeChangeIntents } from "./change-intent.js";
 import { buildDomainLanguageSummary } from "./domain-language.js";
 import { defaultDomainManifestPath, loadDomainManifest, matchDomains } from "./domains.js";
 import { analyzeFixtureSource, insightCoversEndpoint } from "./fixture-insight.js";
@@ -23,6 +27,14 @@ import type { MatchedCoreFlow } from "./flows.js";
 import type { VerificationManifestMatch } from "./manifest.js";
 import type { LocalHistoryReference } from "./history.js";
 import type { CoverageEvidence, TestSuiteInventory, TestSuiteSummary } from "./test-evidence.js";
+import type { BehaviorGraph, BehaviorSurfaceKind, InferredBehaviorFlow } from "./behavior.js";
+import type {
+  BehaviorLifecycleStage,
+  ChangeIntentAnalysis,
+  ChangeIntentConfidence,
+  ChangeIntentEvidence,
+  IntentQaScenario,
+} from "./change-intent.js";
 import { TOOL_NAME, VERSION } from "./version.js";
 
 export type E2eProjectType =
@@ -35,6 +47,20 @@ export type E2eProjectType =
   | "cli"
   | "unknown";
 export type E2eRunnerName = "maestro" | "playwright" | "manual";
+export type E2eFlowKind =
+  | "ui"
+  | "api"
+  | "state"
+  | "content"
+  | "config"
+  | "test-evidence"
+  | "documentation"
+  | "generated-artifact"
+  | "artifact"
+  | "catalog"
+  | "command"
+  | "domain"
+  | "changed-file";
 export type E2eEntrypointKind = "route" | "screen" | "command";
 export type E2eEntrypointConfidence = "high" | "medium" | "low";
 export type E2eSetupHintKind = "auth" | "network" | "fixture" | "environment" | "payment" | "state";
@@ -132,6 +158,7 @@ export interface E2eFlowLanguageBrief {
 }
 
 export interface E2eFlow {
+  kind?: E2eFlowKind;
   title: string;
   reason: string;
   files: string[];
@@ -144,6 +171,11 @@ export interface E2eFlow {
   fixtureReadiness: E2eFixtureReadiness;
   selectors: E2eSelector[];
   missingTestability: string[];
+  intentId?: string;
+  intentConfidence?: ChangeIntentConfidence;
+  intentEvidence?: ChangeIntentEvidence[];
+  lifecycle?: BehaviorLifecycleStage[];
+  qaScenarios?: IntentQaScenario[];
 }
 
 export interface E2eEntrypoint {
@@ -244,11 +276,13 @@ export interface E2ePlanResult {
   verificationManifestPath?: string;
   verificationManifestMatches: VerificationManifestMatch[];
   domainLanguage: DomainLanguageSummary;
+  changeAnalysis: ChangeIntentAnalysis;
   changedFiles: TestPlanChangedFile[];
   suggestedCommands: string[];
   localHistory?: LocalHistoryReference;
   workspaceTargets: E2eWorkspaceTarget[];
   flows: E2eFlow[];
+  behaviorGraph?: BehaviorGraph;
   validationMatrix: E2eValidationMatrix;
   bootstrap: E2eBootstrapPlan;
   missingTestability: string[];
@@ -275,7 +309,7 @@ export interface E2eDraftFile {
   flowTitle: string;
   runner: E2eRunnerName;
   status: "created" | "skipped" | "preview";
-  source?: "verification-manifest" | "domain-language" | "core-flow" | "heuristic";
+  source?: "verification-manifest" | "change-intent" | "domain-language" | "core-flow" | "heuristic";
   changedFiles?: string[];
   draftSteps?: string[];
   entrypointHints?: string[];
@@ -303,6 +337,10 @@ export interface E2eDraftFile {
   validationGapCount?: number;
   blockingValidationGapCount?: number;
   reason?: string;
+  intentId?: string;
+  intentConfidence?: ChangeIntentConfidence;
+  lifecycle?: BehaviorLifecycleStage[];
+  qaScenarios?: IntentQaScenario[];
 }
 
 export type E2eDraftActionKind = "assertion" | "fixture" | "manifest" | "runner" | "selector" | "setup" | "validation";
@@ -473,6 +511,14 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
     workspaceRoot: testPlan.workspaceRoot,
     includeWorkingTree: options.includeWorkingTree,
   });
+  const changeAnalysis = await analyzeChangeIntents(root, {
+    base: testPlan.base,
+    head: testPlan.head,
+    workspaceRoot: testPlan.workspaceRoot,
+    includeWorkingTree: options.includeWorkingTree,
+    changedFiles: testPlan.changedFiles,
+    addedDiffText,
+  });
   const domainLanguage = await buildDomainLanguageSummary(root, testPlan.changedFiles, coreFlows, domains, addedDiffText);
   const workspaceTargets = await buildWorkspaceTargets(root, testPlan);
   const flows = await buildFlows(
@@ -483,6 +529,28 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
     testSuiteInventory,
     domainLanguage,
     addedDiffText,
+    changeAnalysis,
+  );
+  const behaviorGraph = await analyzeBehaviorGraph(
+    {
+      root: testPlan.root,
+      workspaceRoot: testPlan.workspaceRoot,
+      base: testPlan.base,
+      head: testPlan.head,
+      projectType: project.type,
+      surface: behaviorSurfaceForProject(project.type),
+      runner: recommendedRunner.name,
+      changedFiles: testPlan.changedFiles.map((file) => ({
+        path: file.path,
+        status: file.status,
+        previousPath: file.previousPath,
+      })),
+    },
+    [
+      createInferredFlowBehaviorAdapter({ flows: flows.map(toInferredBehaviorFlow) }),
+      createChangeIntentBehaviorAdapter({ analysis: changeAnalysis }),
+      createManifestBehaviorAdapter({ matches: verificationManifestMatches }),
+    ],
   );
   const testSuite = summarizeTestSuiteInventory(testSuiteInventory);
   const missingTestability = uniqueStrings([
@@ -543,14 +611,50 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
     verificationManifestPath: verificationManifest.path,
     verificationManifestMatches,
     domainLanguage,
+    changeAnalysis,
     changedFiles: testPlan.changedFiles,
     suggestedCommands: testPlan.suggestedCommands,
     workspaceTargets,
     flows,
+    behaviorGraph,
     validationMatrix,
     bootstrap,
     missingTestability,
     setupNotes,
+  };
+}
+
+function behaviorSurfaceForProject(projectType: E2eProjectType): BehaviorSurfaceKind {
+  if (projectType === "web") {
+    return "web";
+  }
+  if (projectType === "expo-react-native" || projectType === "react-native") {
+    return "mobile";
+  }
+  if (projectType === "api-service") {
+    return "api";
+  }
+  if (projectType === "cli") {
+    return "cli";
+  }
+  if (projectType === "design-tokens" || projectType === "data-catalog") {
+    return "artifact";
+  }
+  return "unknown";
+}
+
+function toInferredBehaviorFlow(flow: E2eFlow): InferredBehaviorFlow {
+  return {
+    kind: flow.kind ?? "changed-file",
+    title: flow.title,
+    reason: flow.reason,
+    files: flow.files,
+    steps: flow.steps,
+    entrypoints: flow.entrypoints,
+    selectors: flow.selectors,
+    coverage: flow.coverage,
+    fixtureStatus: flow.fixtureReadiness.status,
+    fixtureFiles: flow.fixtureReadiness.mockInsights?.map((insight) => insight.file) ?? [],
   };
 }
 
@@ -2013,6 +2117,10 @@ function draftFileDetails(flow: DraftE2eFlow): Pick<
   | "setupHints"
   | "coverageTargets"
   | "manifestUpdatePath"
+  | "intentId"
+  | "intentConfidence"
+  | "lifecycle"
+  | "qaScenarios"
 > {
   return {
     changedFiles: flow.files.slice(0, maxFilesPerFlow),
@@ -2022,6 +2130,10 @@ function draftFileDetails(flow: DraftE2eFlow): Pick<
     setupHints: flow.setupHints.map((hint) => `${hint.title}: ${hint.detail}`).slice(0, 6),
     coverageTargets: flow.coverage.map((target) => `${target.priority}: ${target.title}`).slice(0, 7),
     manifestUpdatePath: flow.manifestMatch?.updatePath,
+    intentId: flow.intentId,
+    intentConfidence: flow.intentConfidence,
+    lifecycle: flow.lifecycle,
+    qaScenarios: flow.qaScenarios,
   };
 }
 
@@ -2261,6 +2373,35 @@ function withTerminalPeriod(value: string): string {
 
 function buildFlowLanguageBrief(flow: Omit<E2eFlow, "languageBrief">): E2eFlowLanguageBrief {
   const actor = inferFlowActor(flow);
+  if (flow.intentId && flow.lifecycle && flow.lifecycle.length > 0) {
+    const trigger = flow.lifecycle.find((stage) => stage.kind === "trigger")?.label ?? `Start the changed ${flow.title} behavior.`;
+    const outcomes = flow.lifecycle
+      .filter((stage) => stage.kind === "observable-outcome")
+      .map((stage) => stripTerminalPunctuation(stage.label));
+    const effects = flow.lifecycle
+      .filter((stage) => stage.kind === "side-effect")
+      .map((stage) => stripTerminalPunctuation(stage.label));
+    const lifecycleSuccessSignal = outcomes.length > 0
+      ? outcomes.slice(0, 2).join("; ")
+      : effects.length > 0
+        ? `the intended side effect completes: ${effects.slice(0, 2).join("; ")}`
+        : "the observable result matches the commit intent";
+    const repositorySuccessSignal = inferFlowSuccessSignal(flow);
+    const successSignal = repositorySuccessSignal === "the changed journey reaches a visible, stable success state"
+      ? lifecycleSuccessSignal
+      : repositorySuccessSignal;
+    const scenarioEdges = (flow.qaScenarios ?? [])
+      .filter((scenario) => scenario.kind !== "primary")
+      .flatMap((scenario) => [scenario.title, ...scenario.edgeCases]);
+    return {
+      actor,
+      trigger,
+      goal: `Complete the intended behavior: ${flow.title}.`,
+      successSignal,
+      reviewQuestion: `Does ${flow.title} follow the inferred lifecycle and produce this outcome: ${successSignal}?`,
+      edgeCases: uniqueStrings(scenarioEdges).slice(0, 6),
+    };
+  }
   const trigger = inferFlowTrigger(flow);
   const goal = inferFlowGoal(flow);
   const successSignal = inferFlowSuccessSignal(flow);
@@ -2462,8 +2603,8 @@ function inferFlowSuccessSignal(flow: Omit<E2eFlow, "languageBrief">): string {
 }
 
 function isVisibleSuccessOutcome(value: string): boolean {
-  return /\b(?:confirmed|saved|refreshed|succeeded|success|completed|created|updated|deleted|sent|approved|accepted)\b/i.test(value) ||
-    /(?:완료|성공|저장(?:됨|됐|되)|등록(?:됨|됐|되)|제출(?:됨|됐|되)|승인(?:됨|됐|되))/.test(value);
+  return /\b(?:confirmed|saved|scheduled|refreshed|succeeded|success|completed|created|updated|deleted|sent|approved|accepted)\b/i.test(value) ||
+    /(?:완료|성공|예약(?:됨|됐|되)|저장(?:됨|됐|되)|등록(?:됨|됐|되)|제출(?:됨|됐|되)|승인(?:됨|됐|되))/.test(value);
 }
 
 function inferFlowReviewQuestion(flow: Omit<E2eFlow, "languageBrief">, successSignal: string): string {
@@ -2575,7 +2716,7 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
     lines.push("- Includes working tree changes: yes");
   }
   lines.push(`- Project: ${formatProjectType(result.project.type)}`);
-  lines.push(`- Recommended runner: ${formatRunnerName(result.recommendedRunner.name)}`);
+  lines.push(`- Automation adapter: ${formatRunnerName(result.recommendedRunner.name)}`);
   lines.push(
     `- Test suite: ${result.testSuite.hasTestSuite ? `${result.testSuite.testFileCount} test file${result.testSuite.testFileCount === 1 ? "" : "s"}` : "not detected"}`,
   );
@@ -2603,7 +2744,11 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
   }
   lines.push("");
 
-  lines.push("## Recommendation");
+  appendChangeIntentMarkdown(lines, result.changeAnalysis);
+
+  lines.push("## Automation Adapter");
+  lines.push("");
+  lines.push("QAMap selects an output adapter only after deriving runner-independent change intent and QA scenarios.");
   lines.push("");
   lines.push(result.recommendedRunner.reason);
   if (result.project.evidence.length > 0) {
@@ -2876,6 +3021,55 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
   return lines.join("\n");
 }
 
+function appendChangeIntentMarkdown(lines: string[], analysis: ChangeIntentAnalysis): void {
+  lines.push("## Change Intent And Behavior Lifecycle");
+  lines.push("");
+  if (analysis.intents.length === 0) {
+    lines.push("No evidence-backed change intent was inferred. QAMap keeps heuristic flow suggestions review-only.");
+    for (const diagnostic of analysis.diagnostics.slice(0, 3)) {
+      lines.push(`- ${escapeMarkdownInline(diagnostic)}`);
+    }
+    lines.push("");
+    return;
+  }
+
+  for (const intent of analysis.intents.slice(0, 3)) {
+    lines.push(`### ${escapeMarkdownInline(intent.title)}`);
+    lines.push("");
+    lines.push(`- Confidence: ${intent.confidence}${intent.reviewRequired ? "; human review required" : ""}`);
+    lines.push(`- Summary: ${escapeMarkdownInline(intent.summary)}`);
+    if (intent.commits.length > 0) {
+      lines.push("- Commit evidence:");
+      for (const commit of intent.commits.slice(0, 6)) {
+        lines.push(`  - \`${commit.sha.slice(0, 12)}\` ${escapeMarkdownInline(commit.subject)}`);
+      }
+    }
+    if (intent.files.length > 0) {
+      lines.push(`- Source scope: ${intent.files.slice(0, 6).map((file) => `\`${escapeMarkdownInline(file)}\``).join(", ")}`);
+    }
+    lines.push("");
+    lines.push("Behavior lifecycle:");
+    intent.lifecycle.slice(0, 12).forEach((stage, index) => {
+      lines.push(`${index + 1}. **${stage.kind}**: ${escapeMarkdownInline(stage.label)} [${stage.confidence}]`);
+    });
+    lines.push("");
+    lines.push("Required QA scenarios:");
+    for (const scenario of intent.scenarios.slice(0, 4)) {
+      lines.push(`- **${scenario.priority} / ${scenario.kind}**: ${escapeMarkdownInline(scenario.title)}`);
+      for (const step of scenario.steps.slice(0, 3)) {
+        lines.push(`  - Step: ${escapeMarkdownInline(step)}`);
+      }
+      for (const assertion of scenario.assertions.slice(0, 3)) {
+        lines.push(`  - Assert: ${escapeMarkdownInline(assertion)}`);
+      }
+      if (scenario.edgeCases.length > 0) {
+        lines.push(`  - Boundaries: ${scenario.edgeCases.slice(0, 4).map(escapeMarkdownInline).join(", ")}`);
+      }
+    }
+    lines.push("");
+  }
+}
+
 function appendVerificationManifestMatchesMarkdown(lines: string[], matches: VerificationManifestMatch[]): void {
   if (matches.length === 0) {
     return;
@@ -2926,7 +3120,7 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
   lines.push("# QAMap E2E Draft");
   lines.push("");
   lines.push(`- Root: \`${escapeMarkdownInline(result.root)}\``);
-  lines.push(`- Runner: ${formatRunnerName(result.runner)}`);
+  lines.push(`- Automation adapter: ${formatRunnerName(result.runner)}`);
   lines.push(`- Output directory: \`${escapeMarkdownInline(result.outputDirectory)}\``);
   if (result.dryRun) {
     lines.push("- Mode: dry run (no files were written)");
@@ -2965,6 +3159,8 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
     lines.push(`- Action categories: ${formatDraftActionKindSummary(result.actionSummary.byKind)}`);
   }
   lines.push("");
+
+  appendChangeIntentMarkdown(lines, result.plan.changeAnalysis);
 
   appendVerificationManifestMatchesMarkdown(lines, result.plan.verificationManifestMatches);
 
@@ -3230,8 +3426,9 @@ async function detectProjectProfile(root: string, workspaceRoot?: string): Promi
     "admin.py",
   ]);
   const projectFilePaths = (await collectProjectFiles(root, 2000)).map((file) => file.path);
-  const hasDesignTokenProject = projectFilePaths.some(isDesignTokenFile);
-  const hasDataCatalogProject = projectFilePaths.some(isCatalogDataFile);
+  const projectProfileArtifactFiles = projectFilePaths.filter((file) => !isTestLikeFile(file));
+  const hasDesignTokenProject = projectProfileArtifactFiles.some(isDesignTokenFile);
+  const hasDataCatalogProject = projectProfileArtifactFiles.some(isCatalogDataFile);
   const hasCliBin = packageJsonHasCliBin(packageJson);
 
   if (hasExpoDependency) {
@@ -3292,14 +3489,14 @@ async function detectProjectProfile(root: string, workspaceRoot?: string): Promi
   if (apiServiceDependency || hasApiServiceConfig || hasDjangoEntrypoint || hasPythonServiceDependency || hasPythonServiceModule) {
     return { type: "api-service", evidence };
   }
+  if (hasCliBin) {
+    return { type: "cli", evidence };
+  }
   if (hasDesignTokenProject) {
     return { type: "design-tokens", evidence };
   }
   if (hasDataCatalogProject) {
     return { type: "data-catalog", evidence };
-  }
-  if (hasCliBin) {
-    return { type: "cli", evidence };
   }
   return {
     type: "unknown",
@@ -4369,22 +4566,9 @@ function toCoreFlowChangedFiles(
   }));
 }
 
-type E2eFlowKind =
-  | "ui"
-  | "api"
-  | "state"
-  | "content"
-  | "config"
-  | "test-evidence"
-  | "documentation"
-  | "generated-artifact"
-  | "artifact"
-  | "catalog"
-  | "command"
-  | "domain"
-  | "changed-file";
 type FlowCandidate = Omit<
   E2eFlow,
+  | "kind"
   | "languageBrief"
   | "coverage"
   | "coverageEvidence"
@@ -4395,8 +4579,9 @@ type FlowCandidate = Omit<
   | "missingTestability"
 > & {
   kind: E2eFlowKind;
+  coverage?: E2eCoverageTarget[];
 };
-type DraftFlowSource = "verification-manifest" | "domain-language" | "core-flow" | "heuristic";
+type DraftFlowSource = "verification-manifest" | "change-intent" | "domain-language" | "core-flow" | "heuristic";
 type DraftE2eFlow = E2eFlow & {
   draftSource?: DraftFlowSource;
   domainScenario?: DomainScenarioSuggestion;
@@ -4413,12 +4598,13 @@ async function buildFlows(
   testSuiteInventory: TestSuiteInventory,
   domainLanguage: DomainLanguageSummary,
   addedDiffText: Record<string, string> = {},
+  changeAnalysis?: ChangeIntentAnalysis,
 ): Promise<E2eFlow[]> {
   const files = changedFiles.map((file) => file.path);
   const importImpacts = await collectImportImpacts(root, files);
   const fixtureContext = await collectFixtureReadinessContext(root, files);
   const flowResults = await Promise.all(
-    buildFlowCandidates(files, runner, projectType, domainLanguage, importImpacts).map((candidate) =>
+    buildFlowCandidates(files, runner, projectType, domainLanguage, importImpacts, changeAnalysis).map((candidate) =>
       buildFlow(root, runner, candidate, testSuiteInventory, fixtureContext, addedDiffText),
     ),
   );
@@ -4484,6 +4670,7 @@ function buildFlowCandidates(
   projectType: E2eProjectType,
   domainLanguage: DomainLanguageSummary,
   importImpacts: ImportImpact[] = [],
+  changeAnalysis?: ChangeIntentAnalysis,
 ): FlowCandidate[] {
   const lowSignalCandidate = importImpacts.length === 0 ? buildLowSignalChangeCandidate(files) : undefined;
   if (lowSignalCandidate) {
@@ -4715,7 +4902,67 @@ function buildFlowCandidates(
     });
   }
 
-  return candidates;
+  return prioritizeChangeIntentCandidates(changeAnalysis, candidates, projectType);
+}
+
+function prioritizeChangeIntentCandidates(
+  analysis: ChangeIntentAnalysis | undefined,
+  heuristicCandidates: FlowCandidate[],
+  projectType: E2eProjectType,
+): FlowCandidate[] {
+  const intentCandidates = (analysis?.intents ?? [])
+    .filter((intent) => intent.confidence !== "low" && intent.files.length > 0)
+    .map((intent): FlowCandidate => {
+      const primaryScenario = intent.scenarios.find((scenario) => scenario.kind === "primary") ?? intent.scenarios[0];
+      const steps = uniqueStrings([
+        ...(primaryScenario?.steps ?? intent.lifecycle.map((stage) => stage.label)),
+        ...(primaryScenario?.assertions ?? []),
+      ]);
+      return {
+        kind: intentFlowKind(intent, projectType),
+        title: intent.title,
+        reason: `Commit and diff evidence support this ${intent.confidence}-confidence change intent. ${intent.summary}`,
+        files: intent.files,
+        steps,
+        coverage: intent.scenarios.map((scenario) => ({
+          title: scenario.title,
+          priority: scenario.priority,
+          reason: scenario.rationale,
+          checks: uniqueStrings([...scenario.assertions, ...scenario.edgeCases.map((edgeCase) => `Exercise ${lowercaseFirst(edgeCase)}.`)]),
+        })),
+        intentId: intent.id,
+        intentConfidence: intent.confidence,
+        intentEvidence: intent.evidence,
+        lifecycle: intent.lifecycle,
+        qaScenarios: intent.scenarios,
+      };
+    });
+  if (intentCandidates.length === 0) {
+    return heuristicCandidates;
+  }
+
+  const intentFiles = new Set(intentCandidates.flatMap((candidate) => candidate.files));
+  const nonOverlapping = heuristicCandidates.filter((candidate) =>
+    candidate.files.every((file) => !intentFiles.has(file)) || isVerificationOnlyKind(candidate.kind),
+  );
+  return [...intentCandidates, ...nonOverlapping].slice(0, 4);
+}
+
+function intentFlowKind(intent: ChangeIntentAnalysis["intents"][number], projectType: E2eProjectType): E2eFlowKind {
+  const searchable = `${intent.title} ${intent.keywords.join(" ")} ${intent.lifecycle.map((stage) => stage.label).join(" ")}`.toLowerCase();
+  if (projectType === "cli") {
+    return "command";
+  }
+  if (/\b(?:endpoint|request|response|api|contract)\b/.test(searchable) && projectType === "api-service") {
+    return "api";
+  }
+  if (/\b(?:state|store|persist|sync|toggle|cache|session|notification|reminder)\b/.test(searchable)) {
+    return "state";
+  }
+  if (intent.lifecycle.some((stage) => stage.kind === "observable-outcome") && projectType !== "api-service") {
+    return "ui";
+  }
+  return "domain";
 }
 
 function cliCommandChecklistTitle(subject: string): string {
@@ -4810,13 +5057,14 @@ async function buildFlow(
   if (files.length === 0) {
     return undefined;
   }
-  const coverage = buildCoverageTargets(candidate.kind, files, runner);
+  const coverage = candidate.coverage ?? buildCoverageTargets(candidate.kind, files, runner);
   const setupHints = await inferFlowSetupHints(root, files, candidate.kind);
   const interactionEvidenceApplies = !isVerificationOnlyKind(candidate.kind);
   const selectors = interactionEvidenceApplies
     ? await inferFlowSelectors(root, files, runner, addedDiffText)
     : [];
   const flow: Omit<E2eFlow, "languageBrief"> = {
+    kind: candidate.kind,
     title: candidate.title,
     reason: candidate.reason,
     files,
@@ -4828,6 +5076,11 @@ async function buildFlow(
     fixtureReadiness: await inferFlowFixtureReadiness(root, files, candidate.kind, setupHints, fixtureContext),
     selectors,
     missingTestability: interactionEvidenceApplies ? await findFlowTestabilityGaps(root, files, runner) : [],
+    intentId: candidate.intentId,
+    intentConfidence: candidate.intentConfidence,
+    intentEvidence: candidate.intentEvidence,
+    lifecycle: candidate.lifecycle,
+    qaScenarios: candidate.qaScenarios,
   };
   return {
     ...flow,
@@ -5685,11 +5938,11 @@ function normalizeRouteSegment(segment: string): string | undefined {
   if (!stem || /^\([^)]*\)$/.test(stem) || stem.startsWith("_") || stem.startsWith("@")) {
     return undefined;
   }
-  const routeStem = stem.replace(/^\((?:\.{1,3})\)/, "");
+  const routeStem = stem.replace(/^\+/, "").replace(/^\((?:\.{1,3})\)/, "");
   if (!routeStem) {
     return undefined;
   }
-  if (/^(?:index|page|route|layout|template|loading|error|not-found|404|500)$/i.test(routeStem)) {
+  if (/^(?:index|page|route|server|layout|template|loading|error|not-found|404|500)$/i.test(routeStem)) {
     return undefined;
   }
   const dynamic = dynamicRouteSegmentName(routeStem);
@@ -6412,7 +6665,7 @@ async function buildDraftFlows(plan: E2ePlanResult): Promise<DraftE2eFlow[]> {
   if (manifestFlows.length === 0 && scenarioFlows.length === 0) {
     return baseFlows.map((flow) => ({
       ...flow,
-      draftSource: "heuristic",
+      draftSource: flow.intentId ? "change-intent" : "heuristic",
     }));
   }
 
@@ -6453,6 +6706,9 @@ function isImportantBaseDraftFlow(flow: E2eFlow): boolean {
 function shouldUseDomainScenariosForDraft(plan: E2ePlanResult): boolean {
   const files = plan.changedFiles.map((file) => file.path);
   if (isLowSignalVerificationOnlyChange(files) || isConfigurationOnlyChange(files)) {
+    return false;
+  }
+  if (plan.changeAnalysis.intents.some((intent) => intent.confidence !== "low")) {
     return false;
   }
   return !plan.flows.every(isEvidenceVerificationFocusedFlow);
@@ -6519,9 +6775,10 @@ function uniqueManifestCheckMatches(matches: VerificationManifestMatch[]): Verif
 function preferredDraftSource(left: DraftFlowSource | undefined, right: DraftFlowSource | undefined): DraftFlowSource | undefined {
   const ranks: Record<DraftFlowSource, number> = {
     "verification-manifest": 0,
-    "core-flow": 1,
-    "domain-language": 2,
-    heuristic: 3,
+    "change-intent": 1,
+    "core-flow": 2,
+    "domain-language": 3,
+    heuristic: 4,
   };
   if (!left) {
     return right;
@@ -6620,6 +6877,7 @@ async function buildManifestDraftFlow(
     ...(await inferFlowSetupHints(plan.root, files, "domain")),
   ]);
   const flow: Omit<DraftE2eFlow, "languageBrief"> = {
+    kind: baseFlow?.kind ?? "domain",
     title: match.name,
     reason: match.reason,
     files,
@@ -6786,6 +7044,7 @@ async function buildDomainScenarioDraftFlow(
     checks: refinedSteps,
   };
   const flow: Omit<DraftE2eFlow, "languageBrief"> = {
+    kind: baseFlow?.kind ?? "domain",
     title,
     reason,
     files,
@@ -7009,7 +7268,7 @@ function fileOverlapScore(leftFiles: string[], rightFiles: string[]): number {
 
 function draftFlowSource(flow: E2eFlow): DraftFlowSource {
   const draftFlow = flow as DraftE2eFlow;
-  return draftFlow.draftSource ?? "heuristic";
+  return draftFlow.draftSource ?? (flow.intentId ? "change-intent" : "heuristic");
 }
 
 function domainScenarioForFlow(flow: E2eFlow): DomainScenarioSuggestion | undefined {
@@ -7265,6 +7524,7 @@ function buildFallbackFlow(plan: E2ePlanResult): E2eFlow {
   const fallback = fallbackFlowDefinition(plan.project.type);
   const coverage = buildCoverageTargets(fallback.kind, [], plan.recommendedRunner.name);
   const flow: Omit<E2eFlow, "languageBrief"> = {
+    kind: fallback.kind,
     title: fallback.title,
     reason: fallback.reason,
     files: [],
@@ -7452,6 +7712,7 @@ function buildMaestroDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   lines.push(`# Base: ${plan.base}`);
   lines.push(`# Head: ${plan.head}`);
   appendDraftBriefComments(lines, flow, "maestro", "#");
+  appendIntentDraftComments(lines, flow, "#");
   appendExecutionProfileComments(lines, plan.executionProfile, "#");
   appendRunnerSetupProposalComments(lines, plan.runnerSetup, "#");
   lines.push("# Replace ${APP_ID} with the app id or export APP_ID before running Maestro.");
@@ -7552,6 +7813,7 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText:
     lines.push(`// Intent: ${scenario.intent}`);
   }
   appendDraftBriefComments(lines, flow, "playwright", "//");
+  appendIntentDraftComments(lines, flow, "//");
   appendExecutionProfileComments(lines, plan.executionProfile, "//");
   appendRunnerSetupProposalComments(lines, plan.runnerSetup, "//");
   lines.push("");
@@ -7670,6 +7932,7 @@ function buildManualDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   lines.push(`- Head: \`${plan.head}\``);
   lines.push("");
   appendManualDraftBrief(lines, flow, "manual");
+  appendManualIntentDraft(lines, flow);
   appendManualExecutionProfile(lines, plan.executionProfile);
   appendManualRunnerSetupProposal(lines, plan.runnerSetup);
   lines.push("");
@@ -8016,6 +8279,55 @@ function appendDraftBriefComments(
   lines.push(`${commentPrefix} - Human fixture inputs:`);
   for (const input of brief.humanFixtureInputs) {
     lines.push(`${commentPrefix}   - ${input}`);
+  }
+}
+
+function appendIntentDraftComments(lines: string[], flow: E2eFlow, commentPrefix: string): void {
+  if (!flow.intentId || !flow.lifecycle || !flow.qaScenarios) {
+    return;
+  }
+  lines.push("");
+  lines.push(`${commentPrefix} Change intent evidence:`);
+  lines.push(`${commentPrefix} - Intent id: ${flow.intentId}`);
+  lines.push(`${commentPrefix} - Confidence: ${flow.intentConfidence ?? "low"}`);
+  for (const evidence of (flow.intentEvidence ?? []).filter((item) => item.kind === "commit").slice(0, 5)) {
+    lines.push(`${commentPrefix} - Commit: ${evidence.value}`);
+  }
+  lines.push(`${commentPrefix} - Behavior lifecycle:`);
+  for (const stage of flow.lifecycle.slice(0, 10)) {
+    lines.push(`${commentPrefix}   - ${stage.kind}: ${stage.label}`);
+  }
+  lines.push(`${commentPrefix} - Runner-independent QA scenarios:`);
+  for (const scenario of flow.qaScenarios.slice(0, 4)) {
+    lines.push(`${commentPrefix}   - [${scenario.priority}] ${scenario.kind}: ${scenario.title}`);
+    for (const assertion of scenario.assertions.slice(0, 2)) {
+      lines.push(`${commentPrefix}     - Assert: ${assertion}`);
+    }
+  }
+}
+
+function appendManualIntentDraft(lines: string[], flow: E2eFlow): void {
+  if (!flow.intentId || !flow.lifecycle || !flow.qaScenarios) {
+    return;
+  }
+  lines.push("");
+  lines.push("## Change Intent Evidence");
+  lines.push("");
+  lines.push(`- Intent id: \`${flow.intentId}\``);
+  lines.push(`- Confidence: ${flow.intentConfidence ?? "low"}`);
+  for (const evidence of (flow.intentEvidence ?? []).filter((item) => item.kind === "commit").slice(0, 5)) {
+    lines.push(`- Commit: ${evidence.value}`);
+  }
+  lines.push("- Behavior lifecycle:");
+  for (const stage of flow.lifecycle.slice(0, 10)) {
+    lines.push(`  - ${stage.kind}: ${stage.label}`);
+  }
+  lines.push("- Runner-independent QA scenarios:");
+  for (const scenario of flow.qaScenarios.slice(0, 4)) {
+    lines.push(`  - [${scenario.priority}] ${scenario.kind}: ${scenario.title}`);
+    for (const assertion of scenario.assertions.slice(0, 2)) {
+      lines.push(`    - Assert: ${assertion}`);
+    }
   }
 }
 

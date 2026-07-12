@@ -94,6 +94,16 @@ function scoreTarget(target, plan, qa, durationMs) {
   const successSignals = qa.flows
     .map((flow) => flow.userJourney?.successSignal)
     .filter(Boolean);
+  const entrypoints = plan.flows.flatMap((flow) => flow.entrypoints.map((entrypoint) => entrypoint.value));
+  const intentTitles = plan.changeAnalysis.intents.map((intent) => intent.title);
+  const intentLifecycle = plan.changeAnalysis.intents.flatMap((intent) =>
+    intent.lifecycle.map((stage) => `${stage.kind}: ${stage.label}`)
+  );
+  const intentScenarios = plan.changeAnalysis.intents.flatMap((intent) =>
+    intent.scenarios.map((scenario) =>
+      `${scenario.priority} ${scenario.kind}: ${scenario.title} ${scenario.assertions.join(" ")}`
+    )
+  );
   const mustName = expect.mustNameFlows ?? [];
   const named = mustName.filter((name) => includesTerm(flowTitles, name));
 
@@ -106,6 +116,15 @@ function scoreTarget(target, plan, qa, durationMs) {
     planFlowTitles,
     flowTitles,
     successSignals,
+    entrypoints,
+    changeIntents: plan.changeAnalysis.intents.length,
+    highConfidenceIntents: plan.changeAnalysis.intents.filter((intent) => intent.confidence === "high").length,
+    intentTitles,
+    intentLifecycle,
+    intentScenarios,
+    intentEvidence: plan.changeAnalysis.intents.flatMap((intent) =>
+      intent.evidence.map((evidence) => evidence.value)
+    ),
     draftPaths: qa.flows.map((flow) => normalizePath(flow.draftPath)),
     genericTitles: qa.flows.filter((flow) => genericTitlePattern.test(flow.title)).length,
     importPropagatedFlows: plan.flows.filter((flow) => flow.reason.includes("through imports")).length,
@@ -113,6 +132,19 @@ function scoreTarget(target, plan, qa, durationMs) {
     manifestMatches: plan.verificationManifestMatches.length,
     manifestFlowMatches: plan.verificationManifestMatches.filter((match) => match.kind === "flow").length,
     manifestBackedFlows: qa.flows.filter((flow) => flow.source === "manifest-backed").length,
+    behaviorNodes: plan.behaviorGraph.summary.nodes,
+    behaviorEdges: plan.behaviorGraph.summary.edges,
+    behaviorImpactedNodes: plan.behaviorGraph.summary.impactedNodes,
+    manifestBehaviorNodes: plan.behaviorGraph.nodes.filter((node) =>
+      node.evidence.some((evidence) => evidence.kind === "manifest")
+    ).length,
+    commitBehaviorNodes: plan.behaviorGraph.nodes.filter((node) =>
+      node.evidence.some((evidence) => evidence.kind === "commit")
+    ).length,
+    behaviorGraph: `${plan.behaviorGraph.summary.nodes}/${plan.behaviorGraph.summary.impactedNodes}`,
+    behaviorKinds: Object.entries(plan.behaviorGraph.summary.byKind)
+      .filter(([, count]) => count > 0)
+      .map(([kind]) => kind),
     blankActions: allSteps.filter((step) => blankActionPattern.test(step)).length,
     mustReachRecall: mustReach.length > 0 ? `${reached.length}/${mustReach.length}` : null,
     mustReachMissing: mustReach.filter((file) => !flowFiles.has(file)),
@@ -138,6 +170,55 @@ function evaluateContract(expect, result, plan, qa) {
     ...qa.runnerSetup.installCommands,
     ...qa.runnerSetup.nextCommands,
   ].filter(Boolean);
+  const behaviorNodeIds = new Set(plan.behaviorGraph.nodes.map((node) => node.id));
+  const danglingBehaviorEdges = plan.behaviorGraph.edges.filter(
+    (edge) => !behaviorNodeIds.has(edge.from) || !behaviorNodeIds.has(edge.to),
+  );
+
+  if (plan.behaviorGraph.schemaVersion !== 1) {
+    failures.push(`behavior graph schema expected 1, got ${plan.behaviorGraph.schemaVersion}`);
+  }
+  if (plan.behaviorGraph.summary.byKind.flow < plan.flows.length) {
+    failures.push(
+      `behavior graph expected at least ${plan.flows.length} flow node(s), got ${plan.behaviorGraph.summary.byKind.flow}`,
+    );
+  }
+  if (plan.changedFiles.length > 0 && plan.behaviorGraph.summary.impactedNodes === 0) {
+    failures.push("behavior graph has no impacted nodes for a non-empty branch diff");
+  }
+  if (danglingBehaviorEdges.length > 0) {
+    failures.push(`behavior graph has ${danglingBehaviorEdges.length} dangling edge(s)`);
+  }
+  if (
+    expect.minManifestBehaviorNodes !== undefined &&
+    result.manifestBehaviorNodes < expect.minManifestBehaviorNodes
+  ) {
+    failures.push(
+      `expected at least ${expect.minManifestBehaviorNodes} manifest behavior node(s), got ${result.manifestBehaviorNodes}`,
+    );
+  }
+  appendMissingTerms(failures, "behavior kind", result.behaviorKinds, expect.mustHaveBehaviorKinds);
+  if (expect.minChangeIntents !== undefined && result.changeIntents < expect.minChangeIntents) {
+    failures.push(`expected at least ${expect.minChangeIntents} change intent(s), got ${result.changeIntents}`);
+  }
+  if (
+    expect.minHighConfidenceIntents !== undefined &&
+    result.highConfidenceIntents < expect.minHighConfidenceIntents
+  ) {
+    failures.push(
+      `expected at least ${expect.minHighConfidenceIntents} high-confidence intent(s), got ${result.highConfidenceIntents}`,
+    );
+  }
+  if (expect.minCommitBehaviorNodes !== undefined && result.commitBehaviorNodes < expect.minCommitBehaviorNodes) {
+    failures.push(
+      `expected at least ${expect.minCommitBehaviorNodes} commit-backed behavior node(s), got ${result.commitBehaviorNodes}`,
+    );
+  }
+  appendMissingTerms(failures, "intent title", result.intentTitles, expect.mustNameIntents);
+  appendUnexpectedTerms(failures, "intent title", result.intentTitles, expect.mustNotNameIntents);
+  appendMissingTerms(failures, "intent lifecycle", result.intentLifecycle, expect.mustIncludeLifecycle);
+  appendMissingTerms(failures, "intent QA scenario", result.intentScenarios, expect.mustIncludeQaScenarios);
+  appendMissingTerms(failures, "intent evidence", result.intentEvidence, expect.mustFindIntentEvidence);
 
   if (expect.runner && result.runner !== expect.runner) {
     failures.push(`runner expected ${expect.runner}, got ${result.runner}`);
@@ -171,6 +252,7 @@ function evaluateContract(expect, result, plan, qa) {
   appendMissingTerms(failures, "step", steps, expect.mustIncludeSteps);
   appendMissingTerms(failures, "selector", selectors, expect.mustFindSelectors);
   appendMissingTerms(failures, "success signal", result.successSignals, expect.mustFindSuccessSignals);
+  appendMissingTerms(failures, "entrypoint", result.entrypoints, expect.mustFindEntrypoints);
   appendMissingTerms(failures, "evidence", evidence, expect.mustFindEvidence);
   appendUnexpectedTerms(failures, "evidence", evidence, expect.mustNotFindEvidence);
   appendMissingTerms(failures, "command", commands, expect.mustRecommendCommands);
@@ -248,7 +330,7 @@ async function materializeFixture(target, configDir) {
     await fs.cp(headRoot, repositoryRoot, { recursive: true, force: true });
   }
   await git(repositoryRoot, ["add", "-A"]);
-  await git(repositoryRoot, ["commit", "--allow-empty", "-m", "benchmark change"]);
+  await git(repositoryRoot, ["commit", "--allow-empty", "-m", target.commitMessage ?? "benchmark change"]);
   const prepared = targetPaths(target, repositoryRoot, "main", "HEAD");
   return {
     ...prepared,
@@ -294,6 +376,8 @@ function printTable(rows) {
     ["importPropagatedFlows", 10],
     ["diffAnchoredFlows", 10],
     ["manifestFlowMatches", 8],
+    ["behaviorGraph", 9],
+    ["changeIntents", 7],
     ["blankActions", 6],
     ["genericTitles", 8],
     ["mustReachRecall", 10],
@@ -331,7 +415,7 @@ function printDeltas(baselineRows, currentRows) {
       continue;
     }
     const deltas = [];
-    for (const key of ["flows", "importPropagatedFlows", "diffAnchoredFlows", "manifestFlowMatches", "blankActions", "genericTitles", "agentBytes"]) {
+    for (const key of ["flows", "changeIntents", "highConfidenceIntents", "importPropagatedFlows", "diffAnchoredFlows", "manifestFlowMatches", "behaviorNodes", "behaviorImpactedNodes", "manifestBehaviorNodes", "commitBehaviorNodes", "blankActions", "genericTitles", "agentBytes"]) {
       const diff = (current[key] ?? 0) - (before[key] ?? 0);
       if (diff !== 0) {
         deltas.push(`${key} ${diff > 0 ? "+" : ""}${diff}`);
@@ -347,6 +431,8 @@ function shortLabel(key) {
     importPropagatedFlows: "viaImport",
     diffAnchoredFlows: "diffAnchor",
     manifestFlowMatches: "manifest",
+    behaviorGraph: "graph n/i",
+    changeIntents: "intents",
     blankActions: "blank",
     genericTitles: "generic",
     mustReachRecall: "reach",

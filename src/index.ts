@@ -1,4 +1,20 @@
 export { buildAgentQaSection, formatAgentInitReport, initAgentSetup } from "./agent-init.js";
+export {
+  analyzeBehaviorGraph,
+  behaviorEdgeKinds,
+  behaviorEvidenceKinds,
+  behaviorGraphSchemaVersion,
+  behaviorGraphSchemaUrl,
+  behaviorNodeKinds,
+  behaviorSurfaceKinds,
+  createBehaviorEdge,
+  createBehaviorNodeId,
+  createInferredFlowBehaviorAdapter,
+  mergeBehaviorGraphFragments,
+} from "./behavior.js";
+export { createManifestBehaviorAdapter } from "./behavior-manifest.js";
+export { createChangeIntentBehaviorAdapter } from "./behavior-intent.js";
+export { analyzeChangeIntents } from "./change-intent.js";
 export { defaultConfig, loadConfig, writeDefaultConfig } from "./config.js";
 export { detectDlxCommand, generateAgentContext } from "./context.js";
 export { buildDomainLanguageSummary } from "./domain-language.js";
@@ -68,6 +84,51 @@ export { collectTestSuiteInventory, evaluateFlowCoverageEvidence, summarizeTestS
 export { formatMarkdownTestPlan, generateTestPlan } from "./test-plan.js";
 export { formatMarkdownVerifyReport, formatVerifyReport, verifyChange } from "./verify.js";
 export type {
+  BehaviorAdapterConfidence,
+  BehaviorAdapterDetection,
+  BehaviorAdapterRun,
+  BehaviorAnalysisContext,
+  BehaviorAnalyzerAdapter,
+  BehaviorAttributeValue,
+  BehaviorChangedFile,
+  BehaviorConfidence,
+  BehaviorDiagnostic,
+  BehaviorDiagnosticSeverity,
+  BehaviorEdge,
+  BehaviorEdgeKind,
+  BehaviorEvidence,
+  BehaviorEvidenceKind,
+  BehaviorGraph,
+  BehaviorGraphFragment,
+  BehaviorGraphSummary,
+  BehaviorImpact,
+  BehaviorImpactKind,
+  BehaviorNode,
+  BehaviorNodeKind,
+  BehaviorSurfaceKind,
+  InferredBehaviorCoverage,
+  InferredBehaviorEntrypoint,
+  InferredBehaviorFlow,
+  InferredBehaviorSelector,
+  InferredFlowAdapterOptions,
+} from "./behavior.js";
+export type { ManifestBehaviorAdapterOptions } from "./behavior-manifest.js";
+export type { ChangeIntentBehaviorAdapterOptions } from "./behavior-intent.js";
+export type {
+  BehaviorLifecycleStage,
+  BehaviorLifecycleStageKind,
+  ChangeIntent,
+  ChangeIntentAnalysis,
+  ChangeIntentAnalysisOptions,
+  ChangeIntentCommit,
+  ChangeIntentConfidence,
+  ChangeIntentEvidence,
+  ChangeIntentEvidenceKind,
+  IntentQaScenario,
+  IntentQaScenarioKind,
+  IntentQaScenarioPriority,
+} from "./change-intent.js";
+export type {
   CoverageEvidence,
   CoverageEvidenceConfidence,
   CoverageEvidenceStatus,
@@ -103,6 +164,7 @@ export type {
   E2eFixtureReadiness,
   E2eFixtureReadinessStatus,
   E2eFlow,
+  E2eFlowKind,
   E2eSelector,
   E2eSelectorKind,
   E2eSetupHint,

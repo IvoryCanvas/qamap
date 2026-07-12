@@ -636,7 +636,8 @@ test("generateE2ePlan recommends mobile flows for Expo changes", async () => {
   assert.ok(plan.missingTestability.some((gap) => /\.maestro/.test(gap)));
   assert.deepEqual(plan.suggestedCommands, ["pnpm run lint"]);
   assert.match(markdown, /# QAMap E2E Plan/);
-  assert.match(markdown, /Recommended runner: Maestro/);
+  assert.match(markdown, /Automation adapter: Maestro/);
+  assert.match(markdown, /selects an output adapter only after deriving runner-independent change intent/i);
   assert.match(markdown, /## Execution Profile/);
   assert.match(markdown, /App id: `Fixture`/);
   assert.match(markdown, /Coverage targets:/);
@@ -796,6 +797,7 @@ test("generateE2ePlan detects CLI packages and suggests command verification che
   const root = await makeTempRepo();
   await initGitRepo(root);
   await mkdir(path.join(root, "src"), { recursive: true });
+  await mkdir(path.join(root, "test/benchmarks/token-fixture/tokens"), { recursive: true });
   await writeFile(
     path.join(root, "package.json"),
     JSON.stringify({
@@ -820,6 +822,10 @@ test("generateE2ePlan detects CLI packages and suggests command verification che
       "  return 'ok';",
       "}",
     ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "test/benchmarks/token-fixture/tokens/color.json"),
+    JSON.stringify({ color: { primary: "#0055ff" } }),
   );
   await git(root, ["add", "."]);
   await git(root, ["commit", "-m", "base"]);
@@ -847,6 +853,7 @@ test("generateE2ePlan detects CLI packages and suggests command verification che
 
   assert.equal(plan.project.type, "cli");
   assert.ok(plan.project.evidence.some((item) => item === "package.json bin entry found"));
+  assert.equal(plan.project.evidence.some((item) => item === "Design token files found"), false);
   assert.equal(plan.recommendedRunner.name, "manual");
   assert.match(plan.recommendedRunner.reason, /CLI command verification checklist/);
   assert.ok(plan.bootstrap.steps.some((step) => step.title === "Start with CLI command validation"));
