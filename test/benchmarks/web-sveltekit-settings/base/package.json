@@ -6,7 +6,7 @@
   },
   "dependencies": {
     "@sveltejs/kit": "2.0.0",
-    "svelte": "5.0.0",
+    "svelte": "5.55.7",
     "vite": "7.0.0"
   }
 }
