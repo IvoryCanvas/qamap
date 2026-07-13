@@ -685,6 +685,22 @@ export interface AddedDiffTextOptions {
   includeWorkingTree?: boolean;
 }
 
+export interface AddedDiffLine {
+  line: number;
+  text: string;
+}
+
+export interface AddedDiffHunk {
+  file: string;
+  previousFile?: string;
+  startLine: number;
+  endLine: number;
+  hunkHeader: string;
+  lines: AddedDiffLine[];
+}
+
+export type AddedDiffEvidence = Record<string, AddedDiffHunk[]>;
+
 const maxAddedTextFiles = 200;
 const maxAddedTextPerFile = 20_000;
 
@@ -692,17 +708,36 @@ export async function collectAddedDiffText(
   rootInput: string,
   options: AddedDiffTextOptions,
 ): Promise<Record<string, string>> {
+  return addedDiffTextFromEvidence(await collectAddedDiffEvidence(rootInput, options));
+}
+
+export async function collectAddedDiffEvidence(
+  rootInput: string,
+  options: AddedDiffTextOptions,
+): Promise<AddedDiffEvidence> {
   const root = path.resolve(rootInput);
   const workspaceRoot = options.workspaceRoot ? path.resolve(options.workspaceRoot) : undefined;
   const gitRoot = workspaceRoot ?? root;
   const relativeRoot = workspaceRoot ? toPosixPath(path.relative(workspaceRoot, root)) : "";
-  const byFile: Record<string, string> = {};
+  const byFile: AddedDiffEvidence = {};
   try {
-    const { stdout } = await git(gitRoot, ["diff", "--unified=0", `${options.base}...${options.head}`]);
-    mergeAddedDiffText(byFile, stdout, relativeRoot);
+    const { stdout } = await git(gitRoot, [
+      "diff",
+      "--no-color",
+      "--find-renames",
+      "--unified=0",
+      `${options.base}...${options.head}`,
+    ]);
+    mergeAddedDiffEvidence(byFile, stdout, relativeRoot);
     if (options.includeWorkingTree) {
-      const { stdout: workingTree } = await git(gitRoot, ["diff", "--unified=0", "HEAD"]);
-      mergeAddedDiffText(byFile, workingTree, relativeRoot);
+      const { stdout: workingTree } = await git(gitRoot, [
+        "diff",
+        "--no-color",
+        "--find-renames",
+        "--unified=0",
+        "HEAD",
+      ]);
+      mergeAddedDiffEvidence(byFile, workingTree, relativeRoot);
     }
   } catch {
     return byFile;
@@ -710,10 +745,72 @@ export async function collectAddedDiffText(
   return byFile;
 }
 
-function mergeAddedDiffText(byFile: Record<string, string>, diffText: string, relativeRoot: string): void {
+export function addedDiffTextFromEvidence(evidence: AddedDiffEvidence): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(evidence).map(([file, hunks]) => [
+      file,
+      hunks.flatMap((hunk) => hunk.lines.map((line) => line.text)).join("\n") + "\n",
+    ]),
+  );
+}
+
+function mergeAddedDiffEvidence(byFile: AddedDiffEvidence, diffText: string, relativeRoot: string): void {
   let currentFile: string | undefined;
+  let previousFile: string | undefined;
+  let currentHunk: AddedDiffHunk | undefined;
+  let headLine = 0;
+
+  const flushHunk = (): void => {
+    if (!currentHunk || currentHunk.lines.length === 0 || !currentFile) {
+      currentHunk = undefined;
+      return;
+    }
+    if (byFile[currentFile] === undefined && Object.keys(byFile).length >= maxAddedTextFiles) {
+      currentHunk = undefined;
+      return;
+    }
+    const existing = byFile[currentFile] ?? [];
+    const existingLength = existing.reduce(
+      (total, hunk) => total + hunk.lines.reduce((sum, line) => sum + line.text.length + 1, 0),
+      0,
+    );
+    if (existingLength < maxAddedTextPerFile) {
+      const remaining = maxAddedTextPerFile - existingLength;
+      let includedLength = 0;
+      const lines = currentHunk.lines.filter((line) => {
+        includedLength += line.text.length + 1;
+        return includedLength <= remaining;
+      });
+      if (lines.length > 0) {
+        existing.push({
+          ...currentHunk,
+          startLine: lines[0].line,
+          endLine: lines.at(-1)?.line ?? lines[0].line,
+          lines,
+        });
+        byFile[currentFile] = existing;
+      }
+    }
+    currentHunk = undefined;
+  };
+
   for (const line of diffText.split(/\r?\n/)) {
+    if (line.startsWith("diff --git ")) {
+      flushHunk();
+      currentFile = undefined;
+      previousFile = undefined;
+      continue;
+    }
+    if (line.startsWith("--- ")) {
+      const rawPath = line.replace(/^--- /, "");
+      if (rawPath !== "/dev/null") {
+        const filePath = rawPath.replace(/^a\//, "");
+        previousFile = relativeRoot ? stripScopedPath(filePath, relativeRoot, `${relativeRoot}/`) : filePath;
+      }
+      continue;
+    }
     if (line.startsWith("+++ ")) {
+      flushHunk();
       const rawPath = line.replace(/^\+\+\+ /, "");
       if (rawPath === "/dev/null") {
         currentFile = undefined;
@@ -723,18 +820,37 @@ function mergeAddedDiffText(byFile: Record<string, string>, diffText: string, re
       currentFile = relativeRoot ? stripScopedPath(filePath, relativeRoot, `${relativeRoot}/`) : filePath;
       continue;
     }
-    if (!currentFile || !line.startsWith("+") || line.startsWith("+++")) {
+    if (line.startsWith("@@ ")) {
+      flushHunk();
+      const match = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+      if (!currentFile || !match) {
+        continue;
+      }
+      headLine = Number.parseInt(match[1], 10);
+      currentHunk = {
+        file: currentFile,
+        previousFile: previousFile && previousFile !== currentFile ? previousFile : undefined,
+        startLine: headLine,
+        endLine: headLine,
+        hunkHeader: line,
+        lines: [],
+      };
       continue;
     }
-    if (byFile[currentFile] === undefined && Object.keys(byFile).length >= maxAddedTextFiles) {
+    if (!currentHunk) {
       continue;
     }
-    const existing = byFile[currentFile] ?? "";
-    if (existing.length >= maxAddedTextPerFile) {
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      currentHunk.lines.push({ line: headLine, text: line.slice(1) });
+      currentHunk.endLine = headLine;
+      headLine += 1;
       continue;
     }
-    byFile[currentFile] = `${existing}${line.slice(1)}\n`;
+    if (!line.startsWith("-") && !line.startsWith("\\")) {
+      headLine += 1;
+    }
   }
+  flushHunk();
 }
 
 async function getChangedFiles(

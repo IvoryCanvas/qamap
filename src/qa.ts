@@ -10,6 +10,7 @@ import type {
   E2eProjectType,
   E2eRunnerName,
 } from "./e2e.js";
+import type { ChangeIntentEvidence } from "./change-intent.js";
 import { TOOL_NAME, VERSION } from "./version.js";
 
 export interface QaDraftOptions extends Omit<E2eDraftOptions, "dryRun" | "output"> {}
@@ -75,8 +76,9 @@ export async function generateQaDraft(rootInput: string, options: QaDraftOptions
     ...options,
     dryRun: true,
   });
-  const flows = draft.files.map((file) => qaFlowFromDraftFile(file));
-  const missingEvidence = buildMissingEvidence(draft.files);
+  const qaFiles = draft.plan.changedFiles.length > 0 ? draft.files : [];
+  const flows = qaFiles.map((file) => qaFlowFromDraftFile(file));
+  const missingEvidence = buildMissingEvidence(qaFiles);
 
   return {
     tool: {
@@ -117,7 +119,7 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
     .slice(0, 8)
     .map((item) => ({ flow: truncateForAgent(item.flowTitle, 80), kind: item.kind, title: truncateForAgent(item.title) }));
   const requiredBootstrap = result.bootstrap.steps
-    .filter((step) => step.status === "required")
+    .filter((step) => step.status === "required" && step.category !== "runner")
     .slice(0, 3)
     .map((step) => ({ title: truncateForAgent(step.title, 80), action: truncateForAgent(step.action) }));
   const summary = {
@@ -133,20 +135,32 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
       title: truncateForAgent(intent.title, 100),
       confidence: intent.confidence,
       reviewRequired: intent.reviewRequired,
-      evidence: intent.evidence.slice(0, 4).map((item) => truncateForAgent(item.value, 100)),
-      lifecycle: intent.lifecycle.slice(0, 8).map((stage) => ({
+      evidence: intent.evidence.slice(0, 2).map((item) => truncateForAgent(item.value, 100)),
+      sources: strongestEvidence(intent.evidence, 1).map(formatAgentEvidenceSource),
+      lifecycle: intent.lifecycle.slice(0, 6).map((stage) => ({
         phase: stage.kind,
         label: truncateForAgent(stage.label, 120),
       })),
-      scenarios: intent.scenarios.slice(0, 4).map((scenario) => ({
+      scenarioCount: intent.scenarios.length,
+      omittedScenarioCount: Math.max(0, intent.scenarios.length - 2),
+      scenarios: intent.scenarios.slice(0, 2).map((scenario) => ({
         priority: scenario.priority,
         kind: scenario.kind,
         title: truncateForAgent(scenario.title, 100),
-        assertions: scenario.assertions.slice(0, 3).map((assertion) => truncateForAgent(assertion, 120)),
+        confidence: scenario.confidence ?? "low",
+        reviewRequired: scenario.reviewRequired ?? true,
+        sources: strongestEvidence(scenario.evidence, 1).map(formatAgentEvidenceSource),
+        assertions: scenario.assertions.slice(0, 2).map((assertion) => truncateForAgent(assertion, 120)),
       })),
     })),
-    firstDraftCommand: !result.testSuite.hasTestSuite && needsGeneratedDraft(result)
-      ? firstDraftCreateCommand(result)
+    automation: needsGeneratedDraft(result)
+      ? {
+          optIn: true,
+          adapter: result.runner,
+          setupStatus: result.runnerSetup.status,
+          draftCommand: `qamap e2e draft . --base ${result.base} --head ${result.head}`,
+          setupCommand: result.runnerSetup.status === "proposed" ? result.runnerSetup.setupCommand : undefined,
+        }
       : undefined,
     flows: result.flows.slice(0, agentListLimit).map((flow) => ({
       title: truncateForAgent(flow.title, 80),
@@ -174,6 +188,37 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
     commands: result.suggestedCommands.slice(0, 4),
   };
   return `${JSON.stringify(summary)}\n`;
+}
+
+function formatAgentEvidenceSource(evidence: ChangeIntentEvidence): Record<string, string | number> {
+  const source: Record<string, string | number> = {
+    kind: evidence.kind,
+    reason: truncateForAgent(evidence.value, 90),
+  };
+  if (evidence.commit) source.commit = evidence.commit.slice(0, 12);
+  if (evidence.file) source.file = evidence.file;
+  if (evidence.previousFile) source.previousFile = evidence.previousFile;
+  if (evidence.symbol) source.symbol = evidence.symbol;
+  if (evidence.side) source.side = evidence.side;
+  if (evidence.startLine !== undefined) source.startLine = evidence.startLine;
+  if (evidence.endLine !== undefined) source.endLine = evidence.endLine;
+  if (evidence.hunkHeader) source.hunk = truncateForAgent(evidence.hunkHeader, 80);
+  return source;
+}
+
+function strongestEvidence(evidence: ChangeIntentEvidence[], limit: number): ChangeIntentEvidence[] {
+  return evidence
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => evidenceStrength(right.item) - evidenceStrength(left.item) || left.index - right.index)
+    .slice(0, limit)
+    .map(({ item }) => item);
+}
+
+function evidenceStrength(evidence: ChangeIntentEvidence): number {
+  if (evidence.kind === "diff" && evidence.file && evidence.startLine !== undefined) return 3;
+  if (evidence.kind === "diff" && evidence.file) return 2;
+  if (evidence.commit) return 1;
+  return 0;
 }
 
 export function formatMarkdownQaDraft(result: QaDraftResult): string {
@@ -219,18 +264,21 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
       lines.push(`- Verification mode: ${formatVerificationMode(primaryFlow.verificationMode)}; no new product-journey E2E draft is proposed.`);
     } else {
       lines.push(
-        `- Proposed draft: \`${escapeMarkdownInline(primaryFlow.draftPath)}\` (${formatRunnableStatus(primaryFlow.runnableStatus)})`,
+        `- QA proposal: ${primaryFlow.draftSteps.length || fallbackDraftSteps(primaryFlow).length} review steps; executable automation remains optional.`,
       );
     }
   }
-  lines.push(`- Next command: \`${escapeMarkdownInline(nextStepCommand(result))}\``);
+  const nextCommand = nextStepCommand(result);
+  if (nextCommand) {
+    lines.push(`- Repository validation: \`${escapeMarkdownInline(nextCommand)}\``);
+  }
   const blocking = result.missingEvidence.filter((item) => item.priority === "required").slice(0, 2);
   if (blocking.length === 0) {
-    lines.push("- Missing before trust: no required evidence gap detected; review the draft and run the validation command.");
+    lines.push("- QA proposal gaps: no required evidence gap detected; review the scenario sources and run repository validation.");
   } else {
     for (const [index, item] of blocking.entries()) {
       lines.push(
-        `- Missing before trust${blocking.length > 1 ? ` ${index + 1}` : ""}: ${escapeMarkdownInline(item.title)} — ${escapeMarkdownInline(item.detail)}`,
+        `- QA proposal gap${blocking.length > 1 ? ` ${index + 1}` : ""}: ${escapeMarkdownInline(item.title)}: ${escapeMarkdownInline(item.detail)}`,
       );
     }
   }
@@ -241,41 +289,12 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
   lines.push(`- Base: \`${escapeMarkdownInline(result.base)}\``);
   lines.push(`- Head: \`${escapeMarkdownInline(result.head)}\``);
   lines.push(`- Project: ${formatProjectType(result.project)}`);
-  lines.push(`- Automation adapter: ${formatRunnerName(result.runner)}`);
   lines.push(`- Manifest: ${result.manifestPath ? `\`${escapeMarkdownInline(result.manifestPath)}\`` : "not found; using repo signals and PR diff only"}`);
   lines.push(`- Stage: ${formatDraftReadinessStage(result.readiness)}`);
   lines.push(`- Draft flows: ${result.flows.length}`);
   lines.push("");
 
   appendQaChangeIntentMarkdown(lines, result);
-
-  if (!result.testSuite.hasTestSuite && needsGeneratedDraft(result)) {
-    lines.push("## First E2E Draft Bootstrap");
-    lines.push("");
-    lines.push(
-      `QAMap did not find committed test files for this target. The next step is to create the first runnable starter draft, not to stop at a checklist.`,
-    );
-    lines.push("");
-    lines.push(`- Recommended first runner: ${formatRunnerName(result.runner)}`);
-    lines.push(`- Create command: \`${escapeMarkdownInline(firstDraftCreateCommand(result))}\``);
-    const installCommand = result.runnerSetup.installCommands[0];
-    if (installCommand) {
-      lines.push(`- Install command: \`${escapeMarkdownInline(installCommand)}\``);
-    }
-    const filesToCreate = uniqueStrings([...result.runnerSetup.filesToCreate, ...result.flows.map((flow) => flow.draftPath)]);
-    if (filesToCreate.length > 0) {
-      lines.push("- Draft files QAMap can create:");
-      for (const file of filesToCreate.slice(0, 6)) {
-        lines.push(`  - \`${escapeMarkdownInline(file)}\``);
-      }
-    }
-    const filesToUpdate = result.runnerSetup.filesToUpdate;
-    if (filesToUpdate.length > 0) {
-      lines.push(`- Files to update: ${filesToUpdate.map((file) => `\`${escapeMarkdownInline(file)}\``).join(", ")}`);
-    }
-    lines.push("- Generated drafts are starter E2E code; keep them review-only until the changed flow has real assertions, fixtures, and selectors.");
-    lines.push("");
-  }
 
   lines.push("## PR Comment Draft");
   lines.push("");
@@ -301,7 +320,7 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
   }
   lines.push("");
 
-  lines.push("### Suggested E2E / QA Draft");
+  lines.push("### Suggested QA Scenarios");
   lines.push("");
   for (const flow of result.flows) {
     if (flow.existingEvidencePaths.length > 0) {
@@ -311,7 +330,7 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
     } else if (flow.verificationMode) {
       lines.push(`- Run ${formatVerificationMode(flow.verificationMode)} with the suggested repository validation command; no new product-journey E2E draft is proposed.`);
     } else {
-      lines.push(`- \`${escapeMarkdownInline(flow.draftPath)}\`: ${formatRunnableStatus(flow.runnableStatus)}`);
+      lines.push(`- ${escapeMarkdownInline(flow.title)}`);
     }
     const routeHint = flow.entrypointHints.find((hint) => hint.startsWith("route:"));
     if (routeHint) {
@@ -330,7 +349,7 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
   }
   lines.push("");
 
-  lines.push("### Missing Evidence Before Trusting This PR");
+  lines.push("### Evidence Gaps In This QA Proposal");
   lines.push("");
   if (result.missingEvidence.length === 0) {
     lines.push("- No required evidence gap was detected in the generated QA draft. Still run the project validation command before merge.");
@@ -358,6 +377,23 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
   }
   lines.push("");
 
+  if (needsGeneratedDraft(result)) {
+    lines.push("## Optional Automation");
+    lines.push("");
+    lines.push(
+      "The QA judgment above does not require adopting this adapter. Use this section only when the team wants to turn an accepted scenario into executable coverage.",
+    );
+    lines.push("");
+    lines.push(`- Adapter candidate: ${formatRunnerName(result.runner)}`);
+    lines.push(`- Draft target: \`${escapeMarkdownInline(result.flows[0]?.draftPath ?? "generated E2E file")}\` (${formatRunnableStatus(result.flows[0]?.runnableStatus)})`);
+    lines.push(`- Preview or create a draft: \`qamap e2e draft . --base ${escapeMarkdownInline(result.base)} --head ${escapeMarkdownInline(result.head)}\``);
+    if (result.runnerSetup.status === "proposed" && result.runnerSetup.setupCommand) {
+      lines.push(`- If the team accepts this adapter, inspect its setup proposal: \`${escapeMarkdownInline(result.runnerSetup.setupCommand)}\``);
+    }
+    lines.push("- Treat generated code as review-only until its scenario sources, assertions, fixtures, and selectors are confirmed.");
+    lines.push("");
+  }
+
   return lines.join("\n");
 }
 
@@ -378,17 +414,44 @@ function appendQaChangeIntentMarkdown(lines: string[], result: QaDraftResult): v
     }
     lines.push("- Lifecycle:");
     for (const stage of intent.lifecycle.slice(0, 10)) {
-      lines.push(`  - ${stage.kind}: ${escapeMarkdownInline(stage.label)}`);
+      const source = stage.evidence.find((item) => item.file || item.commit);
+      const sourceSuffix = source ? ` (${formatEvidenceReference(source)})` : "";
+      lines.push(`  - ${stage.kind}: ${escapeMarkdownInline(stage.label)}${sourceSuffix}`);
     }
     lines.push("- QA scenarios:");
     for (const scenario of intent.scenarios.slice(0, 4)) {
-      lines.push(`  - [${scenario.priority}] ${escapeMarkdownInline(scenario.title)}`);
+      const confidence = scenario.confidence ?? "low";
+      const reviewRequired = scenario.reviewRequired ?? true;
+      lines.push(
+        `  - [${scenario.priority}] ${escapeMarkdownInline(scenario.title)} ` +
+        `(confidence: ${confidence}${reviewRequired ? "; review required" : ""})`,
+      );
+      lines.push(`    - Why: ${escapeMarkdownInline(scenario.rationale)}`);
+      for (const source of strongestEvidence(scenario.evidence, 3)) {
+        lines.push(
+          `    - Source: ${formatEvidenceReference(source)}: ${escapeMarkdownInline(source.value)}`,
+        );
+      }
       for (const assertion of scenario.assertions.slice(0, 2)) {
         lines.push(`    - Assert: ${escapeMarkdownInline(assertion)}`);
       }
     }
     lines.push("");
   }
+}
+
+function formatEvidenceReference(evidence: ChangeIntentEvidence): string {
+  if (evidence.commit) {
+    return `commit \`${evidence.commit.slice(0, 12)}\``;
+  }
+  const lineRange = evidence.startLine === undefined
+    ? ""
+    : evidence.endLine !== undefined && evidence.endLine !== evidence.startLine
+      ? `:${evidence.startLine}-${evidence.endLine}`
+      : `:${evidence.startLine}`;
+  const location = evidence.file ? `\`${escapeMarkdownInline(evidence.file)}${lineRange}\`` : evidence.kind;
+  const symbol = evidence.symbol ? ` symbol \`${escapeMarkdownInline(evidence.symbol)}\`` : "";
+  return `${location}${symbol}`;
 }
 
 function summarizeIntentLifecycle(lifecycle: QaDraftResult["changeAnalysis"]["intents"][number]["lifecycle"]): string {
@@ -400,16 +463,12 @@ function summarizeIntentLifecycle(lifecycle: QaDraftResult["changeAnalysis"]["in
   return fallback.map((stage) => `${stage.kind}: ${stage.label}`).join(" -> ");
 }
 
-function nextStepCommand(result: QaDraftResult): string {
-  if (!result.testSuite.hasTestSuite && needsGeneratedDraft(result)) {
-    return firstDraftCreateCommand(result);
-  }
+function nextStepCommand(result: QaDraftResult): string | undefined {
   const validationCommand = result.suggestedCommands[0];
   if (validationCommand) {
     return validationCommand;
   }
-  const draftPath = result.flows[0]?.draftPath;
-  return draftPath ? `review ${draftPath}` : "qamap e2e draft . --dry-run";
+  return undefined;
 }
 
 function atAGlanceEvidence(flow: QaDraftFlow): string[] {
@@ -422,13 +481,6 @@ function atAGlanceEvidence(flow: QaDraftFlow): string[] {
     stableSelector,
   ].filter((value): value is string => Boolean(value));
   return uniqueStrings(evidence).slice(0, 3);
-}
-
-function firstDraftCreateCommand(result: QaDraftResult): string {
-  if (result.runnerSetup.setupCommand) {
-    return result.runnerSetup.setupCommand;
-  }
-  return `qamap e2e draft . --base ${result.base} --head ${result.head}`;
 }
 
 function qaFlowFromDraftFile(file: E2eDraftFile): QaDraftFlow {
@@ -479,44 +531,16 @@ function buildMissingEvidence(files: E2eDraftFile[]): QaDraftMissingEvidence[] {
   const evidence: QaDraftMissingEvidence[] = [];
   for (const file of files) {
     for (const item of file.actionItems ?? []) {
-      evidence.push(missingEvidenceFromAction(file, item));
-    }
-    const actionText = normalizeEvidenceText(
-      (file.actionItems ?? []).map((item) => `${item.title} ${item.detail}`).join(" "),
-    );
-    for (const blocker of file.executionBlockers ?? []) {
-      if (actionTextCoversBlocker(actionText, blocker)) {
+      if (item.kind === "runner" || item.kind === "validation") {
         continue;
       }
-      evidence.push({
-        flowTitle: file.flowTitle,
-        priority: "required",
-        kind: "blocker",
-        title: "Resolve execution blocker",
-        detail: blocker,
-      });
+      evidence.push(missingEvidenceFromAction(file, item));
     }
   }
   const unique = uniqueMissingEvidence(evidence);
   const required = unique.filter((item) => item.priority === "required");
   const recommended = unique.filter((item) => item.priority !== "required");
   return [...required, ...recommended].slice(0, 12);
-}
-
-function normalizeEvidenceText(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9\uAC00-\uD7A3 ]+/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function actionTextCoversBlocker(actionText: string, blocker: string): boolean {
-  if (!actionText) {
-    return false;
-  }
-  const blockerTokens = normalizeEvidenceText(blocker).split(" ").filter((token) => token.length > 3);
-  if (blockerTokens.length === 0) {
-    return false;
-  }
-  const covered = blockerTokens.filter((token) => actionText.includes(token)).length;
-  return covered / blockerTokens.length >= 0.7;
 }
 
 function missingEvidenceFromAction(file: E2eDraftFile, item: E2eDraftActionItem): QaDraftMissingEvidence {
@@ -551,8 +575,10 @@ function buildPrChecklist(
       ? `Run the changed test evidence: ${flows[0].existingEvidencePaths.slice(0, 4).join(", ")}.`
       : flows[0]?.verificationMode
         ? `Run ${formatVerificationMode(flows[0].verificationMode)} with ${draft.plan.suggestedCommands[0] ?? "the nearest repository validation command"}.`
+      : draft.plan.changeAnalysis.intents[0]
+        ? `Review the proposed QA scenarios and their sources for: ${draft.plan.changeAnalysis.intents[0].title}.`
       : flows.length > 0
-        ? `Review the generated draft path: ${flows.map((flow) => flow.draftPath).slice(0, 3).join(", ")}.`
+        ? `Review the affected-flow evidence for: ${flows.map((flow) => flow.title).slice(0, 3).join(", ")}.`
       : "Run QAMap again after adding branch or working tree changes.",
     flows[0]?.userJourney?.reviewQuestion
       ? `Answer the reviewer question: ${flows[0].userJourney.reviewQuestion}`
@@ -589,8 +615,10 @@ function buildAgentHandoff(
       ? `Run the changed test evidence (${flows[0].existingEvidencePaths.slice(0, 3).join(", ")}) and record the result before handoff.`
       : flows[0]?.verificationMode
         ? `Run ${formatVerificationMode(flows[0].verificationMode)} and record the command and result before handoff; do not invent a product-journey E2E for this diff alone.`
+      : draft.plan.changeAnalysis.intents[0]
+        ? `Review each proposed scenario and its diff sources for ${draft.plan.changeAnalysis.intents[0].title} before using it as PR policy.`
       : flows.length > 0
-        ? `Start from ${flows[0].draftPath} and close required evidence before treating it as regression coverage.`
+        ? `Review the affected-flow evidence for ${flows[0].title} before using it as PR policy.`
         : undefined,
     missingEvidence.length > 0 ? "Close required evidence gaps before treating this QA draft as merge proof." : undefined,
     flows.some((flow) => !flow.verificationMode)

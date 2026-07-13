@@ -44,6 +44,13 @@ export interface BehaviorEvidence {
   kind: BehaviorEvidenceKind;
   value: string;
   file?: string;
+  previousFile?: string;
+  symbol?: string;
+  commit?: string;
+  side?: "base" | "head";
+  startLine?: number;
+  endLine?: number;
+  hunkHeader?: string;
 }
 
 export interface BehaviorImpact {
@@ -629,7 +636,7 @@ function strongerConfidence(left: BehaviorConfidence, right: BehaviorConfidence)
 function uniqueEvidence(items: BehaviorEvidence[]): BehaviorEvidence[] {
   const seen = new Set<string>();
   return items.filter((item) => {
-    const key = `${item.kind}\u0000${item.value}\u0000${item.file ?? ""}`;
+    const key = `${item.kind}\u0000${item.value}\u0000${item.file ?? ""}\u0000${item.startLine ?? ""}\u0000${item.endLine ?? ""}`;
     if (seen.has(key)) {
       return false;
     }

@@ -81,7 +81,13 @@ export { formatAgentQaDraft, formatMarkdownQaDraft, generateQaDraft } from "./qa
 export { formatMarkdownReviewReport, formatReviewReport, reviewProject } from "./review.js";
 export { scanProject } from "./scanner.js";
 export { collectTestSuiteInventory, evaluateFlowCoverageEvidence, summarizeTestSuiteInventory } from "./test-evidence.js";
-export { formatMarkdownTestPlan, generateTestPlan } from "./test-plan.js";
+export {
+  addedDiffTextFromEvidence,
+  collectAddedDiffEvidence,
+  collectAddedDiffText,
+  formatMarkdownTestPlan,
+  generateTestPlan,
+} from "./test-plan.js";
 export { formatMarkdownVerifyReport, formatVerifyReport, verifyChange } from "./verify.js";
 export type {
   BehaviorAdapterConfidence,
@@ -239,7 +245,16 @@ export type {
   VerificationManifestValidationStatus,
 } from "./manifest.js";
 export type { ChangedFile, ChangedRiskyFinding, ReviewOptions, ReviewResult } from "./review.js";
-export type { TestPlanChangedFile, TestPlanItem, TestPlanOptions, TestPlanResult } from "./test-plan.js";
+export type {
+  AddedDiffEvidence,
+  AddedDiffHunk,
+  AddedDiffLine,
+  AddedDiffTextOptions,
+  TestPlanChangedFile,
+  TestPlanItem,
+  TestPlanOptions,
+  TestPlanResult,
+} from "./test-plan.js";
 export type { QAMapConfig, Finding, ScanCounts, ScanOptions, ScanResult, Severity } from "./types.js";
 export type { VerifyOptions, VerifyResult } from "./verify.js";
 export type { QaDraftFlow, QaDraftMissingEvidence, QaDraftOptions, QaDraftResult } from "./qa.js";
