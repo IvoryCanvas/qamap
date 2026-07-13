@@ -696,8 +696,8 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
     const todoCount = countTodos(content);
     const selfCheck = evaluateDraftSelfCheck(plan, flow, runner, content, todoCount);
     const actionItems = buildDraftActionItems(plan, flow, runner, validationSummary, promotionGuidance, selfCheck);
-    const executionBlockers = draftExecutionBlockers(plan, flow, runner, validationSummary, selfCheck);
-    const runnableStatus = draftRunnableStatus(plan, flow, runner, validationSummary, executionBlockers, selfCheck);
+    const executionBlockers = draftExecutionBlockers(plan, flow, runner, selfCheck);
+    const runnableStatus = draftRunnableStatus(plan, flow, runner, executionBlockers, selfCheck);
     const fileDetails = draftFileDetails(flow);
     if (dryRun) {
       files.push({
@@ -805,7 +805,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
     files,
     actionSummary,
     readinessSummary: summarizeDraftReadiness(files, actionSummary),
-    nextSteps: buildDraftNextSteps(plan, runner),
+    nextSteps: buildDraftNextSteps(plan, runner, files),
   };
 }
 
@@ -2159,7 +2159,8 @@ function draftNeedsAssertionWork(selfCheck?: E2eDraftSelfCheck): boolean {
   return selfCheck.checks.some(
     (check) =>
       (check.name === "Unresolved placeholders" && check.status !== "pass") ||
-      (check.name === "TODO comments" && check.status !== "pass"),
+      (check.name === "TODO comments" && check.status !== "pass") ||
+      (check.name === "Domain assertions" && check.status !== "pass"),
   );
 }
 
@@ -7304,7 +7305,6 @@ function draftExecutionBlockers(
   plan: E2ePlanResult,
   flow: E2eFlow,
   runner: E2eRunnerName,
-  validationSummary: ReturnType<typeof summarizeDraftValidation>,
   selfCheck?: E2eDraftSelfCheck,
 ): string[] {
   const verificationOnly = isVerificationOnlyFlow(flow);
@@ -7318,13 +7318,8 @@ function draftExecutionBlockers(
   if (!verificationOnly && flow.fixtureReadiness.status === "missing") {
     blockers.push(flow.fixtureReadiness.nextActions[0] ?? flow.fixtureReadiness.reason);
   }
-  if (validationSummary.blockingGapCount > 0) {
-    blockers.push(
-      `${validationSummary.blockingGapCount} blocking validation gap${validationSummary.blockingGapCount === 1 ? "" : "s"} ${
-        validationSummary.blockingGapCount === 1 ? "remains" : "remain"
-      }.`,
-    );
-  }
+  // Missing validation evidence describes the repository before this draft exists.
+  // Keep it as PR guidance, but do not treat it as proof that the generated file cannot execute.
   if (selfCheck?.status === "fail") {
     blockers.push(...selfCheck.blockers);
   }
@@ -7335,7 +7330,6 @@ function draftRunnableStatus(
   plan: E2ePlanResult,
   flow: E2eFlow,
   runner: E2eRunnerName,
-  validationSummary: ReturnType<typeof summarizeDraftValidation>,
   executionBlockers: string[],
   selfCheck?: E2eDraftSelfCheck,
 ): "runnable-candidate" | "near-runnable" | "review-only" {
@@ -7347,9 +7341,8 @@ function draftRunnableStatus(
   }
   if (
     executionBlockers.length === 0 &&
-    validationSummary.blockingGapCount === 0 &&
     flow.missingTestability.length === 0 &&
-    (flow.fixtureReadiness.status === "ready" || flow.fixtureReadiness.status === "not-needed") &&
+    flow.fixtureReadiness.status !== "missing" &&
     selfCheck?.status === "pass"
   ) {
     return "runnable-candidate";
@@ -7430,6 +7423,14 @@ function evaluatePlaywrightDraftSelfCheck(
     todoCount === 0
       ? "No TODO comments remain in the generated draft."
       : `${todoCount} TODO marker${todoCount === 1 ? "" : "s"} remain for reviewer follow-up.`,
+  ));
+  const weakSmokeAssertions = content.match(/expect\(page\.locator\(["']body["']\)\)\.toBeVisible\(\)/g)?.length ?? 0;
+  checks.push(draftSelfCheckItem(
+    "Domain assertions",
+    weakSmokeAssertions === 0 ? "pass" : "warning",
+    weakSmokeAssertions === 0
+      ? "The draft does not rely on body-only smoke assertions."
+      : `${weakSmokeAssertions} body-only smoke assertion${weakSmokeAssertions === 1 ? "" : "s"} must be replaced with observable domain outcomes.`,
   ));
   checks.push(draftSelfCheckItem(
     "Execution profile",
@@ -7856,8 +7857,10 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText:
   for (const step of draftExecutableSteps(flow, "playwright")) {
     const manifestCheck = manifestCheckForDraftStep(flow, step);
     const manifestBody = manifestCheck ? playwrightActionForManifestCheck(manifestCheck, step) : undefined;
-    const selector = manifestBody ? undefined : takeSelectorForStep(selectorQueue, step);
+    const failureBody = manifestBody ? undefined : playwrightFailureActionForStep(flow, step);
+    const selector = manifestBody || failureBody ? undefined : takeSelectorForStep(selectorQueue, step);
     const body = manifestBody ??
+      failureBody ??
       (selector
         ? playwrightActionForStep(selector, playwrightLocator(selector), step)
         : playwrightFallbackActionForStep(step));
@@ -8938,18 +8941,23 @@ function formatDraftActionKindSummary(summary: E2eDraftActionKindSummary[]): str
     .join(", ");
 }
 
-function buildDraftNextSteps(plan: E2ePlanResult, runner: E2eRunnerName): string[] {
+function buildDraftNextSteps(plan: E2ePlanResult, runner: E2eRunnerName, files: E2eDraftFile[]): string[] {
   const steps: string[] = [];
+  const hasTodos = files.some((file) => (file.todoCount ?? 0) > 0);
   if (runner === "maestro") {
     steps.push(plan.executionProfile.appId
       ? `Use app id ${plan.executionProfile.appId} or export APP_ID before running Maestro.`
       : "Replace ${APP_ID} or export APP_ID before running Maestro.");
-    steps.push("Replace TODO text selectors with visible copy, testID, or accessibilityLabel selectors.");
+    if (hasTodos) {
+      steps.push("Replace TODO text selectors with visible copy, testID, or accessibilityLabel selectors.");
+    }
     steps.push(plan.executionProfile.startCommand
       ? `Launch the app with \`${plan.executionProfile.startCommand}\`, then run \`${plan.executionProfile.testCommand ?? "maestro test .maestro"}\`.`
       : `Run the app with the launch command that matches your simulator or device, then run \`${plan.executionProfile.testCommand ?? "maestro test .maestro"}\`.`);
   } else if (runner === "playwright") {
-    steps.push("Replace TODO locators with role, text, or data-testid locators from the app.");
+    if (hasTodos) {
+      steps.push("Replace TODO locators with role, text, or data-testid locators from the app.");
+    }
     if (plan.executionProfile.blockers.some((blocker) => /No Playwright config/i.test(blocker))) {
       steps.push(playwrightConfigGuidance(plan.executionProfile));
     }
@@ -9263,6 +9271,65 @@ function playwrightActionForStep(selector: E2eSelector, locator: string, step: s
   }
   body.push(`await ${locator}.click();`);
   return body;
+}
+
+function playwrightFailureActionForStep(flow: E2eFlow, step: string): string[] | undefined {
+  if (!isFailurePathStep(step)) {
+    return undefined;
+  }
+  const endpoint = playwrightFailureMockEndpoint(flow);
+  const actionSelector = flow.selectors.find(
+    (selector) => !isInputSelector(selector) && selectorCanDriveInteraction(selector),
+  );
+  const outcomeSelector = flow.selectors.find(
+    (selector) => selectorCanSupportAssertion(selector) && isFailureOutcomeText(selector.value),
+  );
+  if (!endpoint || !actionSelector || !outcomeSelector) {
+    return undefined;
+  }
+
+  const routePattern = playwrightMockRoutePattern(endpoint);
+  const status = failureResponseStatus(step);
+  return [
+    `// Step intent: ${step}`,
+    `await page.unroute("${quoteJs(routePattern)}");`,
+    `await page.route("${quoteJs(routePattern)}", async (route) => {`,
+    "  await route.fulfill({",
+    `    status: ${status},`,
+    '    contentType: "application/json",',
+    '    body: JSON.stringify({ error: "QAMap simulated failure" }),',
+    "  });",
+    "});",
+    `await ${playwrightLocator(actionSelector)}.click();`,
+    `await expect(${playwrightLocator(outcomeSelector)}).toBeVisible();`,
+  ];
+}
+
+function playwrightFailureMockEndpoint(flow: E2eFlow): string | undefined {
+  const observedEndpoints = observedEndpointsForFlow(flow);
+  return flow.fixtureReadiness.apiEndpoints.find(
+    (endpoint) => !endpointMatchesAny(endpoint, observedEndpoints),
+  );
+}
+
+function isFailurePathStep(step: string): boolean {
+  return /\b(?:blocked|declined|denied|empty|error|failed|failure|invalid|rejected|timeout|unauthori[sz]ed)\b/i.test(step) ||
+    /(?:오류|실패|거절|권한|잘못|할 수 없)/.test(step);
+}
+
+function isFailureOutcomeText(value: string): boolean {
+  return /\b(?:cannot|could not|declined|denied|error|failed|failure|invalid|rejected|try again|unauthori[sz]ed|unavailable)\b/i.test(value) ||
+    /(?:오류|실패|거절|권한|잘못|할 수 없)/.test(value);
+}
+
+function failureResponseStatus(step: string): number {
+  if (/\b(?:denied|unauthori[sz]ed)\b/i.test(step) || /권한/.test(step)) {
+    return 401;
+  }
+  if (/\b(?:invalid|validation)\b/i.test(step) || /잘못/.test(step)) {
+    return 422;
+  }
+  return 500;
 }
 
 interface ManifestSelectorHint {

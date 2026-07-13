@@ -1,5 +1,22 @@
 # Release Validation
 
+## 0.4.2 - 2026-07-13
+
+Validated as an automation-readiness honesty patch. Benchmark contracts now fail when QAMap finds a plausible flow but emits a draft that cannot be tried, and generated Playwright failure paths require a repository-observed endpoint, stable action, and visible failure outcome before QAMap writes executable steps:
+
+| Gate | Current result |
+| --- | --- |
+| `pnpm release:check` | Passed end to end |
+| `pnpm test` | 146/146 passing |
+| `pnpm scan` | 0 findings |
+| `pnpm bench:ci` | 12/12 synthetic PR targets pass; readiness, runnable-candidate, self-check, TODO, review-only, and execution-blocker contracts are enforced |
+| Coverage | Lines 87.53%, branches 84.18%, functions 95.22% |
+| Existing Playwright golden | Improved from `needs-work 67` with one blocker to `near-runnable 97`, one runnable candidate, and zero execution blockers |
+| Honest weak-draft handling | Testless checkout and shared-component fixtures remain `needs-work 48` because missing execution facts and body-only assertions are not promoted to runnable evidence |
+| Package preview | `pnpm pack --dry-run` and `npm publish --dry-run --access public` pass for `@ivorycanvas/qamap@0.4.2`; 129 files, 828.8 kB packed |
+
+This patch does not claim that all generated E2E files are green in their target applications. It makes that gap measurable: repository validation guidance no longer masquerades as a generated-file execution blocker, body-only smoke assertions remain warnings, and only evidence-backed failure flows compile into Playwright actions and assertions.
+
 ## 0.4.1 - 2026-07-13
 
 Validated as an evidence-first QA patch. A proposed scenario now exposes the commit or exact base/head diff file, line, symbol, hunk, and direct/supporting/contextual relation that caused it. Removed guards remain visible as base-side critical evidence, contextual-only scenarios cannot become critical, and runner adoption remains an explicit step after review:

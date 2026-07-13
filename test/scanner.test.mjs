@@ -2624,12 +2624,21 @@ test("fixture guidance names the mock handler file to extend and shapes mock pay
   await writeFile(
     path.join(root, "src/pages/billing/BillingPage.tsx"),
     [
+      'import { useState } from "react";',
       "export async function loadBilling() {",
-      "  const invoices = await fetch('/api/invoices');",
-      "  const summary = await fetch('/api/payments/summary');",
-      "  return { invoices: await invoices.json(), summary: await summary.json() };",
+      "  return Promise.all([fetch('/api/invoices'), fetch('/api/payments/summary')]);",
       "}",
-      "export function BillingPage() { return <button data-testid=\"open-billing\">Open billing</button>; }",
+      "export function BillingPage() {",
+      '  const [status, setStatus] = useState("");',
+      "  async function openBilling() {",
+      "    const [invoices, summary] = await loadBilling();",
+      '    setStatus(invoices.ok && summary.ok ? "Billing loaded" : "Could not load billing");',
+      "  }",
+      "  return <main>",
+      '    <button data-testid="open-billing" onClick={openBilling}>Open billing</button>',
+      "    <p role=\"status\">{status}</p>",
+      "  </main>;",
+      "}",
     ].join("\n"),
   );
   await git(root, ["add", "."]);
@@ -2665,6 +2674,14 @@ test("fixture guidance names the mock handler file to extend and shapes mock pay
   assert.match(spec, /total: "qamap-total"/);
   assert.match(spec, /Response shape keys reuse src\/mocks\/handlers\.ts/);
   assert.doesNotMatch(spec, /source: "qamap-draft"/);
+  assert.match(spec, /page\.unroute\("\*\*\/api\/(?:invoices|payments\/summary)"\)/);
+  assert.match(spec, /status: 500/);
+  assert.match(spec, /expect\(page\.getByText\("Could not load billing"\)\)\.toBeVisible\(\)/);
+  assert.doesNotMatch(spec, /page\.locator\("body"\)/);
+  assert.equal(
+    draftFile.selfCheck?.checks.find((check) => check.name === "Domain assertions")?.status,
+    "pass",
+  );
 });
 
 test("generateE2ePlan builds a bootstrap plan for projects without tests", async () => {
@@ -3038,13 +3055,21 @@ test("generateE2ePlan captures Playwright execution profile and self-check block
   assert.match(markdown, /Start command: `pnpm run dev`/);
   assert.match(markdown, /Base URL: `http:\/\/127\.0\.0\.1:4173`/);
   assert.equal(draftFile.runnableStatus, "near-runnable");
-  assert.equal(draftFile.selfCheck?.status, "pass");
+  assert.equal(draftFile.selfCheck?.status, "warning");
+  assert.equal(
+    draftFile.selfCheck?.checks.find((check) => check.name === "Domain assertions")?.status,
+    "warning",
+  );
   assert.equal(draftFile.selfCheck?.blockers.some((blocker) => /Unresolved placeholders/.test(blocker)), false);
   assert.equal(draft.readinessSummary.nearRunnable > 0, true);
-  assert.equal(draft.readinessSummary.selfCheckPass > 0, true);
+  assert.equal(draft.readinessSummary.selfCheckWarning > 0, true);
   assert.equal(draft.readinessSummary.topBlockers.some((blocker) => /Unresolved placeholders/.test(blocker)), false);
   assert.deepEqual(draftFile.executionBlockers?.filter((blocker) => /Playwright|baseURL|start command/i.test(blocker)), []);
-  assert.match(formatMarkdownE2eDraft(draft), /near-runnable/);
+  assert.equal((draftFile.blockingValidationGapCount ?? 0) > 0, true);
+  assert.deepEqual(draftFile.executionBlockers?.filter((blocker) => /validation gap/i.test(blocker)), []);
+  assert.match(formatMarkdownE2eDraft(draft), /Near-runnable files: 1/);
+  assert.match(formatMarkdownE2eDraft(draft), /Replace starter smoke assertions with domain assertions/);
+  assert.doesNotMatch(formatMarkdownE2eDraft(draft), /Replace TODO locators/);
   assert.match(formatMarkdownE2eDraft(draft), /## Draft Self Checks/);
   assert.match(formatMarkdownE2eDraft(draft), /Stage: [a-z ]+ \(\d of 4\) — readiness \d+\/100/);
   assert.match(spec, /Execution profile:/);
@@ -3378,7 +3403,8 @@ test("generateE2eDraft emits runnable Playwright role and input actions", async 
   assert.match(spec, /role-link: View history/);
   assert.equal(draftFile.selfCheck?.status, "pass");
   assert.equal(draftFile.selfCheck?.summary, "Playwright draft passed static runner checks.");
-  assert.equal(draft.readinessSummary.nearRunnable, 1);
+  assert.equal(draftFile.runnableStatus, "runnable-candidate");
+  assert.equal(draft.readinessSummary.runnableCandidates, 1);
   assert.equal(draft.readinessSummary.selfCheckPass, 1);
   assert.equal(draft.readinessSummary.totalTodos, 0);
   assert.match(formatMarkdownE2eDraft(draft), /Draft Self Checks/);

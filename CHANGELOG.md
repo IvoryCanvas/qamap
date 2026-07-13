@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.4.2 - 2026-07-13
+
+### Added
+
+- Added benchmark contracts for draft readiness, runnable candidates, self-check passes, review-only files, TODO markers, and execution blockers. Public fixtures can now fail CI when QAMap finds the right flow but produces an unusable automation draft.
+- Added deterministic Playwright failure-path compilation when repository evidence exposes a mockable endpoint, a stable action control, and an observable failure message. Generated drafts replace the success route with a 4xx/5xx response, repeat the user action, and assert the failure UI instead of falling back to a body-visible smoke check.
+
+### Changed
+
+- Draft execution readiness now measures whether a generated file can be tried locally from runner, entrypoint, selector, fixture, and self-check evidence. Missing pre-existing validation coverage remains required PR guidance, but no longer falsely claims that the new file cannot execute.
+- A partial fixture match can qualify as a runnable candidate when QAMap generated executable mock scaffolding and every other execution check passes. It still remains a review item before the draft becomes trusted regression evidence.
+- Playwright self-checks now report body-only smoke assertions as domain-assertion warnings. Such files remain tryable, but cannot be called runnable candidates until they assert an observable product outcome.
+
+### Fixed
+
+- Draft reports no longer tell users to replace TODO locators when the generated files contain no TODO markers.
+
 ## 0.4.1 - 2026-07-13
 
 ### Added

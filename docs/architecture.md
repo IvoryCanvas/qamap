@@ -128,4 +128,4 @@ Playwright, Maestro, and other tools are executor implementations. They are not 
 5. Add explicit, temporary execution and normalized evidence.
 6. Add manifest accept, reject, and repair commands so reviewed outcomes improve later analysis.
 
-Version `0.4.0` establishes the commit-to-intent-to-scenario slice for synthetic web and mobile lifecycle changes. The next minor is reserved for a policy-controlled scenario execution and normalized evidence slice; compatible analyzer and adapter improvements remain patch releases during `0.x` development.
+Version `0.4.0` establishes the commit-to-intent-to-scenario slice for synthetic web and mobile lifecycle changes. The next minor is unscheduled and reserved for a policy-controlled scenario execution and normalized evidence slice that has been proven across unrelated repositories; compatible analyzer and adapter improvements remain `0.4.x` patch releases until that bar is met.

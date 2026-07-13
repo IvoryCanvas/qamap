@@ -174,6 +174,19 @@ function scoreTarget(target, plan, qa, durationMs) {
     mustNameRecall: mustName.length > 0 ? `${named.length}/${mustName.length}` : null,
     mustNameMissing: mustName.filter((name) => !named.includes(name)),
     readiness: `${qa.readiness.level} (${qa.readiness.score})`,
+    readinessLevel: qa.readiness.level,
+    readinessScore: qa.readiness.score,
+    runnableCandidates: qa.readiness.runnableCandidates,
+    nearRunnableFiles: qa.readiness.nearRunnable,
+    reviewOnlyFiles: qa.readiness.reviewOnly,
+    tryableDrafts: qa.readiness.runnableCandidates + qa.readiness.nearRunnable,
+    draftStatuses: qa.flows.map((flow) => flow.runnableStatus ?? "unknown"),
+    selfCheckPass: qa.readiness.selfCheckPass,
+    selfCheckWarning: qa.readiness.selfCheckWarning,
+    selfCheckFail: qa.readiness.selfCheckFail,
+    totalTodos: qa.readiness.totalTodos,
+    totalExecutionBlockers: qa.readiness.totalExecutionBlockers,
+    topBlockers: qa.readiness.topBlockers,
     agentBytes: Buffer.byteLength(formatAgentQaDraft(qa)),
     durationMs,
   };
@@ -301,6 +314,49 @@ function evaluateContract(expect, result, plan, qa) {
   if (expect.maxAgentBytes !== undefined && result.agentBytes > expect.maxAgentBytes) {
     failures.push(`agent payload ${result.agentBytes} bytes exceeds ${expect.maxAgentBytes}`);
   }
+  if (expect.minReadinessScore !== undefined && result.readinessScore < expect.minReadinessScore) {
+    failures.push(`readiness score ${result.readinessScore} is below ${expect.minReadinessScore}`);
+  }
+  if (
+    Array.isArray(expect.allowedReadinessLevels) &&
+    !expect.allowedReadinessLevels.includes(result.readinessLevel)
+  ) {
+    failures.push(
+      `readiness level ${result.readinessLevel} is not one of ${expect.allowedReadinessLevels.join(", ")}`,
+    );
+  }
+  if (expect.minTryableDrafts !== undefined && result.tryableDrafts < expect.minTryableDrafts) {
+    failures.push(`expected at least ${expect.minTryableDrafts} tryable draft(s), got ${result.tryableDrafts}`);
+  }
+  if (
+    expect.minRunnableCandidates !== undefined &&
+    result.runnableCandidates < expect.minRunnableCandidates
+  ) {
+    failures.push(
+      `expected at least ${expect.minRunnableCandidates} runnable candidate(s), got ${result.runnableCandidates}`,
+    );
+  }
+  if (expect.minSelfCheckPass !== undefined && result.selfCheckPass < expect.minSelfCheckPass) {
+    failures.push(`expected at least ${expect.minSelfCheckPass} passing draft self-check(s), got ${result.selfCheckPass}`);
+  }
+  if (expect.maxSelfCheckFail !== undefined && result.selfCheckFail > expect.maxSelfCheckFail) {
+    failures.push(`failed draft self-checks ${result.selfCheckFail} exceed ${expect.maxSelfCheckFail}`);
+  }
+  if (expect.maxReviewOnlyFiles !== undefined && result.reviewOnlyFiles > expect.maxReviewOnlyFiles) {
+    failures.push(`review-only drafts ${result.reviewOnlyFiles} exceed ${expect.maxReviewOnlyFiles}`);
+  }
+  if (expect.maxTodos !== undefined && result.totalTodos > expect.maxTodos) {
+    failures.push(`draft TODO markers ${result.totalTodos} exceed ${expect.maxTodos}`);
+  }
+  if (
+    expect.maxExecutionBlockers !== undefined &&
+    result.totalExecutionBlockers > expect.maxExecutionBlockers
+  ) {
+    const topBlocker = result.topBlockers[0] ? ` Top blocker: ${result.topBlockers[0]}` : "";
+    failures.push(
+      `draft execution blockers ${result.totalExecutionBlockers} exceed ${expect.maxExecutionBlockers}.${topBlocker}`,
+    );
+  }
   return failures;
 }
 
@@ -415,6 +471,8 @@ function printTable(rows) {
     ["genericTitles", 8],
     ["mustReachRecall", 10],
     ["readiness", 18],
+    ["draftReadiness", 11],
+    ["totalExecutionBlockers", 8],
     ["agentBytes", 10],
     ["durationMs", 10],
   ];
@@ -437,6 +495,9 @@ function displayValue(row, key) {
   if (key === "contractPassed") {
     return row.contractPassed ? "PASS" : "FAIL";
   }
+  if (key === "draftReadiness") {
+    return `${row.runnableCandidates ?? 0}/${row.nearRunnableFiles ?? 0}/${row.reviewOnlyFiles ?? 0}`;
+  }
   return row[key] ?? "-";
 }
 
@@ -448,7 +509,7 @@ function printDeltas(baselineRows, currentRows) {
       continue;
     }
     const deltas = [];
-    for (const key of ["flows", "changeIntents", "highConfidenceIntents", "importPropagatedFlows", "diffAnchoredFlows", "manifestFlowMatches", "behaviorNodes", "behaviorImpactedNodes", "manifestBehaviorNodes", "commitBehaviorNodes", "blankActions", "genericTitles", "agentBytes"]) {
+    for (const key of ["flows", "changeIntents", "highConfidenceIntents", "importPropagatedFlows", "diffAnchoredFlows", "manifestFlowMatches", "behaviorNodes", "behaviorImpactedNodes", "manifestBehaviorNodes", "commitBehaviorNodes", "blankActions", "genericTitles", "readinessScore", "tryableDrafts", "totalTodos", "totalExecutionBlockers", "agentBytes"]) {
       const diff = (current[key] ?? 0) - (before[key] ?? 0);
       if (diff !== 0) {
         deltas.push(`${key} ${diff > 0 ? "+" : ""}${diff}`);
@@ -470,6 +531,8 @@ function shortLabel(key) {
     blankActions: "blank",
     genericTitles: "generic",
     mustReachRecall: "reach",
+    draftReadiness: "draft r/n/o",
+    totalExecutionBlockers: "blockers",
     durationMs: "ms",
   };
   return labels[key] ?? key;

@@ -10,8 +10,9 @@ QAMap keeps major and minor changes deliberately rare during `0.x` development.
 - Minor is reserved for a new product-level capability, an incompatible CLI or manifest contract, or a meaningful change to default execution and safety behavior.
 - Risky minor work should ship through `alpha`, `beta`, and `rc` prereleases before the final minor.
 - Do not pre-allocate a minor version to every roadmap phase. Define the next minor release bar and continue compatible work as patches until that bar is met.
+- Do not schedule `0.5.x` by date or implementation count. Continue `0.4.x` patches until external repository evidence shows that static QA design and automation drafts are dependable enough to support a new execution contract.
 
-Version `0.4.0` is earned by the first commit-to-intent-to-scenario vertical slice: behavior-bearing commits and diff symbols become an evidence-backed lifecycle and concrete runner-independent QA, then existing Playwright, Maestro, or manual adapters compile the result. The next minor is reserved for explicit temporary execution and normalized evidence without modifying the target repository.
+Version `0.4.0` is earned by the first commit-to-intent-to-scenario vertical slice: behavior-bearing commits and diff symbols become an evidence-backed lifecycle and concrete runner-independent QA, then existing Playwright, Maestro, or manual adapters compile the result. The next minor remains unscheduled and is reserved for explicit temporary execution and normalized evidence without modifying the target repository. That capability must be proven across unrelated repositories before a `0.5.0` candidate is cut.
 
 Version `1.0.0` requires a stable public contract and external adoption, not implementation volume alone. CLI commands, exit codes, machine output, manifest migration, adapter compatibility, no-LLM/no-upload guarantees, and release operations must be dependable. Repository stars are useful social proof, but repeated use in unrelated repositories and reported QA value are stronger release evidence.
 

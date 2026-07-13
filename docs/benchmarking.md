@@ -64,6 +64,15 @@ Each target can declare:
 | `maxBlankActions` | Maximum malformed or empty draft steps; public fixtures keep this at zero. |
 | `maxGenericTitles` | Maximum titles ending in generic `primary journey` or `smoke flow` wording. |
 | `maxAgentBytes` | Maximum UTF-8 payload size for `qa --format agent`. Production output also has a global 8KB ceiling and discloses omitted intent/flow counts. |
+| `minReadinessScore` | Minimum aggregate draft-readiness score after self-check, TODO, required-action, and execution-blocker penalties. |
+| `allowedReadinessLevels` | Accepted aggregate levels: `ready`, `near-runnable`, `needs-work`, or `blocked`. Use this to prevent a semantically plausible but unusable draft from satisfying the contract. |
+| `minTryableDrafts` | Minimum files classified as `runnable-candidate` or `near-runnable`. |
+| `minRunnableCandidates` | Minimum files classified as `runnable-candidate` with no known execution blockers. |
+| `minSelfCheckPass` | Minimum generated files whose static draft self-check passes. This does not claim that the target application was executed. |
+| `maxSelfCheckFail` | Maximum generated files whose static draft self-check fails. Warnings may remain for honest setup or domain-assertion gaps. |
+| `maxReviewOnlyFiles` | Maximum generated files that remain reference-only instead of tryable automation. |
+| `maxTodos` | Maximum unresolved TODO markers across generated drafts. |
+| `maxExecutionBlockers` | Maximum unresolved execution blockers across generated drafts. Contract failures name the most common blocker. |
 
 Set `manifestBaseline: true` on a committed fixture to generate its manifest from the base snapshot into the benchmark temp directory, then pass that external manifest to analysis of the head commit. The fixture repository is never modified by this step. This protects the feedback loop itself: a baseline must affect the next PR, not merely serialize valid YAML.
 
@@ -79,7 +88,7 @@ node scripts/bench.mjs --baseline bench-results/<file>.json
 
 When both files exist, `pnpm bench` prefers the gitignored local config. CI always passes `--config bench.config.json --assert`, so private paths cannot affect the public quality gate.
 
-Saved results include intent titles, lifecycle and scenario terms, scenario trace coverage, flow titles, draft paths, recall gaps, readiness, agent payload size, and timing. Use a saved baseline to see heuristic movement, but treat the committed expectation contract as the merge gate.
+Saved results include intent titles, lifecycle and scenario terms, scenario trace coverage, flow titles, draft paths, recall gaps, raw readiness counts, self-check outcomes, TODOs, execution blockers, agent payload size, and timing. The table reports draft status as `runnable/near-runnable/review-only`. Use a saved baseline to see heuristic movement, but treat the committed expectation contract as the merge gate.
 
 Every benchmark target also enforces the Behavior Graph base contract: graph schema version 1, at least one graph flow for every planned flow, at least one impacted node for a non-empty diff, and no edge whose endpoint is missing. The table reports `graph n/i` as total nodes versus impacted nodes. These checks keep the graph connected to real PR analysis while framework-specific adapters are introduced incrementally.
 

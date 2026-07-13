@@ -18,6 +18,11 @@
         "mustRecommendCommands": ["playwright"],
         "maxBlankActions": 0,
         "maxGenericTitles": 0,
+        "minTryableDrafts": 1,
+        "maxSelfCheckFail": 0,
+        "maxReviewOnlyFiles": 0,
+        "maxTodos": 0,
+        "maxExecutionBlockers": 2,
         "maxAgentBytes": 4096
       }
     },
@@ -37,6 +42,15 @@
         "mustFindEvidence": ["/api/orders"],
         "maxBlankActions": 0,
         "maxGenericTitles": 0,
+        "minReadinessScore": 70,
+        "allowedReadinessLevels": ["near-runnable", "ready"],
+        "minTryableDrafts": 1,
+        "minRunnableCandidates": 1,
+        "minSelfCheckPass": 1,
+        "maxSelfCheckFail": 0,
+        "maxReviewOnlyFiles": 0,
+        "maxTodos": 0,
+        "maxExecutionBlockers": 0,
         "maxAgentBytes": 4096
       }
     },
@@ -211,6 +225,11 @@
         "mustFindSelectors": ["checkout-submit"],
         "maxBlankActions": 0,
         "maxGenericTitles": 0,
+        "minTryableDrafts": 1,
+        "maxSelfCheckFail": 0,
+        "maxReviewOnlyFiles": 0,
+        "maxTodos": 0,
+        "maxExecutionBlockers": 2,
         "maxAgentBytes": 4096
       }
     },
