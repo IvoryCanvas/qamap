@@ -1,5 +1,22 @@
 # Release Validation
 
+## 0.4.1 - 2026-07-13
+
+Validated as an evidence-first QA patch. A proposed scenario now exposes the commit or exact head-side diff file, line, symbol, and hunk that caused it; runner adoption remains an explicit step after review:
+
+| Gate | Current result |
+| --- | --- |
+| `pnpm release:check` | Passed end to end |
+| `pnpm test` | 142/142 passing |
+| `pnpm scan` | 0 findings |
+| `pnpm bench:ci` | 12/12 synthetic PR targets pass; web and mobile lifecycle scenarios both retain 4/4 exact diff traces |
+| Coverage | Lines 87.27%, branches 83.82%, functions 95.15% |
+| Agent payload | Evidence-rich lifecycle fixtures remain compact at 5,121 and 5,433 bytes, below their 8KB contracts |
+| Package preview | `pnpm pack --dry-run` and `npm publish --dry-run --access public` pass for `@ivorycanvas/qamap@0.4.1`; 129 files, 820.7 kB packed |
+| Read-only repository smoke | Four clean local repositories covered a tested mobile branch, a web workspace branch, a testless configuration release, and a no-diff branch; target worktrees remained unchanged |
+
+The tested mobile branch produced three high-confidence intents and five visible scenarios, all with exact diff locations. The testless configuration release stayed in configuration verification without proposing a runner. The no-diff branch returned zero flows, zero required evidence, and no automation handoff. A release-shaped web branch had no behavior-bearing commit intent and therefore remained on broader review-only flow inference; this is an explicit remaining precision limit rather than promoted confidence.
+
 ## 0.4.0 - 2026-07-12
 
 Validated as the first intent-first QA design release. The release contract starts with behavior-bearing commits and diff evidence, reconstructs an ordered behavior lifecycle, proposes runner-independent QA scenarios, and only then compiles an optional automation draft:
