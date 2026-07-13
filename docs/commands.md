@@ -223,6 +223,10 @@ The draft result is meant to be useful as a PR artifact, not only as generated f
 - `actionSummary`: total required/recommended action counts, ready file count, and the most common action categories
 - `readinessSummary`: an overall 0-100 score, readiness level, self-check counts, starter-code gaps, execution blocker counts, and top blockers
 
+`runnable-candidate` means QAMap found no known blocker to trying the generated file with the detected local command. It is not a claim that the scenario is complete or that the PR is safe to merge. Missing failure coverage, unconfirmed fixture values, and other proof gaps remain visible as required or recommended action items and in the validation matrix. `near-runnable` means the file still has a concrete setup or execution gap; `review-only` means it should be used as design guidance rather than executed as automation.
+
+Playwright self-checks also reject false confidence from `body`-only smoke assertions. When static evidence includes a mockable endpoint, a stable action selector, and visible failure copy, QAMap emits a deterministic 4xx/5xx route, repeats the action, and asserts the failure outcome. When any of those facts are missing, the draft keeps a domain-assertion warning rather than inventing behavior.
+
 See [docs/e2e-output-examples.md](e2e-output-examples.md) for compact examples of web, mobile, API/service, CLI, test-light, and monorepo output.
 
 Generated Playwright drafts use the flow language as `test.step()` names so the file reads like the user journey it protects:
