@@ -44,6 +44,8 @@ There is no fixed end date or patch count for `0.4.x`. QAMap will remain on comp
 - Stabilize the manifest feedback loop with `.qamap/manifest.yaml`, `manifest init`, `manifest validate`, `manifest explain`, JSON Schema, and manifest-driven E2E draft shaping.
 - Keep `manifest context` useful as a pre-init sanity check for repo-local QA memory, harness docs, agent instructions, and runbooks.
 - Improve Playwright and Maestro compilation from intent scenarios while keeping runner choice behind the runner-independent QA contract.
+- Keep scenario selection and automation compilation independently measurable: exact diff evidence routes each scenario as required, recommended, or review-only, then runner receipts report compiled, partial, or not-compiled coverage. Required compilation gaps must lower readiness instead of hiding behind a green smoke assertion.
+- Require every new shared heuristic to pass unrelated web/mobile or UI/service fixtures plus a negative control. Product-specific vocabulary stays in fixtures and optional manifests, never in global rules.
 - Keep `verify`, `e2e`, and `manifest` as deeper layers behind `qa`; freeze new scanner, doctor, eval, domains, flows, and history features until the core QA contract is consistently useful.
 
 ## Longer-Term Release Bar (No Scheduled 0.5.x Date)

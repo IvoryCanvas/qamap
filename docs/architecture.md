@@ -11,7 +11,9 @@ commit range + base/head diff
   -> behavior graph
   -> behavior lifecycle + impact selection
   -> runner-independent QA scenarios
+  -> evidence-ranked scenario routing
   -> Playwright / Maestro / manual adapter
+  -> scenario automation receipts
   -> explicit local execution
   -> normalized evidence and verdict
 ```
@@ -32,6 +34,25 @@ Each intent contains:
 One richly evidenced squash commit can reach high confidence. A title without connected diff evidence cannot. Working-tree-only inference is always low confidence and review-required. Release, docs, style, CI, and test-only commits do not become product intents.
 
 The analysis is deterministic and local. It does not execute repository code, contact GitHub, upload source, or call an LLM.
+
+## Scenario Routing and Compilation Receipts
+
+Scenario generation and test generation are separate decisions. QAMap first routes every proposed scenario from its evidence:
+
+- `required`: a critical scenario has at least one direct or supporting diff hunk with a concrete file and line;
+- `recommended`: a non-critical scenario has the same located diff support;
+- `review-only`: the scenario is supported only by commit wording or contextual evidence and cannot become policy by itself.
+
+The route keeps required diff evidence separate from reference evidence. This lets a reviewer reject a false positive without reverse-engineering the heuristic that produced it.
+
+Runner adapters then emit a second receipt for each routed scenario:
+
+- `compiled`: every selected step and assertion was mapped to executable runner commands and observable assertions;
+- `partial`: some, but not all, selected behavior was mapped;
+- `not-compiled`: the scenario was selected but no deterministic compiler had enough entrypoint, action, fixture, and outcome evidence;
+- `review-only`: the scenario or repository has no executable adapter contract.
+
+A compilation receipt is static evidence, not a test result. Only explicit execution may produce pass or fail evidence. A required scenario that is partial or not compiled remains an execution blocker and prevents the draft from being described as runnable.
 
 ## Behavior Graph
 
@@ -124,7 +145,7 @@ Playwright, Maestro, and other tools are executor implementations. They are not 
 1. Derive change intent and runner-independent QA scenarios from commit and diff evidence.
 2. Move route, screen, endpoint, selector, fixture, and contract discovery into graph-producing adapters.
 3. Compare base and head graphs to select affected behavior rather than relying on file categories alone.
-4. Compile selected graph paths through Playwright, Maestro, or manual adapters.
+4. Route scenarios from exact evidence and compile selected graph paths through Playwright, Maestro, or manual adapters.
 5. Add explicit, temporary execution and normalized evidence.
 6. Add manifest accept, reject, and repair commands so reviewed outcomes improve later analysis.
 

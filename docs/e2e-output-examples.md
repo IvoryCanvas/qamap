@@ -10,50 +10,63 @@ First contact should work without a manifest:
 pnpm dlx @ivorycanvas/qamap qa . --base origin/main --head HEAD
 ```
 
-The output should be specific enough to paste into a PR comment:
+The output should be specific enough to paste into a PR comment. This excerpt uses the committed web preferences lifecycle benchmark; it deliberately keeps the current compiler gaps visible:
 
 ```txt
 # QAMap QA Draft
 
 At a Glance
-- Change intent: Submit checkout and persist the confirmed order [high]
-- Behavior lifecycle: trigger: Submit checkout -> side-effect: Create order -> observable-outcome: Show order confirmation
-- Affected behavior: Submit checkout and persist the confirmed order
+- Change intent: Submit notification preferences and show the saved state [high]
+- Behavior lifecycle: trigger: submit preferences -> state-change: update saved state -> side-effect: invoke fetch -> observable-outcome: show saved state
+- Affected behavior: Submit notification preferences and show the saved state
 
 Change Intent Evidence
-- Commit: feat: submit checkout and persist the confirmed order
-- Critical scenario: Submit checkout and persist the confirmed order
-  - Assert: order confirmation is visible and persisted
+- Commit: feat: submit notification preferences, persist the selected timezone, and show the saved state after the request completes
+- Critical scenario: Submit notification preferences and show the saved state
+  - Routing: required; 3 supporting diff hunks
+  - E2E mapping: partial; steps 0/3, assertions 1/1
+  - Assert: the saved state becomes observable
 - Recommended scenario: Failure, timeout, and retry handling
+  - Routing: recommended; 1 supporting diff hunk
+  - E2E mapping: not compiled; no deterministic failure compiler matched all required evidence
 
 Summary
 - Project: Web
 - Automation adapter: Playwright
 - Manifest: not found; using repo signals and PR diff only
-- Stage: almost runnable (3 of 4)
+- Stage: setup needed (1 of 4); readiness 37/100
+- Scenario routing: 2 required, 2 recommended, 0 review-only
+- E2E mapping: 0 compiled, 1 partial, 3 not compiled
 
 PR Comment Draft
-- Affected flow: Submit checkout and persist the confirmed order
-- User journey: Customer -> Open route /checkout -> Complete checkout with realistic form data
-- Success signal: confirmation state is visible after submit
-- Changed files: src/pages/checkout/index.tsx
+- Affected flow: Submit notification preferences and show the saved state
+- User journey: User -> Open route /preferences -> Submit preferences
+- Success signal: visible text "Preferences saved" appears
+- Changed files: src/pages/preferences.tsx
 
 Suggested E2E / QA Draft
-- tests/e2e/submit-checkout-and-persist-the-confirmed-order.spec.ts: near runnable
-- Open route /checkout.
-- Fill checkout email.
-- Submit checkout.
-- Assert confirmation state is visible after submit.
+- tests/e2e/submit-notification-preferences-persist-the-selected-timezone-and-show-the-saved.spec.ts: near runnable
+- Open route /preferences.
+- Submit notification preferences.
+- Assert visible text "Preferences saved" appears.
+
+Scenario automation receipts
+- [required] Submit notification preferences and show the saved state: partial (steps 0/3, assertions 1/1)
+  - Blocker: three selected action steps remain outside executable coverage
+- [recommended] Failure, timeout, and retry handling: not compiled (steps 0/2, assertions 0/2)
+  - Blocker: no deterministic failure compiler matched an entrypoint, action, fixture boundary, and observable outcome
 
 Missing evidence before trusting this PR
-- [required] fixture: Add deterministic fixture or mock data.
-- [recommended] selector: Confirm stable selectors.
+- [required] fixture: Add deterministic fixture or mock data for /api/preferences.
+- [required] assertion: Compile required QA scenarios into executable coverage.
 
 PR checklist
 - [ ] Review the generated draft path.
 - [ ] Answer the reviewer question for the affected flow.
 - [ ] Run local validation: pnpm run test:e2e
 ```
+
+The counts above describe static compilation, not execution. `compiled` means the selected steps and assertions were mapped to concrete runner code. Only an explicit validation command can turn that draft into pass or fail evidence.
 
 If this recommendation is useful but slightly wrong, the next step is not another long AI prompt. Generate and correct repo-local QA memory:
 

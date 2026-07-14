@@ -9,8 +9,10 @@ import type {
   E2eFlowLanguageBrief,
   E2eProjectType,
   E2eRunnerName,
+  E2eScenarioAutomationReceipt,
 } from "./e2e.js";
 import type { ChangeIntentEvidence } from "./change-intent.js";
+import { routeQaScenario } from "./scenario-routing.js";
 import { TOOL_NAME, VERSION } from "./version.js";
 
 export interface QaDraftOptions extends Omit<E2eDraftOptions, "dryRun" | "output"> {}
@@ -57,6 +59,7 @@ export interface QaDraftFlow {
   verificationMode?: QaVerificationMode;
   setupHints: string[];
   manifestUpdatePath?: string;
+  scenarioAutomation: E2eScenarioAutomationReceipt[];
   why: string[];
 }
 
@@ -115,6 +118,9 @@ function truncateForAgent(value: string, maxLength = 140): string {
 }
 
 export function formatAgentQaDraft(result: QaDraftResult): string {
+  const scenarioAutomationById = new Map(
+    result.flows.flatMap((flow) => flow.scenarioAutomation).map((receipt) => [receipt.scenarioId, receipt]),
+  );
   const requiredEvidence = result.missingEvidence
     .filter((item) => item.priority === "required")
     .slice(0, 8)
@@ -131,6 +137,15 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
     runner: result.runner,
     manifest: result.manifestPath ?? null,
     readiness: { score: result.readiness.score, level: result.readiness.level },
+    scenarioCoverage: {
+      required: result.readiness.requiredScenarios,
+      recommended: result.readiness.recommendedScenarios,
+      reviewOnly: result.readiness.reviewOnlyScenarios,
+      compiled: result.readiness.compiledScenarios,
+      partial: result.readiness.partialScenarios,
+      notCompiled: result.readiness.notCompiledScenarios,
+      requiredGaps: result.readiness.requiredScenarioGaps,
+    },
     testSuite: { present: result.testSuite.hasTestSuite, files: result.testSuite.testFileCount },
     intentCount: result.changeAnalysis.intents.length,
     omittedIntentCount: Math.max(0, result.changeAnalysis.intents.length - 3),
@@ -146,15 +161,36 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
       })),
       scenarioCount: intent.scenarios.length,
       omittedScenarioCount: Math.max(0, intent.scenarios.length - 2),
-      scenarios: intent.scenarios.slice(0, 2).map((scenario) => ({
-        priority: scenario.priority,
-        kind: scenario.kind,
-        title: truncateForAgent(scenario.title, 100),
-        confidence: scenario.confidence ?? "low",
-        reviewRequired: scenario.reviewRequired ?? true,
-        sources: strongestEvidence(scenario.evidence, 1).map(formatAgentEvidenceSource),
-        assertions: scenario.assertions.slice(0, 2).map((assertion) => truncateForAgent(assertion, 120)),
-      })),
+      scenarios: intent.scenarios.slice(0, 2).map((scenario) => {
+        const routing = routeQaScenario(scenario);
+        const automation = scenarioAutomationById.get(scenario.id);
+        return {
+          id: scenario.id,
+          priority: scenario.priority,
+          kind: scenario.kind,
+          title: truncateForAgent(scenario.title, 100),
+          confidence: scenario.confidence ?? "low",
+          reviewRequired: scenario.reviewRequired ?? true,
+          sources: strongestEvidence(scenario.evidence, 1).map(formatAgentEvidenceSource),
+          assertions: scenario.assertions.slice(0, 2).map((assertion) => truncateForAgent(assertion, 120)),
+          routing: {
+            decision: routing.decision,
+            reason: truncateForAgent(routing.reason, 160),
+            requiredSources: routing.requiredEvidence.length,
+            referenceSources: routing.referenceEvidence.length,
+          },
+          automation: automation
+            ? {
+                status: automation.status,
+                mappedSteps: automation.mappedSteps,
+                totalSteps: automation.totalSteps,
+                mappedAssertions: automation.mappedAssertions,
+                totalAssertions: automation.totalAssertions,
+                blocker: automation.blockers[0] ? truncateForAgent(automation.blockers[0], 160) : undefined,
+              }
+            : undefined,
+        };
+      }),
     })),
     automation: needsGeneratedDraft(result)
       ? {
@@ -186,6 +222,11 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
       existingEvidence: flow.existingEvidencePaths.length > 0
         ? flow.existingEvidencePaths.slice(0, 4).map((file) => truncateForAgent(file, 140))
         : undefined,
+      scenarioAutomation: flow.scenarioAutomation.slice(0, 4).map((receipt) => ({
+        id: receipt.scenarioId,
+        decision: receipt.decision,
+        status: receipt.status,
+      })),
       evidence: flow.why.slice(0, 2).map((reason) => truncateForAgent(reason)),
     })),
     requiredEvidence,
@@ -404,6 +445,16 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
       );
     }
   }
+  if (result.readiness.requiredScenarios + result.readiness.recommendedScenarios + result.readiness.reviewOnlyScenarios > 0) {
+    lines.push(
+      `- Scenario routing: ${result.readiness.requiredScenarios} required, ` +
+        `${result.readiness.recommendedScenarios} recommended, ${result.readiness.reviewOnlyScenarios} review-only.`,
+    );
+    lines.push(
+      `- E2E mapping: ${result.readiness.compiledScenarios} compiled, ` +
+        `${result.readiness.partialScenarios} partial, ${result.readiness.notCompiledScenarios} not compiled.`,
+    );
+  }
   lines.push("");
   lines.push("## Summary");
   lines.push("");
@@ -544,11 +595,26 @@ function appendQaChangeIntentMarkdown(lines: string[], result: QaDraftResult): v
     for (const scenario of intent.scenarios.slice(0, 4)) {
       const confidence = scenario.confidence ?? "low";
       const reviewRequired = scenario.reviewRequired ?? true;
+      const routing = routeQaScenario(scenario);
+      const automation = findScenarioAutomation(result, scenario.id);
       lines.push(
         `  - [${scenario.priority}] ${escapeMarkdownInline(scenario.title)} ` +
         `(confidence: ${confidence}${reviewRequired ? "; review required" : ""})`,
       );
-      lines.push(`    - Why: ${escapeMarkdownInline(scenario.rationale)}`);
+      lines.push(`    - Routing: ${routing.decision} - ${escapeMarkdownInline(routing.reason)}`);
+      lines.push(
+        `    - Evidence role: ${routing.requiredEvidence.length} required diff source${routing.requiredEvidence.length === 1 ? "" : "s"}; ` +
+          `${routing.referenceEvidence.length} reference source${routing.referenceEvidence.length === 1 ? "" : "s"}`,
+      );
+      if (automation) {
+        lines.push(
+          `    - E2E mapping: ${automation.status} ` +
+            `(steps ${automation.mappedSteps}/${automation.totalSteps}; assertions ${automation.mappedAssertions}/${automation.totalAssertions})`,
+        );
+        for (const blocker of automation.blockers.slice(0, 2)) {
+          lines.push(`      - Blocker: ${escapeMarkdownInline(blocker)}`);
+        }
+      }
       for (const source of strongestEvidence(scenario.evidence, 3)) {
         lines.push(
           `    - Source: ${formatEvidenceReference(source)}: ${escapeMarkdownInline(source.value)}`,
@@ -560,6 +626,13 @@ function appendQaChangeIntentMarkdown(lines: string[], result: QaDraftResult): v
     }
     lines.push("");
   }
+}
+
+function findScenarioAutomation(
+  result: QaDraftResult,
+  scenarioId: string,
+): E2eScenarioAutomationReceipt | undefined {
+  return result.flows.flatMap((flow) => flow.scenarioAutomation).find((receipt) => receipt.scenarioId === scenarioId);
 }
 
 function formatEvidenceReference(evidence: ChangeIntentEvidence): string {
@@ -624,6 +697,7 @@ function qaFlowFromDraftFile(file: E2eDraftFile): QaDraftFlow {
     verificationMode,
     setupHints: file.setupHints ?? [],
     manifestUpdatePath: file.manifestUpdatePath,
+    scenarioAutomation: file.scenarioAutomation ?? [],
     why: buildFlowReasons(file),
   };
 }

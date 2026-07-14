@@ -134,6 +134,7 @@
               "properties": {
                 "priority": { "type": "string", "enum": ["critical", "recommended"] },
                 "kind": { "type": "string", "enum": ["primary", "failure", "boundary", "state-transition"] },
+                "id": { "type": "string" },
                 "title": { "type": "string" },
                 "confidence": { "type": "string", "enum": ["low", "medium", "high"] },
                 "reviewRequired": { "type": "boolean" },
@@ -142,7 +143,29 @@
                   "items": { "$ref": "#/definitions/evidenceSource" },
                   "description": "The strongest diff or commit locations that caused this scenario to be proposed (capped)."
                 },
-                "assertions": { "type": "array", "items": { "type": "string" } }
+                "assertions": { "type": "array", "items": { "type": "string" } },
+                "routing": {
+                  "type": "object",
+                  "required": ["decision", "reason", "requiredSources", "referenceSources"],
+                  "properties": {
+                    "decision": { "type": "string", "enum": ["required", "recommended", "review-only"] },
+                    "reason": { "type": "string" },
+                    "requiredSources": { "type": "integer", "minimum": 0 },
+                    "referenceSources": { "type": "integer", "minimum": 0 }
+                  }
+                },
+                "automation": {
+                  "type": "object",
+                  "required": ["status", "mappedSteps", "totalSteps", "mappedAssertions", "totalAssertions"],
+                  "properties": {
+                    "status": { "type": "string", "enum": ["compiled", "partial", "not-compiled", "review-only"] },
+                    "mappedSteps": { "type": "integer", "minimum": 0 },
+                    "totalSteps": { "type": "integer", "minimum": 0 },
+                    "mappedAssertions": { "type": "integer", "minimum": 0 },
+                    "totalAssertions": { "type": "integer", "minimum": 0 },
+                    "blocker": { "type": "string" }
+                  }
+                }
               }
             }
           }
@@ -162,6 +185,20 @@
     "firstDraftCommand": {
       "type": "string",
       "description": "Deprecated v1 field retained for compatibility. New output uses the opt-in automation object instead of promoting runner setup as the default QA action."
+    },
+    "scenarioCoverage": {
+      "type": "object",
+      "description": "Counts that connect routed QA scenarios to generated automation without claiming execution.",
+      "required": ["required", "recommended", "reviewOnly", "compiled", "partial", "notCompiled", "requiredGaps"],
+      "properties": {
+        "required": { "type": "integer", "minimum": 0 },
+        "recommended": { "type": "integer", "minimum": 0 },
+        "reviewOnly": { "type": "integer", "minimum": 0 },
+        "compiled": { "type": "integer", "minimum": 0 },
+        "partial": { "type": "integer", "minimum": 0 },
+        "notCompiled": { "type": "integer", "minimum": 0 },
+        "requiredGaps": { "type": "integer", "minimum": 0 }
+      }
     },
     "automation": {
       "type": "object",
@@ -218,6 +255,19 @@
             "type": "array",
             "items": { "type": "string" },
             "description": "Changed test files to execute instead of generating another draft. Present for test-evidence-only changes."
+          },
+          "scenarioAutomation": {
+            "type": "array",
+            "description": "Compact receipts connecting selected scenario ids to generated automation status.",
+            "items": {
+              "type": "object",
+              "required": ["id", "decision", "status"],
+              "properties": {
+                "id": { "type": "string" },
+                "decision": { "type": "string", "enum": ["required", "recommended", "review-only"] },
+                "status": { "type": "string", "enum": ["compiled", "partial", "not-compiled", "review-only"] }
+              }
+            }
           },
           "evidence": {
             "type": "array",
