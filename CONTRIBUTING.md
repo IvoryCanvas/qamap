@@ -38,6 +38,16 @@ docs: document contributor metadata rules
 
 Keep commits reviewable and scoped. Do not mix generated output, unrelated formatting, or local benchmark artifacts into a product change.
 
+## Generalization Guardrail
+
+QAMap is a public QA engine, not a rule set for one product or maintainer repository.
+
+- Build shared inference from domain-neutral behavior facts: triggers, conditions, state changes, side effects, and observable outcomes.
+- Keep product names, private paths, and domain-specific terms out of production heuristics. They may appear only in minimized synthetic fixtures or an optional repository manifest.
+- Prove every new shared heuristic with at least two unrelated positive domains and one negative or false-positive control.
+- Keep manifest support optional. A repository without a manifest must still receive a useful evidence-backed baseline.
+- Prefer an honest `review-only` or `not-compiled` receipt over inventing a user journey, fixture, action, or assertion.
+
 ## Pull Requests
 
 PR titles use a capitalized type and an imperative summary:

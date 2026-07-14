@@ -50,6 +50,11 @@ Each target can declare:
 | `mustFindIntentEvidence` | Commit or diff terms that must remain attached to intent provenance. |
 | `mustTraceScenarioFiles` | Changed files that must appear in at least one scenario's exact direct/supporting base- or head-side diff source. |
 | `maxUntracedCriticalScenarios` | Maximum critical scenarios without a direct/supporting diff source carrying a file and line number. Contextual commit evidence cannot satisfy this contract; lifecycle fixtures keep it at zero. |
+| `minScenarioReceipts` | Minimum routed scenario receipts emitted by the E2E adapter. |
+| `maxMissingScenarioReceipts` | Maximum selected QA scenarios with no corresponding automation receipt. Public lifecycle fixtures keep this at zero. |
+| `minRoutedRequiredScenarios` | Minimum critical scenarios promoted to required by located direct or supporting diff evidence. |
+| `maxRequiredScenarioGaps` | Maximum required scenarios that remain partial or not compiled. Use only for fixtures whose adapter coverage is expected to be complete. |
+| `minMappedScenarioAssertions` | Minimum selected assertions mapped to observable runner assertions across scenario receipts. |
 | `mustReachFiles` | Files that the selected flows must reach. |
 | `mustNameFlows` | Product terms that must appear in a user-facing flow title. |
 | `mustNotNameFlows` | Misleading flow-title terms that must not be emitted. |
@@ -88,7 +93,7 @@ node scripts/bench.mjs --baseline bench-results/<file>.json
 
 When both files exist, `pnpm bench` prefers the gitignored local config. CI always passes `--config bench.config.json --assert`, so private paths cannot affect the public quality gate.
 
-Saved results include intent titles, lifecycle and scenario terms, scenario trace coverage, flow titles, draft paths, recall gaps, raw readiness counts, self-check outcomes, TODOs, execution blockers, agent payload size, and timing. The table reports draft status as `runnable/near-runnable/review-only`. Use a saved baseline to see heuristic movement, but treat the committed expectation contract as the merge gate.
+Saved results include intent titles, lifecycle and scenario terms, scenario trace coverage, scenario receipt coverage, flow titles, draft paths, recall gaps, raw readiness counts, self-check outcomes, TODOs, execution blockers, agent payload size, and timing. The table reports draft status as `runnable/near-runnable/review-only` and scenario compilation as `compiled/partial/not-compiled`. Use a saved baseline to see heuristic movement, but treat the committed expectation contract as the merge gate.
 
 Every benchmark target also enforces the Behavior Graph base contract: graph schema version 1, at least one graph flow for every planned flow, at least one impacted node for a non-empty diff, and no edge whose endpoint is missing. The table reports `graph n/i` as total nodes versus impacted nodes. These checks keep the graph connected to real PR analysis while framework-specific adapters are introduced incrementally.
 
@@ -100,5 +105,7 @@ When a real repository produces a poor recommendation:
 2. Write the human expectation in `bench.config.json` before changing heuristics.
 3. Confirm `pnpm bench:ci` fails for the intended reason.
 4. Fix the inference and keep the fixture as permanent regression evidence.
+
+Any new production heuristic must be exercised by at least two unrelated positive domains and one negative or false-positive control. Domain vocabulary belongs in synthetic fixtures, not in shared inference rules.
 
 Do not copy repository names, proprietary code, domain language, file paths, credentials, production data, or raw smoke output into a public fixture. Reduce the behavior to neutral synthetic vocabulary and keep private diagnostics outside the repository.

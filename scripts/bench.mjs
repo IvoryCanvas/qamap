@@ -105,6 +105,10 @@ function scoreTarget(target, plan, qa, durationMs) {
     )
   );
   const qaScenarios = plan.changeAnalysis.intents.flatMap((intent) => intent.scenarios);
+  const scenarioReceipts = [...new Map(
+    qa.flows.flatMap((flow) => flow.scenarioAutomation ?? []).map((receipt) => [receipt.scenarioId, receipt]),
+  ).values()];
+  const scenarioReceiptIds = new Set(scenarioReceipts.map((receipt) => receipt.scenarioId));
   const locatedQaScenarios = qaScenarios.filter((scenario) =>
     scenario.evidence.some((item) =>
       item.kind === "diff" && item.file && item.startLine !== undefined && item.relation !== "contextual"
@@ -138,6 +142,20 @@ function scoreTarget(target, plan, qa, durationMs) {
     qaScenarios: qaScenarios.length,
     locatedQaScenarios: locatedQaScenarios.length,
     scenarioTrace: qaScenarios.length > 0 ? `${locatedQaScenarios.length}/${qaScenarios.length}` : null,
+    scenarioReceipts: scenarioReceipts.length,
+    scenarioReceiptCoverage: qaScenarios.length > 0 ? `${scenarioReceipts.length}/${qaScenarios.length}` : null,
+    missingScenarioReceipts: qaScenarios.filter((scenario) => !scenarioReceiptIds.has(scenario.id)).length,
+    routedRequiredScenarios: scenarioReceipts.filter((receipt) => receipt.decision === "required").length,
+    routedRecommendedScenarios: scenarioReceipts.filter((receipt) => receipt.decision === "recommended").length,
+    routedReviewOnlyScenarios: scenarioReceipts.filter((receipt) => receipt.decision === "review-only").length,
+    compiledScenarioReceipts: scenarioReceipts.filter((receipt) => receipt.status === "compiled").length,
+    partialScenarioReceipts: scenarioReceipts.filter((receipt) => receipt.status === "partial").length,
+    notCompiledScenarioReceipts: scenarioReceipts.filter((receipt) => receipt.status === "not-compiled").length,
+    mappedScenarioSteps: scenarioReceipts.reduce((sum, receipt) => sum + receipt.mappedSteps, 0),
+    mappedScenarioAssertions: scenarioReceipts.reduce((sum, receipt) => sum + receipt.mappedAssertions, 0),
+    requiredScenarioGaps: scenarioReceipts.filter(
+      (receipt) => receipt.decision === "required" && receipt.status !== "compiled"
+    ).length,
     untracedCriticalScenarios: qaScenarios.filter((scenario) =>
       scenario.priority === "critical" &&
       !scenario.evidence.some((item) =>
@@ -262,6 +280,41 @@ function evaluateContract(expect, result, plan, qa) {
   ) {
     failures.push(
       `untraced critical scenarios ${result.untracedCriticalScenarios} exceed ${expect.maxUntracedCriticalScenarios}`,
+    );
+  }
+  if (expect.minScenarioReceipts !== undefined && result.scenarioReceipts < expect.minScenarioReceipts) {
+    failures.push(`expected at least ${expect.minScenarioReceipts} scenario receipt(s), got ${result.scenarioReceipts}`);
+  }
+  if (
+    expect.maxMissingScenarioReceipts !== undefined &&
+    result.missingScenarioReceipts > expect.maxMissingScenarioReceipts
+  ) {
+    failures.push(
+      `missing scenario receipts ${result.missingScenarioReceipts} exceed ${expect.maxMissingScenarioReceipts}`,
+    );
+  }
+  if (
+    expect.minRoutedRequiredScenarios !== undefined &&
+    result.routedRequiredScenarios < expect.minRoutedRequiredScenarios
+  ) {
+    failures.push(
+      `expected at least ${expect.minRoutedRequiredScenarios} required routed scenario(s), got ${result.routedRequiredScenarios}`,
+    );
+  }
+  if (
+    expect.maxRequiredScenarioGaps !== undefined &&
+    result.requiredScenarioGaps > expect.maxRequiredScenarioGaps
+  ) {
+    failures.push(
+      `required scenario gaps ${result.requiredScenarioGaps} exceed ${expect.maxRequiredScenarioGaps}`,
+    );
+  }
+  if (
+    expect.minMappedScenarioAssertions !== undefined &&
+    result.mappedScenarioAssertions < expect.minMappedScenarioAssertions
+  ) {
+    failures.push(
+      `expected at least ${expect.minMappedScenarioAssertions} mapped scenario assertion(s), got ${result.mappedScenarioAssertions}`,
     );
   }
 
@@ -467,6 +520,8 @@ function printTable(rows) {
     ["behaviorGraph", 9],
     ["changeIntents", 7],
     ["scenarioTrace", 8],
+    ["scenarioReceiptCoverage", 8],
+    ["scenarioAutomation", 9],
     ["blankActions", 6],
     ["genericTitles", 8],
     ["mustReachRecall", 10],
@@ -498,6 +553,9 @@ function displayValue(row, key) {
   if (key === "draftReadiness") {
     return `${row.runnableCandidates ?? 0}/${row.nearRunnableFiles ?? 0}/${row.reviewOnlyFiles ?? 0}`;
   }
+  if (key === "scenarioAutomation") {
+    return `${row.compiledScenarioReceipts ?? 0}/${row.partialScenarioReceipts ?? 0}/${row.notCompiledScenarioReceipts ?? 0}`;
+  }
   return row[key] ?? "-";
 }
 
@@ -509,7 +567,7 @@ function printDeltas(baselineRows, currentRows) {
       continue;
     }
     const deltas = [];
-    for (const key of ["flows", "changeIntents", "highConfidenceIntents", "importPropagatedFlows", "diffAnchoredFlows", "manifestFlowMatches", "behaviorNodes", "behaviorImpactedNodes", "manifestBehaviorNodes", "commitBehaviorNodes", "blankActions", "genericTitles", "readinessScore", "tryableDrafts", "totalTodos", "totalExecutionBlockers", "agentBytes"]) {
+    for (const key of ["flows", "changeIntents", "highConfidenceIntents", "importPropagatedFlows", "diffAnchoredFlows", "manifestFlowMatches", "behaviorNodes", "behaviorImpactedNodes", "manifestBehaviorNodes", "commitBehaviorNodes", "scenarioReceipts", "missingScenarioReceipts", "compiledScenarioReceipts", "partialScenarioReceipts", "notCompiledScenarioReceipts", "mappedScenarioSteps", "mappedScenarioAssertions", "requiredScenarioGaps", "blankActions", "genericTitles", "readinessScore", "tryableDrafts", "totalTodos", "totalExecutionBlockers", "agentBytes"]) {
       const diff = (current[key] ?? 0) - (before[key] ?? 0);
       if (diff !== 0) {
         deltas.push(`${key} ${diff > 0 ? "+" : ""}${diff}`);
@@ -528,6 +586,8 @@ function shortLabel(key) {
     behaviorGraph: "graph n/i",
     changeIntents: "intents",
     scenarioTrace: "trace",
+    scenarioReceiptCoverage: "receipt",
+    scenarioAutomation: "map c/p/n",
     blankActions: "blank",
     genericTitles: "generic",
     mustReachRecall: "reach",

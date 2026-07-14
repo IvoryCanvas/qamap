@@ -40,6 +40,8 @@ import type {
   ChangeIntentEvidence,
   IntentQaScenario,
 } from "./change-intent.js";
+import { routeQaScenario } from "./scenario-routing.js";
+import type { QaScenarioDecision } from "./scenario-routing.js";
 import { TOOL_NAME, VERSION } from "./version.js";
 
 export type E2eProjectType =
@@ -346,6 +348,25 @@ export interface E2eDraftFile {
   intentConfidence?: ChangeIntentConfidence;
   lifecycle?: BehaviorLifecycleStage[];
   qaScenarios?: IntentQaScenario[];
+  scenarioAutomation?: E2eScenarioAutomationReceipt[];
+}
+
+export type E2eScenarioAutomationStatus = "compiled" | "partial" | "not-compiled" | "review-only";
+
+export interface E2eScenarioAutomationReceipt {
+  scenarioId: string;
+  title: string;
+  kind: IntentQaScenario["kind"];
+  priority: IntentQaScenario["priority"];
+  decision: QaScenarioDecision;
+  status: E2eScenarioAutomationStatus;
+  requiredSourceCount: number;
+  referenceSourceCount: number;
+  mappedSteps: number;
+  totalSteps: number;
+  mappedAssertions: number;
+  totalAssertions: number;
+  blockers: string[];
 }
 
 export type E2eDraftActionKind = "assertion" | "fixture" | "manifest" | "runner" | "selector" | "setup" | "validation";
@@ -407,6 +428,13 @@ export interface E2eDraftReadinessSummary {
   totalTodos: number;
   filesWithExecutionBlockers: number;
   totalExecutionBlockers: number;
+  requiredScenarios: number;
+  recommendedScenarios: number;
+  reviewOnlyScenarios: number;
+  compiledScenarios: number;
+  partialScenarios: number;
+  notCompiledScenarios: number;
+  requiredScenarioGaps: number;
   topBlockers: string[];
 }
 
@@ -695,8 +723,17 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
     const content = shouldSkip ? ((await readTextIfExists(filePath)) ?? "") : draftContentForFlow(plan, flow, runner, addedDiffText);
     const todoCount = countTodos(content);
     const selfCheck = evaluateDraftSelfCheck(plan, flow, runner, content, todoCount);
-    const actionItems = buildDraftActionItems(plan, flow, runner, validationSummary, promotionGuidance, selfCheck);
-    const executionBlockers = draftExecutionBlockers(plan, flow, runner, selfCheck);
+    const scenarioAutomation = buildScenarioAutomationReceipts(flow, runner, content, selfCheck);
+    const actionItems = buildDraftActionItems(
+      plan,
+      flow,
+      runner,
+      validationSummary,
+      promotionGuidance,
+      selfCheck,
+      scenarioAutomation,
+    );
+    const executionBlockers = draftExecutionBlockers(plan, flow, runner, selfCheck, scenarioAutomation);
     const runnableStatus = draftRunnableStatus(plan, flow, runner, executionBlockers, selfCheck);
     const fileDetails = draftFileDetails(flow);
     if (dryRun) {
@@ -716,6 +753,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
         runnableStatus,
         executionBlockers,
         selfCheck,
+        scenarioAutomation,
         todoCount,
         entrypointCount: flow.entrypoints.length,
         primaryEntrypoint: primaryEntrypointLabel(flow),
@@ -747,6 +785,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
         runnableStatus,
         executionBlockers,
         selfCheck,
+        scenarioAutomation,
         todoCount,
         entrypointCount: flow.entrypoints.length,
         primaryEntrypoint: primaryEntrypointLabel(flow),
@@ -777,6 +816,7 @@ export async function generateE2eDraft(rootInput: string, options: E2eDraftOptio
       runnableStatus,
       executionBlockers,
       selfCheck,
+      scenarioAutomation,
       todoCount,
       entrypointCount: flow.entrypoints.length,
       primaryEntrypoint: primaryEntrypointLabel(flow),
@@ -1981,6 +2021,7 @@ function buildDraftActionItems(
   validationSummary: ReturnType<typeof summarizeDraftValidation>,
   promotionGuidance: E2eDraftPromotionGuidance,
   selfCheck?: E2eDraftSelfCheck,
+  scenarioAutomation: E2eScenarioAutomationReceipt[] = [],
 ): E2eDraftActionItem[] {
   const items: E2eDraftActionItem[] = [];
   const verificationOnly = isVerificationOnlyFlow(flow);
@@ -2064,6 +2105,22 @@ function buildDraftActionItems(
       "required",
       "Replace starter smoke assertions with domain assertions",
       `Preserve the success signal "${flow.languageBrief.successSignal}" while replacing weak fallback interactions and generic expects.`,
+    ));
+  }
+
+  const requiredScenarioGaps = scenarioAutomation.filter(
+    (receipt) => receipt.decision === "required" && receipt.status !== "compiled",
+  );
+  if (!verificationOnly && requiredScenarioGaps.length > 0) {
+    const details = requiredScenarioGaps.slice(0, 3).map((receipt) => {
+      const blocker = receipt.blockers[0] ?? "the selected scenario has no executable action and assertion mapping";
+      return `"${receipt.title}" is ${receipt.status}: ${blocker}`;
+    });
+    items.push(draftActionItem(
+      "assertion",
+      "required",
+      "Compile required QA scenarios into executable coverage",
+      details.join(" "),
     ));
   }
 
@@ -2290,6 +2347,16 @@ function summarizeDraftReadiness(
   const totalTodos = files.reduce((sum, file) => sum + (file.todoCount ?? 0), 0);
   const filesWithExecutionBlockers = files.filter((file) => (file.executionBlockers?.length ?? 0) > 0).length;
   const totalExecutionBlockers = files.reduce((sum, file) => sum + (file.executionBlockers?.length ?? 0), 0);
+  const scenarioAutomation = files.flatMap((file) => file.scenarioAutomation ?? []);
+  const requiredScenarios = scenarioAutomation.filter((receipt) => receipt.decision === "required").length;
+  const recommendedScenarios = scenarioAutomation.filter((receipt) => receipt.decision === "recommended").length;
+  const reviewOnlyScenarios = scenarioAutomation.filter((receipt) => receipt.decision === "review-only").length;
+  const compiledScenarios = scenarioAutomation.filter((receipt) => receipt.status === "compiled").length;
+  const partialScenarios = scenarioAutomation.filter((receipt) => receipt.status === "partial").length;
+  const notCompiledScenarios = scenarioAutomation.filter((receipt) => receipt.status === "not-compiled").length;
+  const requiredScenarioGaps = scenarioAutomation.filter(
+    (receipt) => receipt.decision === "required" && receipt.status !== "compiled",
+  ).length;
   const topBlockers = topDraftReadinessBlockers(files);
 
   const statusScore =
@@ -2298,8 +2365,9 @@ function summarizeDraftReadiness(
   const requiredActionPenalty = Math.min(25, actionSummary.required * 3);
   const todoPenalty = Math.min(15, totalTodos);
   const blockerPenalty = Math.min(20, filesWithExecutionBlockers * 5);
+  const scenarioPenalty = Math.min(20, requiredScenarioGaps * 4);
   const score = clampReadinessScore(
-    Math.round(statusScore - selfCheckPenalty - requiredActionPenalty - todoPenalty - blockerPenalty),
+    Math.round(statusScore - selfCheckPenalty - requiredActionPenalty - todoPenalty - blockerPenalty - scenarioPenalty),
   );
   const level = draftReadinessLevel(score, actionSummary.required, selfCheckFail, reviewOnly);
 
@@ -2317,6 +2385,13 @@ function summarizeDraftReadiness(
     totalTodos,
     filesWithExecutionBlockers,
     totalExecutionBlockers,
+    requiredScenarios,
+    recommendedScenarios,
+    reviewOnlyScenarios,
+    compiledScenarios,
+    partialScenarios,
+    notCompiledScenarios,
+    requiredScenarioGaps,
     topBlockers,
   };
 }
@@ -3061,9 +3136,15 @@ function appendChangeIntentMarkdown(lines: string[], analysis: ChangeIntentAnaly
       lines.push(`${index + 1}. **${stage.kind}**: ${escapeMarkdownInline(stage.label)} [${stage.confidence}]`);
     });
     lines.push("");
-    lines.push("Required QA scenarios:");
+    lines.push("Routed QA scenarios:");
     for (const scenario of intent.scenarios.slice(0, 4)) {
+      const routing = routeQaScenario(scenario);
       lines.push(`- **${scenario.priority} / ${scenario.kind}**: ${escapeMarkdownInline(scenario.title)}`);
+      lines.push(`  - Routing: ${routing.decision} - ${escapeMarkdownInline(routing.reason)}`);
+      lines.push(
+        `  - Evidence: ${routing.requiredEvidence.length} required diff source${routing.requiredEvidence.length === 1 ? "" : "s"}, ` +
+          `${routing.referenceEvidence.length} reference source${routing.referenceEvidence.length === 1 ? "" : "s"}`,
+      );
       for (const step of scenario.steps.slice(0, 3)) {
         lines.push(`  - Step: ${escapeMarkdownInline(step)}`);
       }
@@ -3154,6 +3235,15 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
   );
   lines.push(`- TODO markers: ${result.readinessSummary.totalTodos} across ${result.readinessSummary.filesWithTodos} file${result.readinessSummary.filesWithTodos === 1 ? "" : "s"}`);
   lines.push(`- Execution blockers: ${result.readinessSummary.totalExecutionBlockers} across ${result.readinessSummary.filesWithExecutionBlockers} file${result.readinessSummary.filesWithExecutionBlockers === 1 ? "" : "s"}`);
+  lines.push(
+    `- Scenario routing: ${result.readinessSummary.requiredScenarios} required, ` +
+      `${result.readinessSummary.recommendedScenarios} recommended, ${result.readinessSummary.reviewOnlyScenarios} review-only`,
+  );
+  lines.push(
+    `- Scenario automation: ${result.readinessSummary.compiledScenarios} compiled, ` +
+      `${result.readinessSummary.partialScenarios} partial, ${result.readinessSummary.notCompiledScenarios} not compiled; ` +
+      `${result.readinessSummary.requiredScenarioGaps} required gap${result.readinessSummary.requiredScenarioGaps === 1 ? "" : "s"}`,
+  );
   if (result.readinessSummary.topBlockers.length > 0) {
     lines.push("- Top blockers:");
     for (const blocker of result.readinessSummary.topBlockers.slice(0, 3)) {
@@ -3196,6 +3286,25 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
       }
       for (const check of selfCheck.checks.filter((item) => item.status !== "pass").slice(0, 4)) {
         lines.push(`  - [${check.status}] ${escapeMarkdownInline(check.name)}: ${escapeMarkdownInline(check.detail)}`);
+      }
+    }
+    lines.push("");
+  }
+
+  const filesWithScenarioAutomation = result.files.filter((file) => (file.scenarioAutomation?.length ?? 0) > 0);
+  if (filesWithScenarioAutomation.length > 0) {
+    lines.push("## Scenario Automation Receipts");
+    lines.push("");
+    for (const file of filesWithScenarioAutomation) {
+      lines.push(`- \`${escapeMarkdownInline(file.flowTitle)}\` (${escapeMarkdownInline(file.path)})`);
+      for (const receipt of file.scenarioAutomation ?? []) {
+        lines.push(
+          `  - [${receipt.decision}] ${escapeMarkdownInline(receipt.title)}: ${receipt.status} ` +
+            `(steps ${receipt.mappedSteps}/${receipt.totalSteps}, assertions ${receipt.mappedAssertions}/${receipt.totalAssertions})`,
+        );
+        for (const blocker of receipt.blockers.slice(0, 2)) {
+          lines.push(`    - Blocker: ${escapeMarkdownInline(blocker)}`);
+        }
       }
     }
     lines.push("");
@@ -7283,6 +7392,123 @@ function domainScenarioForFlow(flow: E2eFlow): DomainScenarioSuggestion | undefi
   return (flow as DraftE2eFlow).domainScenario;
 }
 
+function buildScenarioAutomationReceipts(
+  flow: E2eFlow,
+  runner: E2eRunnerName,
+  content: string,
+  selfCheck?: E2eDraftSelfCheck,
+): E2eScenarioAutomationReceipt[] {
+  const scenarios = flow.qaScenarios ?? [];
+  if (scenarios.length === 0) {
+    return [];
+  }
+  const routedPlaywrightScenarios = runner === "playwright" ? playwrightRoutedScenarioDrafts(flow) : [];
+  const primaryContent = content.split("// Routed QA scenario:", 1)[0] ?? content;
+
+  return scenarios.map((scenario) => {
+    const selection = routeQaScenario(scenario);
+    const base = {
+      scenarioId: scenario.id,
+      title: scenario.title,
+      kind: scenario.kind,
+      priority: scenario.priority,
+      decision: selection.decision,
+      requiredSourceCount: selection.requiredEvidence.length,
+      referenceSourceCount: selection.referenceEvidence.length,
+      totalSteps: scenario.steps.length,
+      totalAssertions: scenario.assertions.length,
+    };
+
+    if (selection.decision === "review-only" || runner === "manual") {
+      return {
+        ...base,
+        status: "review-only" as const,
+        mappedSteps: 0,
+        mappedAssertions: 0,
+        blockers: [
+          selection.decision === "review-only"
+            ? selection.reason
+            : "The repository has no executable browser or device adapter for this scenario, so it remains review evidence.",
+        ],
+      };
+    }
+
+    if (scenario.kind !== "primary") {
+      const routed = routedPlaywrightScenarios.find((candidate) => candidate.scenarioId === scenario.id);
+      if (routed) {
+        const fullyMapped = routed.mappedSteps >= scenario.steps.length &&
+          routed.mappedAssertions >= scenario.assertions.length;
+        const blockers = [
+          routed.mappedSteps < scenario.steps.length
+            ? `${scenario.steps.length - routed.mappedSteps} selected action step${scenario.steps.length - routed.mappedSteps === 1 ? "" : "s"} remain outside executable coverage.`
+            : undefined,
+          routed.mappedAssertions < scenario.assertions.length
+            ? `${scenario.assertions.length - routed.mappedAssertions} selected assertion${scenario.assertions.length - routed.mappedAssertions === 1 ? "" : "s"} remain outside executable coverage.`
+            : undefined,
+        ].filter((value): value is string => Boolean(value));
+        return {
+          ...base,
+          status: fullyMapped ? "compiled" as const : "partial" as const,
+          mappedSteps: routed.mappedSteps,
+          mappedAssertions: routed.mappedAssertions,
+          blockers,
+        };
+      }
+      return {
+        ...base,
+        status: "not-compiled" as const,
+        mappedSteps: 0,
+        mappedAssertions: 0,
+        blockers: [
+          `No deterministic ${scenario.kind} compiler matched a repository entrypoint, action locator, fixture boundary, and observable outcome.`,
+        ],
+      };
+    }
+
+    return primaryScenarioAutomationReceipt(base, runner, primaryContent, scenario, selfCheck);
+  });
+}
+
+function primaryScenarioAutomationReceipt(
+  base: Omit<E2eScenarioAutomationReceipt, "status" | "mappedSteps" | "mappedAssertions" | "blockers">,
+  runner: E2eRunnerName,
+  content: string,
+  scenario: IntentQaScenario,
+  selfCheck?: E2eDraftSelfCheck,
+): E2eScenarioAutomationReceipt {
+  const mappedSteps = scenario.steps.filter((step) => content.includes(`Step intent: ${step}`)).length;
+  const assertionStepMarkers = scenario.assertions.filter((assertion) => content.includes(`Step intent: ${assertion}`)).length;
+  const executableAssertions = runner === "maestro"
+    ? content.match(/^- assertVisible:\s+(?!["']\.\*["']$).+$/gm)?.length ?? 0
+    : content.match(/await expect\((?!page\.locator\(["']body["']\))/g)?.length ?? 0;
+  const mappedAssertions = Math.min(assertionStepMarkers, executableAssertions);
+  const fallbackCount = content.match(/QAMap could not infer a stable (?:locator|Maestro selector)/g)?.length ?? 0;
+  const blockers: string[] = [];
+
+  if (selfCheck?.status === "fail") {
+    blockers.push(selfCheck.blockers[0] ?? selfCheck.summary);
+  }
+  if (mappedSteps < scenario.steps.length) {
+    blockers.push(`${scenario.steps.length - mappedSteps} selected action step${scenario.steps.length - mappedSteps === 1 ? "" : "s"} did not map to generated commands.`);
+  }
+  if (mappedAssertions < scenario.assertions.length) {
+    blockers.push(`${scenario.assertions.length - mappedAssertions} selected assertion${scenario.assertions.length - mappedAssertions === 1 ? "" : "s"} did not map to an observable generated assertion.`);
+  }
+  if (fallbackCount > 0) {
+    blockers.push(`${fallbackCount} generated step${fallbackCount === 1 ? "" : "s"} still use fallback smoke behavior.`);
+  }
+
+  const fullyMapped = selfCheck?.status !== "fail" && blockers.length === 0;
+  const partiallyMapped = mappedSteps > 0 || mappedAssertions > 0;
+  return {
+    ...base,
+    status: fullyMapped ? "compiled" : partiallyMapped ? "partial" : "not-compiled",
+    mappedSteps,
+    mappedAssertions,
+    blockers: uniqueStrings(blockers),
+  };
+}
+
 function draftStability(
   plan: E2ePlanResult,
   flow: E2eFlow,
@@ -7306,6 +7532,7 @@ function draftExecutionBlockers(
   flow: E2eFlow,
   runner: E2eRunnerName,
   selfCheck?: E2eDraftSelfCheck,
+  scenarioAutomation: E2eScenarioAutomationReceipt[] = [],
 ): string[] {
   const verificationOnly = isVerificationOnlyFlow(flow);
   const blockers = verificationOnly ? [] : [...plan.executionProfile.blockers];
@@ -7322,6 +7549,16 @@ function draftExecutionBlockers(
   // Keep it as PR guidance, but do not treat it as proof that the generated file cannot execute.
   if (selfCheck?.status === "fail") {
     blockers.push(...selfCheck.blockers);
+  }
+  if (!verificationOnly && runner !== "manual") {
+    for (const receipt of scenarioAutomation.filter(
+      (item) => item.decision === "required" && item.status !== "compiled",
+    )) {
+      blockers.push(
+        `Required QA scenario "${receipt.title}" is ${receipt.status}: ` +
+          (receipt.blockers[0] ?? "no executable action and assertion mapping was produced."),
+      );
+    }
   }
   return uniqueStrings(blockers).slice(0, 8);
 }
@@ -7737,6 +7974,9 @@ function buildMaestroDraft(plan: E2ePlanResult, flow: E2eFlow): string {
   appendManifestMatchComments(lines, flow, "#");
   for (const step of draftExecutableSteps(flow, "maestro")) {
     const command = maestroCommandForStep(step, selectorQueue);
+    if (maestroCommandProvidesCoverage(command)) {
+      lines.push(`# Step intent: ${step}`);
+    }
     lines.push(...formatMaestroCommand(command));
   }
   appendDomainScenarioComments(lines, flow, "#");
@@ -7770,6 +8010,13 @@ type MaestroDraftCommand =
   | { kind: "tapOn" | "assertVisible" | "swipe"; value: string }
   | { kind: "inputText"; target: string; text: string }
   | { kind: "comment"; value: string };
+
+function maestroCommandProvidesCoverage(command: MaestroDraftCommand): boolean {
+  if (command.kind === "comment") {
+    return false;
+  }
+  return command.kind !== "assertVisible" || command.value !== quoteYaml(".*");
+}
 
 function maestroCommandForStep(
   step: string,
@@ -7870,6 +8117,11 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText:
   appendDomainScenarioComments(lines, flow, "  //");
   appendPlaywrightCoverageComments(lines, flow);
   lines.push("});");
+  for (const routedScenario of playwrightRoutedScenarioDrafts(flow)) {
+    lines.push("");
+    lines.push(`// Routed QA scenario: ${routedScenario.scenarioId}`);
+    lines.push(...routedScenario.lines);
+  }
   if (flow.missingTestability.length > 0) {
     lines.push("");
     lines.push("// Testability gaps to address before this spec is stable:");
@@ -7893,6 +8145,97 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText:
   }
   lines.push("");
   return lines.join("\n");
+}
+
+interface PlaywrightRoutedScenarioDraft {
+  scenarioId: string;
+  mappedSteps: number;
+  mappedAssertions: number;
+  lines: string[];
+}
+
+function playwrightRoutedScenarioDrafts(flow: E2eFlow): PlaywrightRoutedScenarioDraft[] {
+  const routeEntrypoint = primaryRouteEntrypoint(flow);
+  if (!routeEntrypoint) {
+    return [];
+  }
+  const routeDraft = buildPlaywrightRouteDraft(routeEntrypoint.value, flow.entrypoints);
+  if (routeDraft.params.length > 0) {
+    return [];
+  }
+  const endpoint = playwrightFailureMockEndpoint(flow);
+  if (!endpoint) {
+    return [];
+  }
+
+  const drafts: PlaywrightRoutedScenarioDraft[] = [];
+  for (const scenario of flow.qaScenarios ?? []) {
+    const selection = routeQaScenario(scenario);
+    if (scenario.kind !== "failure" || selection.decision === "review-only") {
+      continue;
+    }
+    const scenarioText = [scenario.title, ...scenario.steps, ...scenario.edgeCases].join(" ");
+    if (!isFailurePathStep(scenarioText)) {
+      continue;
+    }
+    const selectorContext = `${flow.title} ${scenarioText}`;
+    const actionSelector = routedScenarioSelector(
+      flow.selectors,
+      selectorContext,
+      (selector) => !isInputSelector(selector) && selectorCanDriveInteraction(selector),
+    );
+    const outcomeSelector = routedScenarioSelector(
+      flow.selectors,
+      selectorContext,
+      (selector) => selectorCanSupportAssertion(selector) && isFailureOutcomeText(selector.value),
+    );
+    if (!actionSelector || !outcomeSelector) {
+      continue;
+    }
+    const testName = `${flow.title}: ${scenario.title}`.replaceAll('"', "'");
+    const routePattern = playwrightMockRoutePattern(endpoint);
+    const status = failureResponseStatus(scenarioText);
+    drafts.push({
+      scenarioId: scenario.id,
+      mappedSteps: Math.min(1, scenario.steps.length),
+      mappedAssertions: Math.min(1, scenario.assertions.length),
+      lines: [
+        `test("${testName}", async ({ page }) => {`,
+        `  await page.route("${quoteJs(routePattern)}", async (route) => {`,
+        "    await route.fulfill({",
+        `      status: ${status},`,
+        '      contentType: "application/json",',
+        '      body: JSON.stringify({ error: "QAMap simulated failure" }),',
+        "    });",
+        "  });",
+        `  await page.goto(${routeDraft.expression});`,
+        `  await ${playwrightLocator(actionSelector)}.click();`,
+        `  await expect(${playwrightLocator(outcomeSelector)}).toBeVisible();`,
+        "});",
+      ],
+    });
+  }
+  return drafts;
+}
+
+function routedScenarioSelector(
+  selectors: E2eSelector[],
+  context: string,
+  predicate: (selector: E2eSelector) => boolean,
+): E2eSelector | undefined {
+  const keywords = keywordsForStep(context);
+  return selectors
+    .filter(predicate)
+    .map((selector) => ({
+      selector,
+      score: keywords.filter((keyword) => selector.value.toLowerCase().includes(keyword)).length,
+    }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) =>
+      right.score - left.score ||
+      Number(Boolean(right.selector.addedInDiff)) - Number(Boolean(left.selector.addedInDiff)) ||
+      left.selector.value.localeCompare(right.selector.value)
+    )[0]?.selector;
 }
 
 function draftExecutableSteps(flow: E2eFlow, runner: E2eRunnerName): string[] {

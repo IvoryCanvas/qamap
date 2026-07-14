@@ -28,7 +28,7 @@ Run one read-only command on a branch. A manifest and test runner are not requir
 pnpm dlx @ivorycanvas/qamap qa . --base origin/main --head HEAD
 ```
 
-The report starts with the inferred behavior and keeps each proposed scenario connected to the commit or exact base/head diff line that caused it. Removed guards and validation remain visible as base-side evidence; each source is labeled `direct`, `supporting`, or `contextual` (trimmed from the committed lifecycle benchmark):
+The report starts with the inferred behavior and keeps each proposed scenario connected to the commit or exact base/head diff line that caused it. Removed guards and validation remain visible as base-side evidence; each source is labeled `direct`, `supporting`, or `contextual`. QAMap then shows two separate receipts: why the scenario was routed as `required`, `recommended`, or `review-only`, and whether the E2E adapter compiled it fully, partially, or not at all (trimmed from the committed lifecycle benchmark):
 
 ```txt
 Change intent: Submit notification preferences and show the saved state [high]
@@ -36,15 +36,21 @@ Behavior lifecycle: trigger -> state-change -> side-effect -> observable-outcome
 
 QA scenarios:
 - [critical] changed preference lifecycle (confidence: high)
+  - Routing: required — 3 supporting diff hunks
+  - E2E mapping: partial — steps 0/3, assertions 1/1
   - Source: src/pages/preferences.tsx:17, symbol onClick [supporting, head]
   - Source: src/pages/preferences.tsx:8, symbol setSaved [supporting, head]
   - Assert: the saved state becomes observable
 - [recommended] failure, timeout, and retry handling (confidence: medium; review required)
+  - Routing: recommended — 1 supporting diff hunk
+  - E2E mapping: not compiled — no deterministic failure compiler matched all required evidence
   - Source: src/pages/preferences.tsx:7, symbol fetch [supporting, head]
   - Assert: retries do not duplicate requests or side effects
 
 Optional automation:
 - Adapter candidate: Playwright
+- Scenario routing: 2 required, 2 recommended, 0 review-only
+- E2E mapping: 0 compiled, 1 partial, 3 not compiled
 - qamap e2e draft . --base origin/main --head HEAD
 ```
 
@@ -78,6 +84,7 @@ One minified JSON object (`schema: qamap.qa`) with change intents, lifecycle sta
 - **Judgment first, generation second.** Deciding *what deserves testing* for a given change is the missing layer. QAMap makes that judgment statically, deterministically, and locally for free.
 - **The repo remembers.** Team QA knowledge lives in `.qamap/manifest.yaml`, reviewed once and reused on every PR — instead of re-prompting an agent each session.
 - **Honest output.** Drafts state what blocks them from being trusted; changed endpoints are observed, never mocked away; generated specs never assert what cannot pass. Configuration, docs, generated artifacts, and changed tests stay in verification mode instead of fabricating a product-journey E2E.
+- **Selected is not compiled.** Every evidence-routed scenario keeps a static automation receipt. Required behavior that remains partial or not compiled lowers readiness instead of being hidden behind a smoke test. `compiled` still does not claim the application was executed.
 
 Positioning against recorders, LLM test generation, and impact-analysis tools: [where QAMap fits](docs/adoption.md#where-qamap-fits).
 

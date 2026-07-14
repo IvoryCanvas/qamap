@@ -7,6 +7,7 @@ import test from "node:test";
 import { analyzeChangeIntents } from "../dist/change-intent.js";
 import { generateE2eDraft, generateE2ePlan } from "../dist/e2e.js";
 import { formatAgentQaDraft, formatMarkdownQaDraft, generateQaDraft } from "../dist/qa.js";
+import { routeQaScenario } from "../dist/scenario-routing.js";
 import {
   addedDiffTextFromEvidence,
   collectAddedDiffEvidence,
@@ -148,6 +149,11 @@ test("context-only scenario evidence stays review-only and non-critical", async 
   assert.equal(scenario.confidence, "low");
   assert.equal(scenario.reviewRequired, true);
   assert.ok(scenario.evidence.every((item) => item.relation === "contextual"));
+  const routing = routeQaScenario(scenario);
+  assert.equal(routing.decision, "review-only");
+  assert.equal(routing.requiredEvidence.length, 0);
+  assert.ok(routing.referenceEvidence.length > 0);
+  assert.match(routing.reason, /no direct or supporting diff hunk/i);
 });
 
 test("change intent clusters related commits into one evidence-backed lifecycle", async (t) => {
@@ -367,6 +373,8 @@ test("E2E planning promotes commit intent before runner-specific draft generatio
   assert.equal(draft.files[0].source, "change-intent");
   assert.equal(draft.files[0].intentConfidence, "high");
   assert.ok(draft.files[0].qaScenarios.some((scenario) => /failure, timeout, and retry/i.test(scenario.title)));
+  assert.ok(draft.files[0].scenarioAutomation.length > 0);
+  assert.ok(draft.files[0].scenarioAutomation.every((receipt) => receipt.decision));
   const calendarScenario = plan.changeAnalysis.intents[0].scenarios.find((scenario) => /calendar/i.test(scenario.title));
   assert.ok(calendarScenario?.evidence.some((item) => item.symbol?.toLowerCase() === "timezone" && item.startLine));
   assert.match(agentSummary.intents[0].title, /Submit account preferences/i);
@@ -380,8 +388,13 @@ test("E2E planning promotes commit intent before runner-specific draft generatio
   assert.equal(agentCalendarScenario.sources[0].side, "head");
   assert.ok(agentSummary.intents[0].scenarios.every((scenario) => scenario.confidence));
   assert.ok(agentSummary.intents[0].scenarios.every((scenario) => scenario.sources.length > 0));
+  assert.ok(agentSummary.intents[0].scenarios.every((scenario) => scenario.routing?.decision));
+  assert.ok(agentSummary.intents[0].scenarios.every((scenario) => scenario.automation?.status));
+  assert.ok(agentSummary.scenarioCoverage.required >= 1);
   assert.match(qaMarkdown, /Source: `src\/pages\/preferences\.tsx:\d+` symbol/);
   assert.match(qaMarkdown, /confidence: (?:medium|high)/);
+  assert.match(qaMarkdown, /Scenario routing:/);
+  assert.match(qaMarkdown, /E2E mapping:/);
   assert.match(qaMarkdown, /## Optional Automation/);
   assert.doesNotMatch(qaMarkdown, /Install command|First E2E Draft Bootstrap/);
   assert.match(spec, /Change intent evidence:/);
@@ -417,6 +430,135 @@ test("E2E planning promotes commit intent before runner-specific draft generatio
   const boundedAgentSummary = JSON.parse(boundedAgentOutput);
   assert.ok(Buffer.byteLength(boundedAgentOutput) <= 8 * 1024);
   assert.equal(boundedAgentSummary.schema.name, "qamap.qa");
+});
+
+test("evidence-routed failure QA becomes a separate partial Playwright scenario without domain rules", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { react: "19.0.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(root, "playwright.config.ts", "export default { use: { baseURL: 'http://127.0.0.1:4173' } };\n");
+  await write(
+    root,
+    "src/pages/jobs/index.tsx",
+    [
+      "export function JobsPage() {",
+      "  async function submitJob() { return fetch('/api/jobs', { method: 'POST' }); }",
+      "  return <button data-testid=\"job-submit\" onClick={submitJob}>Submit job</button>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/job-submission-feedback");
+
+  await write(
+    root,
+    "src/pages/jobs/index.tsx",
+    [
+      "export function JobsPage() {",
+      "  const [status, setStatus] = useState('');",
+      "  async function submitJob() {",
+      "    const response = await fetch('/api/jobs', { method: 'POST' });",
+      "    setStatus(response.ok ? 'Job queued' : 'Could not queue job');",
+      "  }",
+      "  return <main>",
+      "    <button data-testid=\"job-submit\" onClick={submitJob}>Submit job</button>",
+      "    <p>{status}</p>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: show job submission response and retry feedback");
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: ".generated-e2e",
+  });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const failureScenario = file.scenarioAutomation.find((receipt) => receipt.kind === "failure");
+  assert.ok(failureScenario);
+  assert.equal(failureScenario.decision, "recommended");
+  assert.equal(failureScenario.status, "partial");
+  assert.equal(failureScenario.mappedSteps, 1);
+  assert.equal(failureScenario.mappedAssertions, 1);
+  assert.ok(failureScenario.requiredSourceCount > 0);
+
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  assert.match(spec, /Routed QA scenario:/);
+  assert.match(spec, /Failure, timeout, and retry handling/);
+  assert.match(spec, /page\.route\("\*\*\/api\/jobs"/);
+  assert.match(spec, /page\.getByTestId\("job-submit"\)\.click\(\)/);
+  assert.match(spec, /page\.getByText\("Could not queue job"\)/);
+});
+
+test("evidence-routed failure QA does not reuse an unrelated action selector", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { react: "19.0.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(root, "playwright.config.ts", "export default { use: { baseURL: 'http://127.0.0.1:4173' } };\n");
+  await write(
+    root,
+    "src/pages/jobs/index.tsx",
+    [
+      "export function JobsPage() {",
+      "  async function queueJob() { return fetch('/api/jobs', { method: 'POST' }); }",
+      "  return <main>",
+      "    <button data-testid=\"settings-open\">Open settings</button>",
+      "    <p>Could not load settings</p>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/job-submission-feedback");
+
+  await write(
+    root,
+    "src/pages/jobs/index.tsx",
+    [
+      "export function JobsPage() {",
+      "  const [status, setStatus] = useState('');",
+      "  async function queueJob() {",
+      "    const response = await fetch('/api/jobs', { method: 'POST' });",
+      "    setStatus(response.ok ? 'Job queued' : 'Could not queue job');",
+      "  }",
+      "  return <main>",
+      "    <button data-testid=\"settings-open\">Open settings</button>",
+      "    <p>Could not load settings</p>",
+      "    <p>{status}</p>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: show job submission failure and retry feedback");
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: ".generated-e2e",
+  });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const failureScenario = file.scenarioAutomation.find((receipt) => receipt.kind === "failure");
+  assert.ok(failureScenario);
+  assert.equal(failureScenario.decision, "recommended");
+  assert.equal(failureScenario.status, "not-compiled");
+
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  assert.doesNotMatch(spec, /Routed QA scenario:/);
 });
 
 async function analyze(root, files) {

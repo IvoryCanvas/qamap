@@ -79,6 +79,7 @@ export {
 export { formatMarkdownReport, formatSarifReport, formatTextReport, hasFindingsAtOrAbove } from "./report.js";
 export { formatAgentQaDraft, formatMarkdownQaDraft, generateQaDraft } from "./qa.js";
 export { formatMarkdownReviewReport, formatReviewReport, reviewProject } from "./review.js";
+export { isRequiredScenarioEvidence, routeQaScenario } from "./scenario-routing.js";
 export { scanProject } from "./scanner.js";
 export { collectTestSuiteInventory, evaluateFlowCoverageEvidence, summarizeTestSuiteInventory } from "./test-evidence.js";
 export {
@@ -192,6 +193,8 @@ export type {
   E2eRunnerRecommendation,
   E2eRunnerSetupProposal,
   E2eRunnerSetupStatus,
+  E2eScenarioAutomationReceipt,
+  E2eScenarioAutomationStatus,
   E2eSetupOptions,
   E2eSetupResult,
 } from "./e2e.js";
@@ -203,6 +206,7 @@ export type {
   MatchedCoreFlow,
 } from "./flows.js";
 export type { GitHubActionMode, GitHubActionOptions, GitHubActionResult } from "./github.js";
+export type { QaScenarioDecision, QaScenarioSelectionReceipt } from "./scenario-routing.js";
 export type { E2ePlanHistorySnapshot, LocalHistoryInitResult, LocalHistoryReference } from "./history.js";
 export type {
   DomainManifestSuggestionResult,
