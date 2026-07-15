@@ -23,6 +23,7 @@ import {
   formatMarkdownE2eSetup,
   formatAgentQaDraft,
   formatMarkdownQaDraft,
+  formatQaScriptInitReport,
   formatMarkdownReviewReport,
   formatMarkdownTestPlan,
   formatMarkdownVerifyReport,
@@ -38,6 +39,7 @@ import {
   generateTestPlan,
   loadVerificationManifest,
   initializeLocalHistory,
+  initializeQaScripts,
   loadConfig,
   localHistoryGitignorePatterns,
   reviewProject,
@@ -4348,6 +4350,184 @@ test("writeDefaultConfig creates a starter config", async () => {
   assert.equal(loaded.config.failOn, "high");
   assert.deepEqual(loaded.config.ignoreRules, []);
   assert.deepEqual(loaded.config.validationCommands, []);
+});
+
+test("initializeQaScripts adds short repeat-use commands and stays idempotent", async () => {
+  const root = await makeTempRepo();
+  await writeFile(
+    path.join(root, "package.json"),
+    `${JSON.stringify(
+      {
+        name: "script-smoke",
+        packageManager: "pnpm@10.0.0",
+        scripts: { test: "node --test" },
+        devDependencies: { "@ivorycanvas/qamap": "^0.4.4" },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
+  const first = await initializeQaScripts(root);
+  assert.deepEqual(first.scripts.map((script) => script.status), ["created", "created", "created"]);
+  assert.equal(first.packageManager, "pnpm");
+  assert.equal(first.dependencyPresent, true);
+  assert.equal(first.installCommand, undefined);
+  assert.deepEqual(first.runCommands, {
+    qa: "pnpm qa",
+    "qa:local": "pnpm qa:local",
+    "qa:e2e": "pnpm qa:e2e",
+  });
+
+  const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  assert.equal(packageJson.scripts.test, "node --test");
+  assert.equal(packageJson.scripts.qa, "qamap qa .");
+  assert.equal(packageJson.scripts["qa:local"], "qamap qa . --include-working-tree");
+  assert.equal(packageJson.scripts["qa:e2e"], "qamap e2e draft . --dry-run");
+
+  const second = await initializeQaScripts(root);
+  assert.deepEqual(second.scripts.map((script) => script.status), ["unchanged", "unchanged", "unchanged"]);
+  const report = formatQaScriptInitReport(second);
+  assert.match(report, /pnpm qa\s+committed changes/);
+  assert.match(report, /pnpm qa:local\s+include uncommitted/);
+});
+
+test("initializeQaScripts preserves collisions unless force is explicit", async () => {
+  const root = await makeTempRepo();
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      name: "script-collision",
+      scripts: { qa: "company-qa" },
+    }),
+  );
+
+  const first = await initializeQaScripts(root);
+  assert.equal(first.scripts[0].status, "skipped");
+  assert.equal(first.packageManager, "npm");
+  assert.equal(first.dependencyPresent, false);
+  assert.equal(first.installCommand, "npm install --save-dev @ivorycanvas/qamap");
+  assert.match(formatQaScriptInitReport(first), /npm install --save-dev @ivorycanvas\/qamap/);
+  let packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  assert.equal(packageJson.scripts.qa, "company-qa");
+
+  const forced = await initializeQaScripts(root, { force: true });
+  assert.equal(forced.scripts[0].status, "updated");
+  packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  assert.equal(packageJson.scripts.qa, "qamap qa .");
+});
+
+test("initializeQaScripts explains that non-JavaScript repositories keep the direct CLI", async () => {
+  const root = await makeTempRepo();
+  await assert.rejects(
+    initializeQaScripts(root),
+    /Short package scripts are available only for JavaScript repositories; use `qamap qa \.` directly elsewhere/,
+  );
+});
+
+test("init --scripts exposes the short-command setup through the CLI", async () => {
+  const root = await makeTempRepo();
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      name: "script-cli",
+      packageManager: "pnpm@10.0.0",
+      devDependencies: { "@ivorycanvas/qamap": "^0.4.4" },
+    }),
+  );
+
+  const { stdout } = await execFileAsync(process.execPath, [cliPath, "init", "--scripts", root]);
+  const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+
+  assert.match(stdout, /# QAMap Short Commands/);
+  assert.match(stdout, /pnpm qa:local/);
+  assert.equal(packageJson.scripts.qa, "qamap qa .");
+  assert.equal(packageJson.scripts["qa:local"], "qamap qa . --include-working-tree");
+});
+
+test("initializeQaScripts detects lockfile package managers and preserves indentation", async (t) => {
+  const cases = [
+    {
+      name: "pnpm",
+      lockfile: "pnpm-lock.yaml",
+      install: "pnpm add -D @ivorycanvas/qamap",
+      run: "pnpm qa",
+    },
+    {
+      name: "yarn",
+      lockfile: "yarn.lock",
+      install: "yarn add -D @ivorycanvas/qamap",
+      run: "yarn qa",
+    },
+    {
+      name: "bun",
+      lockfile: "bun.lockb",
+      install: "bun add -d @ivorycanvas/qamap",
+      run: "bun run qa",
+    },
+  ];
+
+  for (const fixture of cases) {
+    await t.test(fixture.name, async () => {
+      const root = await makeTempRepo();
+      await writeFile(path.join(root, "package.json"), '{\n\t"name": "manager-smoke"\n}\n');
+      await writeFile(path.join(root, fixture.lockfile), "");
+
+      const result = await initializeQaScripts(root);
+      const updated = await readFile(path.join(root, "package.json"), "utf8");
+
+      assert.equal(result.packageManager, fixture.name);
+      assert.equal(result.installCommand, fixture.install);
+      assert.equal(result.runCommands.qa, fixture.run);
+      assert.match(updated, /\n\t"name"/);
+      assert.match(updated, /\n\t"scripts"/);
+    });
+  }
+});
+
+test("initializeQaScripts rejects malformed package metadata before writing", async (t) => {
+  const cases = [
+    { name: "invalid JSON", value: "{", error: /Could not parse package\.json/ },
+    { name: "array root", value: "[]", error: /package\.json must contain a JSON object/ },
+    { name: "invalid scripts object", value: '{"scripts":"qa"}', error: /package\.json scripts must be an object/ },
+    { name: "invalid script command", value: '{"scripts":{"qa":1}}', error: /package\.json script qa must be a string/ },
+  ];
+
+  for (const fixture of cases) {
+    await t.test(fixture.name, async () => {
+      const root = await makeTempRepo();
+      await writeFile(path.join(root, "package.json"), fixture.value);
+      await assert.rejects(initializeQaScripts(root), fixture.error);
+      assert.equal(await readFile(path.join(root, "package.json"), "utf8"), fixture.value);
+    });
+  }
+});
+
+test("qa output makes the short-command change scope visible", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src"), { recursive: true });
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "scope-smoke" }));
+  await writeFile(path.join(root, "src/save.tsx"), "export function Save() { return <button>Save</button>; }\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "baseline"]);
+  await git(root, ["branch", "-M", "main"]);
+  await git(root, ["switch", "-c", "feature/save-state"]);
+  await writeFile(
+    path.join(root, "src/save.tsx"),
+    "export function Save() { return <button onClick={() => save()}>Save changes</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: save profile changes"]);
+  await writeFile(path.join(root, "src/retry.ts"), "export const retrySave = () => save();\n");
+
+  const committed = await generateQaDraft(root, { base: "main", head: "HEAD" });
+  const local = await generateQaDraft(root, { base: "main", head: "HEAD", includeWorkingTree: true });
+
+  assert.equal(committed.includeWorkingTree, false);
+  assert.equal(local.includeWorkingTree, true);
+  assert.match(formatMarkdownQaDraft(committed), /Change scope: committed branch changes only/);
+  assert.match(formatMarkdownQaDraft(local), /Change scope: committed and uncommitted working-tree changes/);
 });
 
 test("initializeLocalHistory protects local runs with gitignore entries", async () => {

@@ -42,6 +42,7 @@ import { formatMarkdownReport, formatSarifReport, formatTextReport, hasFindingsA
 import { formatAgentQaDraft, formatMarkdownQaDraft, generateQaDraft } from "./qa.js";
 import { formatMarkdownReviewReport, formatReviewReport, reviewProject } from "./review.js";
 import { scanProject } from "./scanner.js";
+import { formatQaScriptInitReport, initializeQaScripts } from "./script-init.js";
 import { isAtLeastSeverity, isSeverity } from "./severity.js";
 import { formatMarkdownTestPlan, generateTestPlan } from "./test-plan.js";
 import { colorizeReport, shouldColorize } from "./terminal.js";
@@ -83,6 +84,7 @@ interface ParsedOptions {
   recordHistory?: boolean;
   dryRun?: boolean;
   agent?: boolean;
+  scripts?: boolean;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -487,9 +489,17 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === "init") {
     const options = parseOptions(rest);
+    if (options.agent && options.scripts) {
+      throw new Error("Choose either --agent or --scripts for one init run.");
+    }
     if (options.agent) {
       const result = await initAgentSetup(options.path, { force: options.force });
       await printOrWrite(formatAgentInitReport(result));
+      return 0;
+    }
+    if (options.scripts) {
+      const result = await initializeQaScripts(options.path, { force: options.force });
+      await printOrWrite(formatQaScriptInitReport(result));
       return 0;
     }
     const outputPath = await writeDefaultConfig(options.path, options.write ?? "qamap.config.json", options.force);
@@ -524,6 +534,11 @@ function parseOptions(args: string[]): ParsedOptions {
 
     if (arg === "--agent") {
       options.agent = true;
+      continue;
+    }
+
+    if (arg === "--scripts") {
+      options.scripts = true;
       continue;
     }
 
@@ -924,6 +939,10 @@ Want your agent to run QAMap by itself? Run once: qamap init --agent
       Adds a Pre-PR QA section to AGENTS.md and installs the packaged
       QAMap skill, so agents run the QA pass before every handoff.
 
+Want shorter commands for repeat use? Run once: qamap init --scripts
+      Adds qa, qa:local, and qa:e2e package scripts without replacing
+      existing scripts unless --force is passed.
+
 Full command reference: qamap help`);
 }
 
@@ -956,6 +975,7 @@ Usage:
   qamap context [path] [--write [file]] [--force]
   qamap init [path] [--write <file>] [--force]
   qamap init --agent [path] [--force]
+  qamap init --scripts [path] [--force]
 
 Severities:
   info, low, medium, high
@@ -994,6 +1014,7 @@ Examples:
   qamap context . --write AGENTS.md
   qamap init .
   qamap init --agent .
+  qamap init --scripts .
 `);
 }
 

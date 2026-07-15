@@ -81,6 +81,12 @@ export { formatAgentQaDraft, formatMarkdownQaDraft, generateQaDraft } from "./qa
 export { formatMarkdownReviewReport, formatReviewReport, reviewProject } from "./review.js";
 export { isRequiredScenarioEvidence, routeQaScenario } from "./scenario-routing.js";
 export { scanProject } from "./scanner.js";
+export {
+  formatQaScriptInitReport,
+  initializeQaScripts,
+  qamapPackageName,
+  recommendedQaScripts,
+} from "./script-init.js";
 export { collectTestSuiteInventory, evaluateFlowCoverageEvidence, summarizeTestSuiteInventory } from "./test-evidence.js";
 export {
   addedDiffTextFromEvidence,
@@ -207,6 +213,13 @@ export type {
 } from "./flows.js";
 export type { GitHubActionMode, GitHubActionOptions, GitHubActionResult } from "./github.js";
 export type { QaScenarioDecision, QaScenarioSelectionReceipt } from "./scenario-routing.js";
+export type {
+  JavaScriptPackageManager,
+  QaScriptEntry,
+  QaScriptInitResult,
+  QaScriptName,
+  QaScriptStatus,
+} from "./script-init.js";
 export type { E2ePlanHistorySnapshot, LocalHistoryInitResult, LocalHistoryReference } from "./history.js";
 export type {
   DomainManifestSuggestionResult,

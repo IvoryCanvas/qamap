@@ -10,6 +10,7 @@
 - Added framework-neutral conditional-state extraction for React and Vue changes, including changed actions, conditional outcomes, destination parameters, and Unicode selector terms.
 - Added public React and Vue conditional-state benchmarks plus a presentation-only negative control. Benchmark contracts can now reject QA scenarios that must not be inferred.
 - Added a tested `skills` CLI installation path for the packaged `qamap-pr-qa` project skill.
+- Added `qamap init --scripts` for collision-safe repeat-use shortcuts: `qa` for committed branch changes, `qa:local` for working-tree changes, and `qa:e2e` for a read-only E2E draft preview.
 
 ### Changed
 
@@ -18,6 +19,8 @@
 - One-off skill commands use an explicit npm execution environment so they do not invoke Corepack or rewrite a target repository's package-manager metadata.
 - Selector fallback now prefers diff-added, step-related controls and observable copy. Generic exploratory checks remain coverage guidance instead of executable happy-path steps.
 - The README now leads with a real packaged-CLI routing demo and separates scenario priority from automation compilation status before introducing runners or manifests.
+- Quick-start and adoption guidance now separates one-off execution from a shorter checked-in package workflow, while keeping the direct CLI available for non-JavaScript repositories.
+- Human QA output now states whether the run considered committed branch changes only or also included the local working tree, making `qa` and `qa:local` visibly distinct.
 
 ### Fixed
 
