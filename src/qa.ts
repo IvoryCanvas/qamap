@@ -26,6 +26,7 @@ export interface QaDraftResult {
   generatedAt: string;
   base: string;
   head: string;
+  includeWorkingTree: boolean;
   project: E2eProjectType;
   runner: E2eRunnerName;
   manifestPath?: string;
@@ -92,6 +93,7 @@ export async function generateQaDraft(rootInput: string, options: QaDraftOptions
     generatedAt: new Date().toISOString(),
     base: draft.plan.base,
     head: draft.plan.head,
+    includeWorkingTree: draft.plan.includeWorkingTree,
     project: draft.plan.project.type,
     runner: draft.runner,
     manifestPath: draft.plan.verificationManifestPath,
@@ -543,6 +545,7 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
   lines.push(`- Root: \`${escapeMarkdownInline(result.root)}\``);
   lines.push(`- Base: \`${escapeMarkdownInline(result.base)}\``);
   lines.push(`- Head: \`${escapeMarkdownInline(result.head)}\``);
+  lines.push(`- Change scope: ${result.includeWorkingTree ? "committed and uncommitted working-tree changes" : "committed branch changes only"}`);
   lines.push(`- Project: ${formatProjectType(result.project)}`);
   lines.push(`- Manifest: ${result.manifestPath ? `\`${escapeMarkdownInline(result.manifestPath)}\`` : "not found; using repo signals and PR diff only"}`);
   lines.push(`- Stage: ${formatDraftReadinessStage(result.readiness)}`);

@@ -23,6 +23,17 @@ npx --yes @ivorycanvas/qamap@latest e2e draft . --base origin/main --head HEAD -
 npx --yes @ivorycanvas/qamap@latest e2e draft . --base origin/main --head HEAD
 ```
 
+For a repository that will run QAMap repeatedly, replace the long one-off command with checked-in package scripts:
+
+```sh
+pnpm add -D @ivorycanvas/qamap
+pnpm exec qamap init --scripts
+pnpm qa
+pnpm qa:local
+```
+
+`pnpm qa` reads the committed branch diff. `pnpm qa:local` includes uncommitted working-tree changes while a developer is still iterating. The initializer keeps existing script names unless `--force` is explicitly accepted.
+
 For a combined PR verification report with readiness gates, add `verify`:
 
 ```sh
@@ -226,4 +237,3 @@ QAMap is intentionally small:
 It is built for teams using AI coding agents, MCP-powered tools, or any workflow where an agent can read, edit, test, commit, or open pull requests.
 
 For PR verification, QAMap treats the repository itself as the working base: committed manifests hold durable team language, ignored local history holds generated run observations, and the current branch diff supplies what changed now.
-

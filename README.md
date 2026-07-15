@@ -43,6 +43,23 @@ npx --yes @ivorycanvas/qamap@latest qa
 
 A manifest and test runner are **not required** for the first run.
 
+For repeat use in a JavaScript repository, install QAMap once and add short package scripts:
+
+```sh
+pnpm add -D @ivorycanvas/qamap
+pnpm exec qamap init --scripts
+```
+
+After that, the everyday workflow is deliberately small:
+
+```sh
+pnpm qa          # committed changes on the current branch
+pnpm qa:local    # also include uncommitted local changes
+pnpm qa:e2e      # preview an E2E draft without writing files
+```
+
+`init --scripts` detects npm, pnpm, Yarn, or Bun, preserves unrelated scripts, and never replaces a name collision unless `--force` is explicit. Non-JavaScript repositories keep using the universal `qamap qa` command directly.
+
 ## What You Get
 
 QAMap keeps QA selection and test generation as two separate decisions:

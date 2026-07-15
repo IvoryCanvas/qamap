@@ -2,24 +2,27 @@
 
 ## 0.4.4 - 2026-07-15
 
-Validated as a cross-framework evidence and honest-draft patch. QAMap now recovers conservative change intent from connected diff behavior even when commit text is not descriptive, maps React and Vue conditional states to changed actions and observable outcomes, and keeps unsupported outcomes review-only instead of generating a green smoke assertion:
+Validated as a cross-framework evidence, honest-draft, and repeat-use UX patch. QAMap recovers conservative change intent from connected diff behavior even when commit text is not descriptive, maps React and Vue conditional states to changed actions and observable outcomes, keeps unsupported outcomes review-only, and can install short collision-safe package scripts for everyday branch and working-tree QA:
 
 | Gate | Current result |
 | --- | --- |
 | `pnpm release:check` | Passed end to end |
-| `pnpm test` | 152/152 passing |
+| `pnpm test` | 166/166 passing |
 | `pnpm scan` | 0 findings |
 | `pnpm bench:ci` | 15/15 synthetic PR targets pass; React and Vue conditional-state positives recover actions/outcomes while a presentation-only negative control rejects behavioral state QA |
-| Coverage | Lines 88.04%, branches 84.32%, functions 95.50% |
-| Change Intent coverage | Lines 97.97%, branches 91.82%, functions 99.30% |
+| Coverage | Lines 88.32%, branches 84.69%, functions 95.53% |
+| Change Intent coverage | Lines 97.40%, branches 91.15%, functions 99.30% |
+| Short-command initializer | Lines 100%, branches 97.14%, functions 100%; npm, pnpm, Yarn, Bun, collisions, force replacement, malformed metadata, idempotency, and CLI entry are covered |
 | Agent payload | Global output stays below 4KB; complex web and mobile lifecycle fixtures retain intent/scenario/flow context in 3,172 and 3,133 bytes instead of falling back to an empty emergency summary |
 | One-off repository safety | The documented npm execution command left an isolated repository's `package.json` hash unchanged and created no lockfile or package-manager metadata |
 | Skill compatibility | The public repository was discovered by the `skills` CLI and `qamap-pr-qa` installed as a project skill in an isolated home/project |
-| Package preview | `pnpm pack --dry-run` and `npm pack --dry-run` pass for `@ivorycanvas/qamap@0.4.4`; 134 files, 924.1 kB packed |
+| Package preview | `pnpm pack --dry-run` and `npm pack --dry-run` pass for `@ivorycanvas/qamap@0.4.4`; 137 files, 928.3 kB packed |
 
 The React and Vue fixtures are not product-specific framework rules. They express equivalent conditional user behavior through different syntax, while the negative control proves that a presentation condition alone cannot create lifecycle QA. Benchmarks materialize temporary Git repositories, do not install fixture dependencies, and do not execute fixture applications.
 
 Low-confidence diff-only intent remains review-required and recommended. Located lines alone do not promote it to a required blocker. When a repository exposes a stable action and observable failure outcome, QAMap can still compile a separate Playwright failure scenario; when an outcome is absent, the draft emits `test.fixme` rather than treating the clicked control or document body as proof of success.
+
+Repeat-use setup is explicit and repository-local: `qamap init --scripts` adds `qa`, `qa:local`, and `qa:e2e` only to JavaScript package metadata, preserves conflicting script names unless `--force` is passed, and reports the package-specific install command when QAMap is not yet a dependency. The `qa` report also states whether working-tree changes were included so the two analysis scopes cannot be confused.
 
 ## 0.4.3 - 2026-07-14
 

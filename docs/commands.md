@@ -15,6 +15,7 @@ pnpm exec qamap manifest init .
 pnpm exec qamap manifest validate .
 pnpm exec qamap manifest explain . --base origin/main --head HEAD
 pnpm exec qamap e2e draft . --base origin/main --head HEAD --dry-run
+pnpm exec qamap init --scripts .
 ```
 
 Use `npx --yes @ivorycanvas/qamap@latest ...` for one-off human runs without installing QAMap into the target repository. Packaged agent skills use an explicit `npm exec --package` form so they do not invoke the target repository's package manager or Corepack metadata flow.
@@ -83,8 +84,21 @@ That means QAMap is most valuable when it becomes the team's verification base: 
 | `qamap context . --write AGENTS.md` | Generate starter agent instructions for the repo. |
 | `qamap init .` | Create a starter `qamap.config.json`. |
 | `qamap init --agent .` | One-command agent onboarding: add a marked QAMap Pre-PR QA section to `AGENTS.md`, install the packaged skill to `.claude/skills/qamap-pr-qa/SKILL.md`, and create `qamap.config.json` if missing. Idempotent; existing `AGENTS.md` content is preserved. |
+| `qamap init --scripts .` | Add collision-safe `qa`, `qa:local`, and `qa:e2e` package scripts for repeat use in a JavaScript repository. |
 
 For monorepos, pass `--workspace-root` when scanning a package. Package-local checks still use the package directory, while repo-level guardrails such as `AGENTS.md`, `.github/workflows`, `LICENSE`, `SECURITY.md`, and `CONTRIBUTING.md` are read from the workspace root.
+
+### Short Package Scripts
+
+After installing QAMap as a development dependency, run `qamap init --scripts .` once. The initializer detects the repository package manager and adds these shortcuts without changing an existing script unless `--force` is passed:
+
+| Script | Installed command | Purpose |
+| --- | --- | --- |
+| `qa` | `qamap qa .` | Analyze committed changes on the current branch. |
+| `qa:local` | `qamap qa . --include-working-tree` | Include staged, unstaged, and untracked working-tree changes. |
+| `qa:e2e` | `qamap e2e draft . --dry-run` | Preview the optional E2E draft without writing files. |
+
+For pnpm, these become `pnpm qa`, `pnpm qa:local`, and `pnpm qa:e2e`. npm uses `npm run <script>`; Yarn and Bun use their normal script syntax. The generated commands omit a hard-coded base branch so QAMap can infer the repository default. Repositories that cannot infer a base can still pass `--base <ref>` through the script or use the full CLI command.
 
 `qamap review` compares a branch against a base ref for PR-style workflows. It separates newly introduced findings from risky files that already had findings on the base branch but were modified again, which helps reviewers notice when a PR touches known-dangerous surfaces such as committed `.env` files, MCP configs, or release scripts.
 
