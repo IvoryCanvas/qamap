@@ -497,6 +497,34 @@ test("state updates and navigation options do not fabricate calendar or routing 
   assert.equal(scenarioTitles.some((title) => /Scheduling, calendar|destination routing/i.test(title)), false);
 });
 
+test("persisted record date validation does not fabricate scheduling QA", async (t) => {
+  const root = await makeRepo(t);
+  await write(root, "src/storage.ts", "export const readStoredRecords = () => []\n");
+  commit(root, "benchmark baseline");
+  branch(root, "fix/storage-validation");
+  await write(
+    root,
+    "src/storage.ts",
+    [
+      "const parseStoredTimestamp = (value) =>",
+      "  (typeof value === 'string' || typeof value === 'number') &&",
+      "  !Number.isNaN(new Date(value).getTime());",
+      "export const readStoredRecords = (records) => records.filter((record) => parseStoredTimestamp(record.createdAt));",
+    ].join("\n"),
+  );
+  commit(root, "fix: reject not a number persisted records");
+
+  const analysis = await analyze(root, ["src/storage.ts"]);
+  const scenarioTitles = analysis.intents.flatMap((intent) => intent.scenarios.map((scenario) => scenario.title));
+
+  assert.equal(analysis.intents.length, 1);
+  assert.equal(scenarioTitles.some((title) => /Scheduling, calendar/i.test(title)), false);
+  assert.ok(scenarioTitles.some((title) => /persisted context|re-entry|stale state/i.test(title)));
+  const lifecycleLabels = analysis.intents.flatMap((intent) => intent.lifecycle.map((stage) => stage.label));
+  assert.ok(lifecycleLabels.some((label) => /not a number/i.test(label)));
+  assert.equal(lifecycleLabels.some((label) => /na n/i.test(label)), false);
+});
+
 test("change intent marks connected working-tree signals as review-required diff evidence", async (t) => {
   const root = await makeRepo(t);
   await write(root, "src/form.tsx", "export function Form() { return null; }\n");
@@ -808,7 +836,10 @@ test("E2E planning promotes commit intent before runner-specific draft generatio
   assert.match(plan.flows[0].title, /Submit account preferences/i);
   assert.doesNotMatch(plan.flows[0].title, /primary journey|smoke flow/i);
   assert.ok(plan.flows[0].steps.some((step) => /persist the selected timezone/i.test(step)));
-  assert.ok(plan.flows[0].steps.some((step) => /show saved preferences/i.test(step)));
+  assert.ok(
+    plan.flows[0].steps.some((step) => /verify visible text "Preferences saved" appears/i.test(step)),
+    `expected observable outcome in flow steps, got: ${JSON.stringify(plan.flows[0].steps)}`,
+  );
   assert.match(plan.flows[0].languageBrief.successSignal, /Preferences saved/i);
   assert.ok(plan.behaviorGraph.nodes.some((node) => node.kind === "contract" && node.label === plan.flows[0].title));
   assert.ok(plan.behaviorGraph.nodes.some((node) => node.evidence.some((item) => item.kind === "commit")));
@@ -859,6 +890,21 @@ test("E2E planning promotes commit intent before runner-specific draft generatio
   assert.match(spec, /trace:[a-f0-9]{12}/);
   assert.match(spec, /Diff source: src\/pages\/preferences\.tsx:\d+/);
   assert.match(spec, /Failure, timeout, and retry handling/);
+
+  const staleReadinessQa = structuredClone(qa);
+  staleReadinessQa.readiness.requiredScenarios = 40;
+  staleReadinessQa.readiness.recommendedScenarios = 30;
+  staleReadinessQa.readiness.reviewOnlyScenarios = 20;
+  const traceBasedMarkdown = formatMarkdownQaDraft(staleReadinessQa);
+  const requiredTraceCount = qa.traces.filter((trace) => trace.scenario.decision === "required").length;
+  const recommendedTraceCount = qa.traces.filter((trace) => trace.scenario.decision === "recommended").length;
+  const reviewOnlyTraceCount = qa.traces.filter((trace) => trace.scenario.decision === "review-only").length;
+  assert.match(
+    traceBasedMarkdown,
+    new RegExp(`Scenario routing: ${requiredTraceCount} required, ${recommendedTraceCount} recommended, ${reviewOnlyTraceCount} review-only`),
+  );
+  assert.match(traceBasedMarkdown, new RegExp(`Reasoning trace: ${qa.traces.length}/${qa.traces.length} scenarios? traced`));
+  assert.doesNotMatch(traceBasedMarkdown, /Reasoning trace: \d+\/90/);
 
   const oversizedQa = structuredClone(qa);
   oversizedQa.changeAnalysis.intents = Array.from({ length: 12 }, (_, index) => ({
@@ -959,6 +1005,57 @@ test("evidence-routed failure QA becomes a separate partial Playwright scenario 
   assert.match(spec, /page\.route\("\*\*\/api\/jobs"/);
   assert.match(spec, /page\.getByTestId\("job-submit"\)\.click\(\)/);
   assert.match(spec, /page\.getByText\("Could not queue job"\)/);
+});
+
+test("state setter evidence does not compile a second user interaction", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { react: "19.0.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(root, "playwright.config.ts", "export default { use: { baseURL: 'http://127.0.0.1:4173' } };\n");
+  await write(
+    root,
+    "src/pages/records.tsx",
+    "export function Records() { return <main><h1>Records</h1></main>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/record-pinning");
+
+  await write(
+    root,
+    "src/pages/records.tsx",
+    [
+      "export function Records() {",
+      "  const [isPinned, setPinned] = useState(false);",
+      "  return <main>",
+      "    <button data-testid=\"pin-record\" onClick={() => setPinned(true)}>Pin</button>",
+      "    {isPinned ? <p>Pinned record appears first</p> : null}",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: pin a workspace record and show it first");
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: ".generated-e2e",
+  });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const primaryScenario = file.scenarioAutomation.find((receipt) => receipt.kind === "primary");
+  assert.equal(primaryScenario?.mappedSteps, 1);
+  assert.equal(primaryScenario?.mappedAssertions, 1);
+
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  assert.equal((spec.match(/\.click\(\)/g) ?? []).length, 1);
+  assert.match(spec, /page\.getByTestId\("pin-record"\)\.click\(\)/);
+  assert.match(spec, /page\.getByText\("Pinned record appears first"\)/);
 });
 
 test("evidence-routed failure QA does not reuse an unrelated action selector", async (t) => {

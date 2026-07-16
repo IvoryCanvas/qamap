@@ -787,7 +787,12 @@ function buildIntentQaScenarios(
     ], ["Missing optional parameter", "Encoded value", "Repeated navigation"], destinationParameterEvidence));
   }
 
-  if (/schedul|reminder|calendar|\bdate\b|\btime\b|daily|tomorrow|timezone/.test(searchable)) {
+  const calendarEvidence = scenarioEvidenceFor(
+    lifecycle,
+    evidence,
+    /schedul|reminder|calendar|daily|tomorrow|timezone/i,
+  );
+  if (calendarEvidence.length > 0) {
     scenarios.push(makeScenario(intentId, "calendar-boundary", "boundary", "critical", "Scheduling, calendar, and duplicate boundary", [
       "Prepare records near day, month, and timezone boundaries.",
     ], [
@@ -796,7 +801,7 @@ function buildIntentQaScenarios(
     ], [
       "Verify the calculated date and time remain correct across boundaries.",
       "Verify stale or duplicate schedules are replaced, preserved, or rejected intentionally.",
-    ], ["Timezone change", "Day rollover", "Duplicate invocation"], scenarioEvidenceFor(lifecycle, evidence, /schedul|reminder|calendar|\bdate\b|\btime\b|daily|tomorrow|timezone/i)));
+    ], ["Timezone change", "Day rollover", "Duplicate invocation"], calendarEvidence));
   }
 
   if (/toggle|enable|disable|permission|authoriz|auth|guard/.test(searchable)) {
@@ -975,6 +980,10 @@ function isConfigurationGuardEvidence(evidence: ChangeIntentEvidence): boolean {
 }
 
 function selectPrimaryLifecycleSteps(lifecycle: BehaviorLifecycleStage[]): string[] {
+  const hasCommitBackedAction = lifecycle.some((stage) =>
+    stage.kind === "action" && stage.evidence.some((item) => item.kind === "commit"),
+  );
+  const hasUserAction = lifecycle.some((stage) => stage.kind === "action");
   const limits: Partial<Record<BehaviorLifecycleStageKind, number>> = {
     trigger: 1,
     action: 1,
@@ -984,6 +993,12 @@ function selectPrimaryLifecycleSteps(lifecycle: BehaviorLifecycleStage[]): strin
   const counts = new Map<BehaviorLifecycleStageKind, number>();
   const steps: string[] = [];
   for (const stage of lifecycle) {
+    if (hasCommitBackedAction && isImplementationShapedTriggerStage(stage)) {
+      continue;
+    }
+    if (hasUserAction && isImplementationShapedStateChangeStage(stage)) {
+      continue;
+    }
     const limit = limits[stage.kind] ?? 0;
     const count = counts.get(stage.kind) ?? 0;
     if (limit === 0 || count >= limit || isImplementationOnlyLifecycleStep(stage.label)) {
@@ -996,6 +1011,20 @@ function selectPrimaryLifecycleSteps(lifecycle: BehaviorLifecycleStage[]): strin
     steps.push(stage.label);
   }
   return steps;
+}
+
+function isImplementationShapedTriggerStage(stage: BehaviorLifecycleStage): boolean {
+  if (stage.kind !== "trigger" || stage.evidence.some((item) => item.kind === "commit")) {
+    return false;
+  }
+  return /^Trigger\s+(?:set|handle|use|update|dispatch|emit|mutate|invoke|call)\b/i.test(stage.label);
+}
+
+function isImplementationShapedStateChangeStage(stage: BehaviorLifecycleStage): boolean {
+  if (stage.kind !== "state-change" || stage.evidence.some((item) => item.kind === "commit")) {
+    return false;
+  }
+  return /^Update state through (?:set|update|dispatch|emit|mutate|use)[A-Z0-9_]/.test(stage.label);
 }
 
 function lifecycleStepsDescribeSameAction(left: string, right: string): boolean {
@@ -1143,7 +1172,10 @@ function collectDiffRiskEvidence(addedDiffEvidence: AddedDiffEvidence): ChangeIn
           const queryOperation = line.text.match(
             /\b((?:params|queryParams|searchParams)|[A-Za-z_$][\w$]*\.searchParams)\.(get|set|delete)\(\s*["'`]([^"'`]+)["'`]/i,
           );
-          if ((routingMatch || queryOperation) && !/navigation\.setoptions/i.test(line.text)) {
+          const metadataOnlyRoutingMatch = routingMatch &&
+            /^(?:payload|destination)$/i.test(routingMatch[1]) &&
+            isStructuredDataFile(file);
+          if ((queryOperation || (routingMatch && !metadataOnlyRoutingMatch)) && !/navigation\.setoptions/i.test(line.text)) {
             const queryDescription = queryOperation
               ? `${side === "base" ? "Removed" : "Changed"} line ${queryOperation[2] === "get" ? "reads" : queryOperation[2] === "set" ? "writes" : "removes"} query parameter "${queryOperation[3]}".`
               : `${side === "base" ? "Removed" : "Changed"} line contains entry or routing evidence for ${routingMatch![1]}.`;
@@ -1624,6 +1656,10 @@ function isBehaviorBearingFile(file: string): boolean {
   );
 }
 
+function isStructuredDataFile(file: string): boolean {
+  return /\.(?:csv|json|json5|toml|ya?ml)$/i.test(file);
+}
+
 function stripParsedCommitFields(commit: ParsedCommit): ChangeIntentCommit {
   const { seed: _seed, supporting: _supporting, keywords: _keywords, ...result } = commit;
   return result;
@@ -1745,6 +1781,7 @@ function lowercaseFirst(value: string): string {
 
 function humanizeIdentifier(value: string): string {
   return value
+    .replace(/NaN/g, " Not a number")
     .replaceAll(".", " ")
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
