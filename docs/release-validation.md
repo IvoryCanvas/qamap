@@ -1,5 +1,34 @@
 # Release Validation
 
+## 0.4.6 - 2026-07-18
+
+Validated as a source-role-aware routing, large-PR evidence, and repository-verification release. QAMap now distinguishes product behavior from analyzer, command, configuration, documentation, generated, and test evidence before selecting QA. It retains an inspectable path through compact agent output, avoids merging unrelated long-PR intents, and points product changes at related existing tests without presenting repository validation as a failed product E2E:
+
+| Gate | Current result |
+| --- | --- |
+| `pnpm release:check` | Passed end to end for the release candidate |
+| `pnpm test` | 186/186 passing |
+| `pnpm scan` | 0 findings |
+| `pnpm bench:ci` | 17/17 synthetic PR targets pass across React, Vue, SvelteKit, Expo, API, shared-component, configuration, test-only, and CLI analyzer changes |
+| Coverage | Lines 88.67%, branches 85.27%, functions 95.77% |
+| Change Intent coverage | Lines 97.85%, branches 90.58%, functions 99.07% |
+| QA trace coverage | Lines 98.27%, branches 92.22%, functions 96.77% |
+| Source-role routing | Analyzer and CLI changes require command-contract and rule-boundary checks while rejecting unrelated product scheduling, routing, payment, API, fixture, selector, and manifest QA |
+| Repository verification | Configuration-only and test-only fixtures report `ready-to-run (repo)` with their existing validation command instead of a blocked product E2E score |
+| Large-PR intent integrity | Broad scopes and one-word keyword bridges cannot transitively collapse unrelated commits; exact commit files remain attached to their own intent |
+| Compact reasoning path | Emergency agent output remains below 4KB while retaining one located trace, scenario source, affected file, review question, success signal, evidence gap, and next command |
+| Related test evidence | Direct imports, matching source/test stems, and owner paths rank relevant tests while unrelated similarly named tests remain excluded |
+| Product execution honesty | Human output says `not run` and `not executed`; agent output carries `execution: { status: "not-run", performed: false, scope: "static-analysis-and-draft-mapping" }` |
+| Package preview | `pnpm pack --dry-run` and `npm publish --dry-run --access public` pass for `@ivorycanvas/qamap@0.4.6`; 143 files, 876.6 kB packed |
+
+Product automation readiness and repository validation readiness are now separate contracts. Product changes can still flow from diff evidence to optional Playwright, Maestro, or manual drafts. Analyzer, configuration, documentation, generated-artifact, and existing-test changes instead identify the repository command and verification mode that match the source role. Neither path claims that QAMap launched the target application or executed the command.
+
+The analyzer benchmark is domain-neutral: it changes a CLI command and a static rule engine, requires positive, negative, and neighboring-rule verification, and rejects product-domain setup inferred from words that happen to occur in analyzer source. Existing web, mobile, API, artifact, and state-transition fixtures remain unchanged and green, guarding against source-role classification suppressing genuine product evidence.
+
+Long-PR tests model independent changes connected only by broad scopes or one shared keyword. Their contracts require separate intents and exact commit-file ownership. Related-test tests similarly place a correctly imported feature test beside an unrelated same-name build test; only the directly relevant evidence may enter the QA checklist and agent handoff.
+
+Machine automation values remain `compiled`, `partial`, `not-compiled`, and `review-only` for the additive v1 contract. The new readiness fields are additive and explain whether those automation values apply or whether the result is repository validation. A `ready-to-run` verification status means QAMap found a suitable command; it never means that command passed.
+
 ## 0.4.5 - 2026-07-16
 
 Validated as a traceable-reasoning, cross-domain precision, and repository-evidence ownership release. QAMap now exposes one inspectable path from diff evidence to affected behavior, risk, routed QA scenario, optional artifact, and explicit non-execution. It also keeps QA routing separate from draft-mapping gaps, rejects unrelated package mocks, and maps a diff-added UI action to its observable state result:

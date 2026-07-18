@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.4.6 - 2026-07-18
+
+### Added
+
+- Added source-role classification for product behavior, commands, analysis rules, configuration, tests, documentation, and generated artifacts before domain vocabulary is interpreted.
+- Added repository-validation readiness for changes that should be checked with existing project commands instead of receiving fabricated product E2E blockers.
+- Added a public CLI and analyzer-rule benchmark with positive, negative, neighboring-rule, compact-agent, and non-product false-positive contracts.
+
+### Changed
+
+- Compact agent output now preserves one located reasoning trace, scenario source, affected file, review question, success signal, evidence gap, and next command even under the emergency 4KB budget.
+- Long-PR intent clustering now requires stronger shared evidence. Broad Conventional Commit scopes and one-word keyword bridges no longer merge unrelated changes into one high-confidence lifecycle.
+- Product QA flows now link directly imported, same-stem, or owner-path-related existing tests and distinguish them from tests changed by the PR itself.
+
+### Fixed
+
+- Analyzer and CLI vocabulary no longer fabricates scheduling, routing, payment, API, selector, fixture, or manifest work without product-behavior evidence.
+- Configuration-only, documentation-only, generated-artifact, and test-only changes no longer appear as blocked product automation when an existing repository validation command is the appropriate next action.
+- Related-test discovery no longer treats similarly named tests in unrelated repository areas as coverage evidence.
+- Safe untracked text changes included through `--include-working-tree` retain head-side file and line provenance instead of disappearing from QA reasoning.
+
 ## 0.4.5 - 2026-07-16
 
 ### Added
