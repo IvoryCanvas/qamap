@@ -6,6 +6,8 @@
       "fixture": "test/benchmarks/web-testless-checkout",
       "expect": {
         "runner": "playwright",
+        "readinessBasis": "optional-automation",
+        "automationApplicable": true,
         "minFlows": 1,
         "minReasoningTraces": 2,
         "maxMissingReasoningTraces": 0,
@@ -265,6 +267,9 @@
       "commitMessage": "fix: improve analyzer and command QA precision",
       "expect": {
         "runner": "manual",
+        "readinessBasis": "repository-validation",
+        "automationApplicable": false,
+        "verificationStatus": "ready-to-run",
         "minFlows": 1,
         "minChangeIntents": 1,
         "minReasoningTraces": 3,
@@ -379,6 +384,9 @@
       "fixture": "test/benchmarks/expo-config-only",
       "expect": {
         "runner": "manual",
+        "readinessBasis": "repository-validation",
+        "automationApplicable": false,
+        "verificationStatus": "ready-to-run",
         "minFlows": 1,
         "mustHaveBehaviorKinds": ["flow", "source", "assertion"],
         "mustReachFiles": [
@@ -402,6 +410,9 @@
       "fixture": "test/benchmarks/maestro-test-only",
       "expect": {
         "runner": "maestro",
+        "readinessBasis": "repository-validation",
+        "automationApplicable": false,
+        "verificationStatus": "ready-to-run",
         "minFlows": 1,
         "mustHaveBehaviorKinds": ["flow", "source", "assertion"],
         "mustReachFiles": [

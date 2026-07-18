@@ -140,7 +140,21 @@
         "level": {
           "type": "string",
           "enum": ["ready", "near-runnable", "needs-work", "blocked"],
-          "description": "Stable machine value; human reports render this as a stage on a four-step journey."
+          "description": "Stable optional-automation value. Ignore it when automationApplicable is false and use verificationStatus instead."
+        },
+        "basis": {
+          "type": "string",
+          "enum": ["optional-automation", "repository-validation"],
+          "description": "Whether this change needs an automation draft or should validate existing repository evidence."
+        },
+        "automationApplicable": {
+          "type": "boolean",
+          "description": "False when configuration, docs, generated output, tests, or analyzer rules should use repository validation instead of product E2E automation."
+        },
+        "verificationStatus": {
+          "type": "string",
+          "enum": ["ready-to-run", "command-needed"],
+          "description": "Repository-validation preparation state. This never means the command was executed or passed."
         }
       }
     },
@@ -253,6 +267,10 @@
       "description": "Counts that connect routed QA scenarios to generated automation without claiming execution.",
       "required": ["required", "recommended", "reviewOnly", "compiled", "partial", "notCompiled", "requiredGaps"],
       "properties": {
+        "automationApplicable": {
+          "type": "boolean",
+          "description": "False when draft mapping counts are compatibility detail rather than a required product E2E target."
+        },
         "required": { "type": "integer", "minimum": 0 },
         "recommended": { "type": "integer", "minimum": 0 },
         "reviewOnly": { "type": "integer", "minimum": 0 },

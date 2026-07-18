@@ -704,9 +704,18 @@ test("analysis-only changes stay analyzer verification even inside a CLI reposit
   assert.equal(flow.setupHints.some((hint) => hint.kind === "network" || hint.kind === "fixture"), false);
 
   const qa = await generateQaDraft(root, { base: "main", head: "HEAD" });
+  const qaMarkdown = formatMarkdownQaDraft(qa);
   assert.equal(qa.flows[0].verificationMode, "analysis-rule");
+  assert.equal(qa.readiness.basis, "repository-validation");
+  assert.equal(qa.readiness.automationApplicable, false);
+  assert.equal(qa.readiness.verificationStatus, "command-needed");
   assert.equal(qa.flows[0].why.some((reason) => /positive, negative, and neighboring-rule controls/i.test(reason)), true);
   assert.equal(qa.prChecklist.some((item) => /manifest init/i.test(item)), false);
+  assert.match(qaMarkdown, /Repository verification stage: validation command needed/);
+  assert.match(qaMarkdown, /Optional automation readiness: not applicable/);
+  assert.doesNotMatch(qaMarkdown, /Automation stage: setup needed/);
+  assert.doesNotMatch(qaMarkdown, /- E2E draft mapping:/);
+  assert.doesNotMatch(qaMarkdown, /Trace gap: No optional automation artifact/);
 
   const oversizedQa = structuredClone(qa);
   oversizedQa.changeAnalysis.intents = Array.from({ length: 12 }, (_, index) => ({
@@ -729,6 +738,9 @@ test("analysis-only changes stay analyzer verification even inside a CLI reposit
   assert.ok(Buffer.byteLength(compactOutput) <= 4 * 1024);
   assert.ok(compactSummary.compaction.lean || compactSummary.compaction.emergency);
   assert.equal(compactSummary.flows[0].verificationMode, "analysis-rule");
+  assert.equal(compactSummary.readiness.basis, "repository-validation");
+  assert.equal(compactSummary.readiness.automationApplicable, false);
+  assert.equal(compactSummary.scenarioCoverage.automationApplicable, false);
   assert.equal(compactSummary.flows[0].source, qa.flows[0].source);
   assert.ok(compactSummary.flows[0].steps.length > 0);
 });
