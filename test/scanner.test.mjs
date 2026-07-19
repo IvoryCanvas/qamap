@@ -851,6 +851,8 @@ test("generateE2ePlan detects CLI packages and suggests command verification che
 
   const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
   const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: "docs/e2e", dryRun: true });
+  const qa = await generateQaDraft(root, { base: "main", head: "HEAD" });
+  const agentSummary = JSON.parse(formatAgentQaDraft(qa));
   const markdown = formatMarkdownE2ePlan(plan);
   const draftMarkdown = formatMarkdownE2eDraft(draft);
   const flow = plan.flows.find((item) => item.kind === "command");
@@ -880,6 +882,17 @@ test("generateE2ePlan detects CLI packages and suggests command verification che
   assert.match(markdown, /Project: CLI/);
   assert.match(markdown, /Start with CLI command validation/);
   assert.match(draftMarkdown, /representative arguments, expected stdout\/stderr, generated files, exit codes/);
+  assert.ok(
+    qa.flows.every((item) => item.verificationMode === "command-contract"),
+    JSON.stringify(qa.flows.map(({ title, verificationMode, changedFiles }) => ({ title, verificationMode, changedFiles }))),
+  );
+  assert.deepEqual(agentSummary.route, {
+    basis: "repository-validation",
+    status: "verification-ready-to-run",
+    nextAction: "run-repository-command",
+    command: "npm test",
+  });
+  assert.equal(agentSummary.readiness.automationApplicable, false);
 });
 
 test("generateE2ePlan detects design token packages and suggests artifact validation", async () => {
@@ -1292,6 +1305,12 @@ test("generateE2eDraft keeps Expo native version changes in one mobile build con
   assert.equal(agentSummary.readiness.basis, "repository-validation");
   assert.equal(agentSummary.readiness.automationApplicable, false);
   assert.equal(agentSummary.readiness.verificationStatus, "ready-to-run");
+  assert.deepEqual(agentSummary.route, {
+    basis: "repository-validation",
+    status: "verification-ready-to-run",
+    nextAction: "run-repository-command",
+    command: "npm run build:apk",
+  });
   assert.equal(agentSummary.scenarioCoverage.automationApplicable, false);
   const agentSchema = JSON.parse(await readFile(path.join(repositoryRoot, "schema/qamap-agent.schema.json"), "utf8"));
   assert.deepEqual(collectSchemaViolations(agentSchema, agentSummary), []);
@@ -5637,6 +5656,8 @@ test("qa command emits a PR comment draft without requiring a manifest", async (
   assert.equal(agentSummary.readiness.basis, "optional-automation");
   assert.equal(agentSummary.readiness.automationApplicable, true);
   assert.equal(agentSummary.readiness.verificationStatus, undefined);
+  assert.equal(agentSummary.route.basis, "optional-automation");
+  assert.match(agentSummary.route.status, /^draft-/);
   assert.equal(agentSummary.scenarioCoverage.automationApplicable, true);
   assert.equal(Array.isArray(agentSummary.requiredEvidence), true);
   assert.equal(Array.isArray(agentSummary.prChecklist), true);
@@ -5663,6 +5684,7 @@ test("qa command emits a PR comment draft without requiring a manifest", async (
   const compactAgentSummary = JSON.parse(compactAgentOutput);
   assert.ok(Buffer.byteLength(compactAgentOutput) <= 4 * 1024);
   assert.ok(compactAgentSummary.compaction);
+  assert.deepEqual(compactAgentSummary.route, agentSummary.route);
   assert.deepEqual(collectSchemaViolations(agentSchema, compactAgentSummary), []);
 
   const agentCliOutput = await execFileAsync(process.execPath, [
