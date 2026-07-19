@@ -10,8 +10,9 @@ QAMap's unit tests prove that the implementation behaves as coded. The benchmark
 pnpm bench:ci
 ```
 
-The command fails when any target violates its declared expectations. The initial corpus covers:
+The command fails when any target violates its declared expectations. The corpus covers:
 
+- a provenance-pinned reduction of Cal.com PR #27765 that changes signup validation timing and adds regression tests for typing, blur, correction, and submission;
 - a web app with no tests;
 - a web app with Playwright and an existing mock handler;
 - Vue and SvelteKit web changes with framework-native route files;
@@ -33,8 +34,11 @@ Each target can declare:
 
 | Field | Meaning |
 | --- | --- |
-| `commitMessage` | Synthetic feature-commit message used when materializing a fixture. |
+| `commitMessage` | Commit message used when materializing a fixture. Public PR reductions preserve the behavior-bearing source message; synthetic fixtures use neutral vocabulary. |
+| `provenanceKind` | Expected fixture provenance. `public-pull-request` requires a pinned repository, PR URL, base/head commits, license, and matching `PROVENANCE.md`. |
 | `runner` | Expected `playwright`, `maestro`, or `manual` output adapter. Runner correctness alone is not a useful intent benchmark. |
+| `routeStatus`, `routeNextAction` | Expected canonical machine route and next action. Repository-verification fixtures use these instead of treating optional automation readiness as applicable. |
+| `mustRouteCommands` | Terms that must appear in the exact command attached to a repository-validation route. |
 | `minFlows` | Minimum number of affected flows. |
 | `minChangeIntents` | Minimum evidence-backed Change Intents. |
 | `minHighConfidenceIntents` | Minimum intents supported strongly enough by commit and diff evidence to avoid mandatory review. |
@@ -71,6 +75,7 @@ Each target can declare:
 | `mustFindSuccessSignals` | Observable outcome text that must appear in the flow's success criteria. |
 | `mustFindEntrypoints` | Route, screen, or command entrypoints that affected flows must recover. |
 | `mustFindEvidence` | Required evidence or fixture terms that must be reported. |
+| `mustFindExistingEvidence` | Existing test paths that must be linked to the affected flow. |
 | `mustNotFindEvidence` | Evidence terms that would be false positives for this change. |
 | `mustRecommendCommands` | Commands the setup or validation path must expose. |
 | `maxBlankActions` | Maximum malformed or empty draft steps; public fixtures keep this at zero. |
@@ -113,8 +118,8 @@ When a real repository produces a poor recommendation:
 3. Confirm `pnpm bench:ci` fails for the intended reason.
 4. Fix the inference and keep the fixture as permanent regression evidence.
 
-Any new production heuristic must be exercised by at least two unrelated positive domains and one negative or false-positive control. Domain vocabulary belongs in synthetic fixtures, not in shared inference rules.
+Any new production heuristic must be exercised by at least two unrelated positive domains and one negative or false-positive control. Domain vocabulary belongs in fixture expectations or optional manifests, not in shared inference rules.
 
 Cross-framework fixtures are semantic controls, not a claim that QAMap has separate product logic for each UI library. The same user-visible change is expressed through different syntax so a shared inference rule must survive both, while the negative control proves that merely seeing a condition is not enough to invent QA. Because every fixture is small, public, and deterministic, a regression can be reproduced without private source, network services, or a working application environment.
 
-Do not copy repository names, proprietary code, domain language, file paths, credentials, production data, or raw smoke output into a public fixture. Reduce the behavior to neutral synthetic vocabulary and keep private diagnostics outside the repository.
+Private repository names, proprietary code, file paths, credentials, production data, and raw smoke output must never enter a public fixture. For a public PR regression, first confirm a compatible license, record the canonical URL and exact base/head commits in `PROVENANCE.md`, and keep only a behavior-preserving minimum. The shared inference rule must remain domain-neutral and pass unrelated positive and negative controls.
