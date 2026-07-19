@@ -17,12 +17,14 @@ The command fails when any target violates its declared expectations. The corpus
 - a web app with Playwright and an existing mock handler;
 - Vue and SvelteKit web changes with framework-native route files;
 - equivalent React and Vue conditional-state changes that must recover a changed action and observable outcome despite different syntax;
+- a nested React item action that must create the required item through same-entity controls before exercising the changed action;
 - a presentation-only React condition that must not create behavioral state-transition QA;
 - a web preferences change that must become submit, persistence, request-failure, and re-entry QA instead of a generic journey;
 - a mobile reminder change that must become scheduling, calendar, duplicate, resynchronization, and entry-routing QA;
 - a CLI plus static-analysis-rule change that must verify command I/O and positive/negative controls without turning rule vocabulary into product scheduling, routing, API, or fixture QA;
 - an Expo app with Maestro;
 - an API service that should produce a contract checklist instead of a browser journey;
+- a Python API change whose exact changed regression test must become the repository-validation route while settings files remain configuration evidence;
 - a design-token repository that should stay on artifact verification;
 - a shared component change that must reach its consuming page through reverse imports;
 - an Expo native configuration-only change that must stay out of product journeys and prefer existing build commands;
@@ -119,6 +121,8 @@ When a real repository produces a poor recommendation:
 4. Fix the inference and keep the fixture as permanent regression evidence.
 
 Any new production heuristic must be exercised by at least two unrelated positive domains and one negative or false-positive control. Domain vocabulary belongs in fixture expectations or optional manifests, not in shared inference rules.
+
+The nested-action rule follows that contract. Independent note and record fixtures provide positive same-entity evidence for `input -> create -> changed action -> observable result`, while an unrelated member-creation control is a negative control and must not be borrowed as setup. The rule is based on source ownership, selector role, and shared entity terms rather than any product domain name.
 
 Cross-framework fixtures are semantic controls, not a claim that QAMap has separate product logic for each UI library. The same user-visible change is expressed through different syntax so a shared inference rule must survive both, while the negative control proves that merely seeing a condition is not enough to invent QA. Because every fixture is small, public, and deterministic, a regression can be reproduced without private source, network services, or a working application environment.
 

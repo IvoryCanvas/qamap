@@ -127,6 +127,15 @@ export async function generateQaDraft(rootInput: string, options: QaDraftOptions
   });
   const qaFiles = draft.plan.changedFiles.length > 0 ? draft.files : [];
   const flows = qaFiles.map((file) => qaFlowFromDraftFile(file));
+  const changedFiles = draft.plan.changedFiles.map((file) => file.path);
+  const preferredVerificationCommand = buildChangedTestVerificationCommand(
+    flows,
+    changedFiles,
+    draft.plan.suggestedCommands,
+  );
+  const suggestedCommands = preferredVerificationCommand
+    ? uniqueStrings([preferredVerificationCommand, ...draft.plan.suggestedCommands])
+    : draft.plan.suggestedCommands;
   const missingEvidence = buildMissingEvidence(qaFiles);
   const traces = buildQaReasoningTraces(
     draft.plan.changeAnalysis.intents,
@@ -141,8 +150,8 @@ export async function generateQaDraft(rootInput: string, options: QaDraftOptions
       totalAssertions: receipt.totalAssertions,
     }))),
   );
-  const readiness = buildQaReadiness(draft.readinessSummary, flows, draft.plan.suggestedCommands);
-  const route = buildQaRouteDecision(readiness, draft.plan.suggestedCommands);
+  const readiness = buildQaReadiness(draft.readinessSummary, flows, suggestedCommands, changedFiles);
+  const route = buildQaRouteDecision(readiness, suggestedCommands);
 
   return {
     tool: {
@@ -173,9 +182,9 @@ export async function generateQaDraft(rootInput: string, options: QaDraftOptions
     readiness,
     flows,
     missingEvidence,
-    prChecklist: buildPrChecklist(draft, flows),
-    agentHandoff: buildAgentHandoff(draft, flows, missingEvidence),
-    suggestedCommands: draft.plan.suggestedCommands,
+    prChecklist: buildPrChecklist(draft, flows, suggestedCommands),
+    agentHandoff: buildAgentHandoff(draft, flows, missingEvidence, suggestedCommands),
+    suggestedCommands,
   };
 }
 
@@ -210,8 +219,12 @@ function buildQaReadiness(
   readiness: E2eDraftReadinessSummary,
   flows: QaDraftFlow[],
   suggestedCommands: string[],
+  changedFiles: string[],
 ): QaReadinessSummary {
-  const repositoryValidation = flows.length > 0 && flows.every((flow) => Boolean(flow.verificationMode));
+  const repositoryValidation = flows.length > 0 && (
+    flows.every((flow) => Boolean(flow.verificationMode)) ||
+    shouldRunChangedTestEvidence(flows, changedFiles)
+  );
   if (!repositoryValidation) {
     return {
       ...readiness,
@@ -225,6 +238,41 @@ function buildQaReadiness(
     automationApplicable: false,
     verificationStatus: suggestedCommands.length > 0 ? "ready-to-run" : "command-needed",
   };
+}
+
+function shouldRunChangedTestEvidence(flows: QaDraftFlow[], changedFiles: string[]): boolean {
+  const changed = new Set(changedFiles);
+  const hasChangedRelatedTest = flows.some((flow) =>
+    flow.existingEvidencePaths.some((file) => changed.has(file))
+  );
+  const scenarioReceipts = flows.flatMap((flow) => flow.scenarioAutomation);
+  return hasChangedRelatedTest &&
+    scenarioReceipts.length > 0 &&
+    scenarioReceipts.every((receipt) => receipt.decision === "review-only");
+}
+
+function buildChangedTestVerificationCommand(
+  flows: QaDraftFlow[],
+  changedFiles: string[],
+  suggestedCommands: string[],
+): string | undefined {
+  const changed = new Set(changedFiles);
+  const changedEvidence = uniqueStrings(
+    flows.flatMap((flow) => flow.existingEvidencePaths).filter((file) => changed.has(file)),
+  );
+  if (changedEvidence.length === 0) {
+    return undefined;
+  }
+  const pytest = suggestedCommands.find((command) => /^pytest(?:\s|$)/i.test(command));
+  const pythonTests = changedEvidence.filter((file) => /(?:^|\/)test_[^/]+\.py$|(?:^|\/)[^/]+_test\.py$/i.test(file));
+  if (pytest && pythonTests.length > 0) {
+    return `pytest ${pythonTests.slice(0, 4).join(" ")}`;
+  }
+  const packageTest = suggestedCommands.find((command) => /^(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+test(?:\s|$)/i.test(command));
+  if (packageTest && pythonTests.length > 0) {
+    return `${packageTest} -- ${pythonTests.slice(0, 4).join(" ")}`;
+  }
+  return undefined;
 }
 
 const agentListLimit = 6;
@@ -1511,6 +1559,7 @@ function uniqueMissingEvidence(items: QaDraftMissingEvidence[]): QaDraftMissingE
 function buildPrChecklist(
   draft: E2eDraftResult,
   flows: QaDraftFlow[],
+  suggestedCommands: string[],
 ): string[] {
   const testEvidenceLabel = flows[0]?.verificationMode === "existing-test-evidence"
     ? "changed test evidence"
@@ -1519,7 +1568,7 @@ function buildPrChecklist(
     flows[0]?.existingEvidencePaths.length
       ? `Run the ${testEvidenceLabel}: ${flows[0].existingEvidencePaths.slice(0, 4).join(", ")}.`
       : flows[0]?.verificationMode
-        ? `Run ${formatVerificationMode(flows[0].verificationMode)} with ${draft.plan.suggestedCommands[0] ?? "the nearest repository validation command"}.`
+        ? `Run ${formatVerificationMode(flows[0].verificationMode)} with ${suggestedCommands[0] ?? "the nearest repository validation command"}.`
       : draft.plan.changeAnalysis.intents[0]
         ? `Review the proposed QA scenarios and their sources for: ${draft.plan.changeAnalysis.intents[0].title}.`
       : flows.length > 0
@@ -1530,8 +1579,8 @@ function buildPrChecklist(
       : "Name the user-visible behavior or contract this PR can break.",
   ];
 
-  const validationCommand = draft.plan.suggestedCommands.find((command) => /\b(?:e2e|test|playwright|maestro)\b/i.test(command))
-    ?? draft.plan.suggestedCommands[0];
+  const validationCommand = suggestedCommands.find((command) => /\b(?:e2e|test|playwright|maestro)\b/i.test(command))
+    ?? suggestedCommands[0];
   if (validationCommand) {
     checklist.push(`Run local validation: ${validationCommand}`);
   }
@@ -1547,6 +1596,7 @@ function buildAgentHandoff(
   draft: E2eDraftResult,
   flows: QaDraftFlow[],
   missingEvidence: QaDraftMissingEvidence[],
+  suggestedCommands: string[],
 ): string[] {
   const testEvidenceLabel = flows[0]?.verificationMode === "existing-test-evidence"
     ? "changed test evidence"
@@ -1557,7 +1607,7 @@ function buildAgentHandoff(
     flows[0]?.existingEvidencePaths.length
       ? `Run the ${testEvidenceLabel} (${flows[0].existingEvidencePaths.slice(0, 3).join(", ")}) and record the result before handoff.`
       : flows[0]?.verificationMode
-        ? `Run ${formatVerificationMode(flows[0].verificationMode)} and record the command and result before handoff; do not invent a product-journey E2E for this diff alone.`
+        ? `Run ${formatVerificationMode(flows[0].verificationMode)} with ${suggestedCommands[0] ?? "the nearest repository command"} and record the result before handoff; do not invent a product-journey E2E for this diff alone.`
       : draft.plan.changeAnalysis.intents[0]
         ? `Review each proposed scenario and its diff sources for ${draft.plan.changeAnalysis.intents[0].title} before using it as PR policy.`
       : flows.length > 0

@@ -183,7 +183,8 @@
         "mustIncludeLifecycle": ["pin a workspace record", "show it first"],
         "mustIncludeQaScenarios": ["Pinned record appears first", "Changed conditional state and fallback"],
         "mustFindEntrypoints": ["/records"],
-        "mustFindSelectors": ["pin-record", "Pinned record appears first"],
+        "mustFindSelectors": ["record-input", "add-record", "pin-record", "Pinned record appears first"],
+        "mustIncludeSteps": ["Fill Record Input with realistic data", "Create Record using Add Record"],
         "mustFindSuccessSignals": ["Pinned record appears first"],
         "maxBlankActions": 0,
         "maxGenericTitles": 0,
@@ -469,6 +470,35 @@
         "mustNotFindEvidence": ["fixture", "selector", "entrypoint", "manifest"],
         "mustFindSuccessSignals": ["changed test evidence runs"],
         "mustRecommendCommands": ["maestro test .maestro"],
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 4096
+      }
+    },
+    {
+      "name": "api-python-notification-routing",
+      "fixture": "test/benchmarks/api-python-notification-routing",
+      "commitMessage": "fix: route delivery notices to the configured operations dashboard",
+      "expect": {
+        "runner": "manual",
+        "readinessBasis": "repository-validation",
+        "automationApplicable": false,
+        "verificationStatus": "ready-to-run",
+        "routeStatus": "verification-ready-to-run",
+        "routeNextAction": "run-repository-command",
+        "mustRouteCommands": ["test_delivery_notice_destination.py"],
+        "minFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "source", "assertion"],
+        "mustReachFiles": [
+          "jobs/notifications/delivery_notice.py",
+          "project/settings/prod.py"
+        ],
+        "mustNameFlows": ["delivery"],
+        "mustNotNameFlows": ["Prod primary journey"],
+        "mustFindExistingEvidence": [
+          "jobs/notifications/tests/test_delivery_notice_destination.py"
+        ],
+        "mustRecommendCommands": ["test_delivery_notice_destination.py"],
         "maxBlankActions": 0,
         "maxGenericTitles": 0,
         "maxAgentBytes": 4096
