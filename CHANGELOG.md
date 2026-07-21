@@ -4,6 +4,9 @@
 
 ### Added
 
+- Added provenance-aware base resolution across QA, review, test-plan, and E2E output. QAMap now reads explicit input, PR CI metadata, repo-local Git configuration, and Git history in order, and discloses long-lived refs that point to the same commit.
+- Added a three-layer human QA decision view that preserves the complete risk map, separates executable evidence available now, and emits manual or agent contracts for important scenarios that cannot yet compile.
+- Added package-scoped JavaScript validation discovery and related-test Python commands through default or variant Compose files, primary application services, and container-local `uv` or Poetry runners.
 - Added a canonical `route` decision to QA JSON and compact agent output. It tells consumers whether the change needs an optional automation draft or existing repository validation, exposes an unambiguous status, and names the next action without relying on compatibility readiness scores.
 - Added the first provenance-pinned public PR benchmark, reduced from Cal.com PR #27765 under its MIT license. The contract requires QAMap to recover form-validation timing, exact diff evidence, existing regression tests, and edit/blur/correction/submission state-transition QA.
 - Added a repository-local manifest lifecycle regression that proves one human correction sharpens the current PR and is reused by the next PR without another prompt.
@@ -12,6 +15,9 @@
 
 ### Changed
 
+- Working-tree analysis now compares the selected merge base directly with the final worktree, so intermediate files removed later in the branch do not survive as stale changed-file or diff evidence.
+- Draft reporting now says `static-runnable` and `not executed` explicitly; generated tests with skipped placeholders or without observable assertions fail self-check instead of appearing runnable.
+- Specific commit-and-diff-backed intent titles now remain the flow language shown to reviewers; internal handler and serializer symbols only refine broad titles such as generic update or release work.
 - Form validation-mode changes now produce framework-neutral timing QA across initial editing, the configured validation trigger, stale-error correction, and final submission when both the previous and new modes are present in a form-shaped diff.
 - Agent payload compaction now preserves the canonical route decision before lower-priority detail, including under lean and emergency 4KB shapes.
 - Playwright drafts can now prepare an entity before exercising a newly added nested action when the same source exposes strongly related input and creation controls.
@@ -19,6 +25,9 @@
 
 ### Fixed
 
+- Nested page components no longer become fabricated routes, API endpoints no longer become browser navigation targets, API schema parameter names no longer become mobile screens, settlement vocabulary alone no longer creates payment setup, and unchanged success copy is no longer borrowed as a changed-flow assertion.
+- Capturing a current server timestamp with `timezone.now()` no longer creates scheduling and calendar-boundary QA; actual schedule, reminder, and timezone preference changes remain eligible.
+- Python Compose discovery no longer prefers a worker or scheduler over the primary web/API service merely because both services share the same Python image.
 - Repository-validation output no longer requires consumers to reconcile a compatibility-only `blocked` automation level with a `ready-to-run` repository command. The additive route status now expresses the applicable decision directly.
 - CLI command changes now use a `command-contract` verification mode, so mixed analyzer and package-surface diffs route to the discovered repository command instead of appearing as blocked product E2E drafts.
 - Python settings modules are no longer treated as product API behavior, while executable service modules remain eligible for contract impact.

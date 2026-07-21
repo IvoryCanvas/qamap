@@ -81,6 +81,7 @@ export { formatAgentQaDraft, formatMarkdownQaDraft, generateQaDraft } from "./qa
 export { buildQaReasoningTraces, qaTraceIdForScenario } from "./qa-trace.js";
 export { formatMarkdownReviewReport, formatReviewReport, reviewProject } from "./review.js";
 export { isRequiredScenarioEvidence, routeQaScenario } from "./scenario-routing.js";
+export { collectChangedFiles, resolveBaseRef, resolveMergeBase } from "./git-context.js";
 export { classifyChangeSourceRole } from "./source-role.js";
 export { scanProject } from "./scanner.js";
 export {
@@ -128,6 +129,12 @@ export type {
   InferredFlowAdapterOptions,
 } from "./behavior.js";
 export type { ManifestBehaviorAdapterOptions } from "./behavior-manifest.js";
+export type {
+  BaseRefResolution,
+  BaseRefSource,
+  ChangedFilesOptions,
+  GitChangedFile,
+} from "./git-context.js";
 export type { ChangeIntentBehaviorAdapterOptions } from "./behavior-intent.js";
 export type {
   BehaviorLifecycleStage,

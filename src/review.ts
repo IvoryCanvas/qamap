@@ -3,6 +3,8 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { collectChangedFiles, resolveBaseRef } from "./git-context.js";
+import type { BaseRefResolution } from "./git-context.js";
 import { scanProject } from "./scanner.js";
 import type { Finding, ScanOptions, ScanResult, Severity } from "./types.js";
 
@@ -32,6 +34,7 @@ export interface ReviewResult {
   root: string;
   scannedAt: string;
   base: string;
+  baseResolution: BaseRefResolution;
   head: string;
   changedFiles: ChangedFile[];
   newFindings: Finding[];
@@ -51,10 +54,14 @@ export async function reviewProject(rootInput: string, options: ReviewOptions = 
     throw new Error(`Review path must be inside workspace root: ${root}`);
   }
 
-  const base = options.base ?? (await defaultBaseRef(root));
   const head = options.head ?? "HEAD";
   const diffRoot = workspaceRoot ?? root;
-  const changedFiles = scopeChangedFiles(await getChangedFiles(diffRoot, base, head), relativeScanRoot);
+  const baseResolution = await resolveBaseRef(diffRoot, { explicit: options.base, head });
+  const base = baseResolution.ref;
+  const changedFiles = scopeChangedFiles(
+    await collectChangedFiles(diffRoot, { base, head }),
+    relativeScanRoot,
+  );
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "qamap-review-"));
 
   try {
@@ -98,6 +105,7 @@ export async function reviewProject(rootInput: string, options: ReviewOptions = 
       root,
       scannedAt: headResult.scannedAt,
       base,
+      baseResolution,
       head,
       changedFiles,
       newFindings,
@@ -115,6 +123,7 @@ export function formatReviewReport(result: ReviewResult): string {
   lines.push(`${result.tool.name} Review`);
   lines.push(`Root: ${result.root}`);
   lines.push(`Base: ${result.base}`);
+  lines.push(`Base selection: ${result.baseResolution.reason}`);
   lines.push(`Head: ${result.head}`);
   lines.push(`Changed files: ${result.changedFiles.length}`);
   lines.push(
@@ -192,6 +201,7 @@ export function formatMarkdownReviewReport(result: ReviewResult): string {
   lines.push("");
   lines.push(`- Root: \`${escapeMarkdownInline(result.root)}\``);
   lines.push(`- Base: \`${escapeMarkdownInline(result.base)}\``);
+  lines.push(`- Base selection: ${escapeMarkdownInline(result.baseResolution.reason)}`);
   lines.push(`- Head: \`${escapeMarkdownInline(result.head)}\``);
   lines.push(`- Changed files: ${result.changedFiles.length}`);
   lines.push(`- Changed risky files: ${result.changedRiskyFindings.length}`);
@@ -268,45 +278,6 @@ export function formatMarkdownReviewReport(result: ReviewResult): string {
   }
 
   return lines.join("\n");
-}
-
-async function defaultBaseRef(root: string): Promise<string> {
-  for (const candidate of ["origin/main", "main", "origin/master", "master"]) {
-    try {
-      await git(root, ["rev-parse", "--verify", "--quiet", candidate]);
-      return candidate;
-    } catch {
-      // Try the next common default branch name.
-    }
-  }
-  throw new Error("Could not infer a base ref. Pass --base <ref>.");
-}
-
-async function getChangedFiles(root: string, base: string, head: string): Promise<ChangedFile[]> {
-  const { stdout } = await git(root, ["diff", "--name-status", "--diff-filter=ACMRTUXB", `${base}...${head}`]);
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map(parseChangedFile);
-}
-
-function parseChangedFile(line: string): ChangedFile {
-  const [status, firstPath, secondPath] = line.split(/\t+/);
-  if (!status || !firstPath) {
-    throw new Error(`Could not parse git diff entry: ${line}`);
-  }
-  if (status.startsWith("R") || status.startsWith("C")) {
-    return {
-      status,
-      previousPath: firstPath,
-      path: secondPath ?? firstPath,
-    };
-  }
-  return {
-    status,
-    path: firstPath,
-  };
 }
 
 function scopeChangedFiles(changedFiles: ChangedFile[], relativeScanRoot: string): ChangedFile[] {

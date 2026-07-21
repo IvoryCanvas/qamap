@@ -1374,7 +1374,9 @@ function collectDiffRiskEvidence(addedDiffEvidence: AddedDiffEvidence): ChangeIn
           const calendarMatch = line.text.match(
             /(timezone|scheduledAt|\bschedule\w*\b|\breminder\w*\b|\bcalendar\b|\btomorrow\b|\bdaily\b)/i,
           );
-          if (calendarMatch) {
+          const recordsCurrentTimestamp = /^timezone$/i.test(calendarMatch?.[1] ?? "") &&
+            /\btimezone\.now\s*\(/i.test(line.text);
+          if (calendarMatch && !recordsCurrentTimestamp) {
             evidence.push(diffRiskEvidence(
               file,
               hunk,

@@ -36,6 +36,12 @@ One richly evidenced squash commit can reach high confidence. A title without co
 
 The analysis is deterministic and local. It does not execute repository code, contact GitHub, upload source, or call an LLM.
 
+## Base And Net Change Resolution
+
+The analysis range is evidence too. QAMap resolves a base from an explicit option, pull-request CI environment, repo-local Git configuration, or the nearest long-lived branch in Git history. The chosen source and explanation are carried through test-plan, review, E2E, QA, and compact agent output. Local history cannot always prove the hosting platform's PR target, so equivalent refs at the same commit are disclosed instead of being treated as distinct answers.
+
+Committed analysis uses the base/head merge-base range. Working-tree analysis compares that merge base directly with the final tracked worktree and then adds untracked files. This avoids preserving a stale intermediate change that was committed earlier in the branch but removed before review.
+
 ## Change Source Roles
 
 Before changed text can become behavior evidence, `src/source-role.ts` classifies its source as `product`, `command`, `analysis-rule`, `configuration`, `test`, `documentation`, or `generated`. The role is an evidence boundary, not a domain guess: vocabulary inside an analyzer regex, benchmark contract, CLI parser, or documentation example must not silently become product behavior.
@@ -62,6 +68,8 @@ Runner adapters then emit a second receipt for each routed scenario:
 - `review-only`: the scenario or repository has no executable adapter contract.
 
 A compilation receipt is static evidence, not a test result. Human output therefore calls these states `fully mapped`, `partially mapped`, and `not mapped`; the machine values remain stable for compatibility. Every `qa` result also carries an invocation-level `execution` receipt with `status: not-run` and `scope: static-analysis-and-draft-mapping`. Only explicit execution may produce pass or fail evidence. A required scenario that is partial or not compiled remains an execution blocker and prevents the draft from being described as runnable.
+
+Human output groups the same decision into three layers: the complete QA and risk map, executable evidence available now, and manual or agent contracts for the remaining scenarios. Runner absence affects only the latter two layers; it never deletes a risk-backed QA scenario. A draft may be called `static-runnable` only when its structural self-check finds an entrypoint, observable assertion, and no skipped placeholder. The label always includes `not executed` until a separate execution boundary returns evidence.
 
 The additive `route` object is the canonical machine decision above those compatibility values. It separates optional draft preparation from repository validation and names the next action directly: complete or review a draft, run an existing command, or define a missing command. Agent payload compaction preserves this object before lower-priority detail, so a repository-verification result cannot be misread as blocked product E2E work.
 

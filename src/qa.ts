@@ -27,6 +27,7 @@ export interface QaDraftResult {
   root: string;
   generatedAt: string;
   base: string;
+  baseResolution: E2eDraftResult["plan"]["baseResolution"];
   head: string;
   includeWorkingTree: boolean;
   project: E2eProjectType;
@@ -161,6 +162,7 @@ export async function generateQaDraft(rootInput: string, options: QaDraftOptions
     root,
     generatedAt: new Date().toISOString(),
     base: draft.plan.base,
+    baseResolution: draft.plan.baseResolution,
     head: draft.plan.head,
     includeWorkingTree: draft.plan.includeWorkingTree,
     project: draft.plan.project.type,
@@ -297,6 +299,7 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
   const summary = {
     schema: { name: "qamap.qa", version: 1 },
     base: result.base,
+    baseSource: result.baseResolution.source,
     head: result.head,
     project: result.project,
     runner: result.runner,
@@ -1110,6 +1113,7 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
   lines.push("");
   lines.push(`- Root: \`${escapeMarkdownInline(result.root)}\``);
   lines.push(`- Base: \`${escapeMarkdownInline(result.base)}\``);
+  lines.push(`- Base selection: ${escapeMarkdownInline(result.baseResolution.reason)}`);
   lines.push(`- Head: \`${escapeMarkdownInline(result.head)}\``);
   lines.push(`- Change scope: ${result.includeWorkingTree ? "committed and uncommitted working-tree changes" : "committed branch changes only"}`);
   lines.push(`- Project: ${formatProjectType(result.project)}`);
@@ -1123,6 +1127,8 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
   lines.push("- QA analysis and scenario routing do not require the optional automation runner to be installed.");
   lines.push(`- Draft flows: ${result.flows.length}`);
   lines.push("");
+
+  appendQaDecisionLayers(lines, result, nextCommand);
 
   appendQaReasoningTraceMarkdown(lines, result);
 
@@ -1222,11 +1228,85 @@ export function formatMarkdownQaDraft(result: QaDraftResult): string {
     if (result.runnerSetup.status === "proposed" && result.runnerSetup.setupCommand) {
       lines.push(`- If the team accepts this adapter, inspect its setup proposal: \`${escapeMarkdownInline(result.runnerSetup.setupCommand)}\``);
     }
-    lines.push("- Treat generated code as review-only until its scenario sources, assertions, fixtures, and selectors are confirmed.");
+    const primaryStatus = result.flows[0]?.runnableStatus;
+    lines.push(
+      primaryStatus === "runnable-candidate"
+        ? "- Static checks passed for this candidate, but QAMap did not run the target application. Run the repository command before claiming the scenario passed."
+        : "- Keep generated code review-only until its scenario sources, assertions, fixtures, and selectors are confirmed.",
+    );
     lines.push("");
   }
 
   return lines.join("\n");
+}
+
+function appendQaDecisionLayers(
+  lines: string[],
+  result: QaDraftResult,
+  nextCommand: string | undefined,
+): void {
+  const scenarios = result.changeAnalysis.intents.flatMap((intent) => intent.scenarios);
+  const automationByScenario = new Map(
+    result.flows.flatMap((flow) =>
+      flow.scenarioAutomation.map((receipt) => [receipt.scenarioId, { receipt, flow }] as const)
+    ),
+  );
+  const staticRunnableFlows = result.flows.filter((flow) => flow.runnableStatus === "runnable-candidate");
+  const contractScenarios = scenarios.filter((scenario) => {
+    const automation = automationByScenario.get(scenario.id)?.receipt;
+    return !automation || automation.status !== "compiled";
+  });
+
+  lines.push("## QA Decision Layers");
+  lines.push("");
+  lines.push("### 1. Important QA And Risk Map");
+  lines.push("");
+  lines.push(
+    scenarios.length > 0
+      ? `- ${scenarios.length} diff-backed scenario${scenarios.length === 1 ? "" : "s"} remain in the review scope regardless of current automation readiness.`
+      : "- No diff-backed scenario was inferred; heuristic suggestions remain review-only.",
+  );
+  lines.push("- Runner, selector, fixture, or environment gaps do not remove an important risk from this layer.");
+  lines.push("");
+
+  lines.push("### 2. Executable Evidence Available Now");
+  lines.push("");
+  if (nextCommand) {
+    lines.push(`- Repository command: \`${escapeMarkdownInline(nextCommand)}\` (selected but not run by QAMap).`);
+  }
+  for (const flow of staticRunnableFlows.slice(0, 4)) {
+    lines.push(
+      `- Static-runnable draft: \`${escapeMarkdownInline(flow.draftPath)}\` for ${escapeMarkdownInline(flow.title)}; self-checks passed, target application not executed.`,
+    );
+  }
+  if (!nextCommand && staticRunnableFlows.length === 0) {
+    lines.push("- None yet. QAMap is not claiming executable coverage for this change.");
+  }
+  lines.push("");
+
+  lines.push("### 3. Manual Or Agent QA Contracts");
+  lines.push("");
+  if (contractScenarios.length === 0) {
+    lines.push("- No unmapped scenario contract remains.");
+  } else {
+    for (const scenario of contractScenarios.slice(0, 6)) {
+      const automation = automationByScenario.get(scenario.id)?.receipt;
+      lines.push(`- [${scenario.priority}] ${escapeMarkdownInline(scenario.title)}`);
+      if (scenario.setup[0]) {
+        lines.push(`  - Setup: ${escapeMarkdownInline(scenario.setup[0])}`);
+      }
+      if (scenario.steps[0]) {
+        lines.push(`  - Action: ${escapeMarkdownInline(scenario.steps[0])}`);
+      }
+      if (scenario.assertions[0]) {
+        lines.push(`  - Proof: ${escapeMarkdownInline(scenario.assertions[0])}`);
+      }
+      if (automation?.blockers[0]) {
+        lines.push(`  - Automation gap: ${escapeMarkdownInline(automation.blockers[0])}`);
+      }
+    }
+  }
+  lines.push("");
 }
 
 function summarizeTraceRouting(traces: QaReasoningTrace[]): {
@@ -1715,10 +1795,10 @@ function formatDraftSource(source: E2eDraftFile["source"]): string {
 
 function formatRunnableStatus(status: E2eDraftFile["runnableStatus"]): string {
   if (status === "runnable-candidate") {
-    return "runnable candidate";
+    return "static-runnable candidate; not executed";
   }
   if (status === "near-runnable") {
-    return "near runnable";
+    return "partially mapped; not executed";
   }
   return "review only";
 }
