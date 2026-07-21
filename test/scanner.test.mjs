@@ -406,7 +406,7 @@ test("generateTestPlan selects the nearest long-lived branch as the PR base", as
   await git(root, ["add", "."]);
   await git(root, ["commit", "-m", "feat: add archived catalog filter"]);
 
-  const plan = await generateTestPlan(root);
+  const plan = await withoutBaseRefEnvironment(() => generateTestPlan(root));
   const markdown = formatMarkdownTestPlan(plan);
 
   assert.equal(plan.base, "develop");
@@ -431,7 +431,7 @@ test("generateTestPlan reports equivalent long-lived base refs without pretendin
   await git(root, ["add", "."]);
   await git(root, ["commit", "-m", "feat: enable feature"]);
 
-  const plan = await generateTestPlan(root);
+  const plan = await withoutBaseRefEnvironment(() => generateTestPlan(root));
 
   assert.equal(plan.base, "develop");
   assert.deepEqual(plan.baseResolution.equivalentRefs, ["main"]);
@@ -8220,6 +8220,33 @@ async function initGitRepo(root) {
   await git(root, ["init"]);
   await git(root, ["config", "user.email", "qamap@example.invalid"]);
   await git(root, ["config", "user.name", "QAMap Test"]);
+}
+
+async function withoutBaseRefEnvironment(callback) {
+  const names = [
+    "QAMAP_BASE_REF",
+    "GITHUB_BASE_REF",
+    "CI_MERGE_REQUEST_TARGET_BRANCH_NAME",
+    "BITBUCKET_PR_DESTINATION_BRANCH",
+    "BUILDKITE_PULL_REQUEST_BASE_BRANCH",
+    "CHANGE_TARGET",
+    "SYSTEM_PULLREQUEST_TARGETBRANCH",
+  ];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  for (const name of names) {
+    delete process.env[name];
+  }
+  try {
+    return await callback();
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
 }
 
 async function writeWorkspaceGuardrails(root) {
