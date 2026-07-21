@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   analyzeVerificationManifestContext,
   buildDoctorResult,
+  collectAddedDiffEvidence,
   explainVerificationManifest,
   evaluateChangeReadiness,
   formatVerificationManifestContextResult,
@@ -383,6 +384,335 @@ test("generateTestPlan suggests domain-focused checks from changed files", async
   assert.deepEqual(plan.suggestedCommands, ["pnpm test", "pnpm run typecheck"]);
   assert.match(markdown, /# QAMap Test Plan/);
   assert.match(markdown, /Verify loading, empty, error, and success states/);
+});
+
+test("generateTestPlan selects the nearest long-lived branch as the PR base", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/catalog"), { recursive: true });
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  await writeFile(path.join(root, "src/catalog/list.ts"), "export const listCatalog = () => [];\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "develop"]);
+  await writeFile(path.join(root, "src/catalog/list.ts"), "export const listCatalog = () => ['active'];\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "develop catalog baseline"]);
+
+  await git(root, ["switch", "-c", "feature/catalog-filter"]);
+  await writeFile(path.join(root, "src/catalog/list.ts"), "export const listCatalog = () => ['active', 'archived'];\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: add archived catalog filter"]);
+
+  const plan = await withoutBaseRefEnvironment(() => generateTestPlan(root));
+  const markdown = formatMarkdownTestPlan(plan);
+
+  assert.equal(plan.base, "develop");
+  assert.equal(plan.baseResolution.source, "git-history");
+  assert.match(plan.baseResolution.reason, /nearest long-lived branch/i);
+  assert.deepEqual(plan.changedFiles.map((file) => file.path), ["src/catalog/list.ts"]);
+  assert.match(markdown, /Base selection: Selected the nearest long-lived branch/);
+});
+
+test("generateTestPlan reports equivalent long-lived base refs without pretending to know PR metadata", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  await writeFile(path.join(root, "feature.ts"), "export const enabled = false;\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+  await git(root, ["branch", "develop"]);
+
+  await git(root, ["switch", "-c", "feature/equivalent-base"]);
+  await writeFile(path.join(root, "feature.ts"), "export const enabled = true;\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: enable feature"]);
+
+  const plan = await withoutBaseRefEnvironment(() => generateTestPlan(root));
+
+  assert.equal(plan.base, "develop");
+  assert.deepEqual(plan.baseResolution.equivalentRefs, ["main"]);
+  assert.match(plan.baseResolution.reason, /main points to the same commit, so the diff is identical/);
+});
+
+test("generateTestPlan resolves CI branch refs through non-origin remote tracking refs", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  await writeFile(path.join(root, "feature.ts"), "export const value = 'main';\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "develop"]);
+  await writeFile(path.join(root, "feature.ts"), "export const value = 'develop';\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "develop baseline"]);
+  await git(root, ["update-ref", "refs/remotes/upstream/develop", "develop"]);
+  await git(root, ["remote", "add", "upstream", root]);
+
+  await git(root, ["switch", "-c", "feature/ci-base"]);
+  await writeFile(path.join(root, "feature.ts"), "export const value = 'feature';\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: update feature value"]);
+  await git(root, ["branch", "-D", "develop"]);
+
+  const previous = process.env.QAMAP_BASE_REF;
+  process.env.QAMAP_BASE_REF = "refs/heads/develop";
+  try {
+    const plan = await generateTestPlan(root);
+    assert.equal(plan.base, "upstream/develop");
+    assert.equal(plan.baseResolution.source, "environment");
+    assert.match(plan.baseResolution.reason, /QAMAP_BASE_REF/);
+    assert.deepEqual(plan.changedFiles.map((file) => file.path), ["feature.ts"]);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.QAMAP_BASE_REF;
+    } else {
+      process.env.QAMAP_BASE_REF = previous;
+    }
+  }
+});
+
+test("working-tree analysis uses the final net diff instead of stale committed changes", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/profile"), { recursive: true });
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+  await writeFile(path.join(root, "src/profile/save.ts"), "export const saveProfile = () => 'idle';\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/profile-save"]);
+  await writeFile(path.join(root, "src/profile/save.ts"), "export const saveProfile = () => 'saving';\n");
+  await writeFile(
+    path.join(root, "src/profile/temporary-banner.ts"),
+    "export const temporaryBanner = 'Profile saved';\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: save profile with temporary banner"]);
+
+  await rm(path.join(root, "src/profile/temporary-banner.ts"));
+  await writeFile(path.join(root, "src/profile/save.ts"), "export const saveProfile = () => 'saved';\n");
+
+  const plan = await generateTestPlan(root, { base: "main", includeWorkingTree: true });
+  const evidence = await collectAddedDiffEvidence(root, {
+    base: "main",
+    head: "HEAD",
+    includeWorkingTree: true,
+  });
+  const e2e = await generateE2ePlan(root, { base: "main", includeWorkingTree: true });
+
+  assert.deepEqual(plan.changedFiles.map((file) => file.path), ["src/profile/save.ts"]);
+  assert.equal(evidence["src/profile/temporary-banner.ts"], undefined);
+  assert.equal(
+    e2e.changeAnalysis.intents.some((intent) => intent.files.includes("src/profile/temporary-banner.ts")),
+    false,
+  );
+});
+
+test("generateTestPlan scopes monorepo validation commands to affected packages", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "services/catalog/src"), { recursive: true });
+  await mkdir(path.join(root, "services/identity/src"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      private: true,
+      packageManager: "pnpm@10.32.1",
+      scripts: { typecheck: "tsc --noEmit" },
+    }),
+  );
+  await writeFile(path.join(root, "pnpm-workspace.yaml"), "packages:\n  - services/*\n");
+  await writeFile(
+    path.join(root, "services/catalog/package.json"),
+    JSON.stringify({
+      name: "@example/catalog",
+      scripts: { test: "node --test", typecheck: "tsc --noEmit" },
+    }),
+  );
+  await writeFile(
+    path.join(root, "services/identity/package.json"),
+    JSON.stringify({
+      name: "@example/identity",
+      scripts: { test: "node --test", lint: "eslint ." },
+    }),
+  );
+  await writeFile(path.join(root, "services/catalog/src/list.ts"), "export const list = () => [];\n");
+  await writeFile(path.join(root, "services/identity/src/session.ts"), "export const session = true;\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/catalog-sort"]);
+  await writeFile(path.join(root, "services/catalog/src/list.ts"), "export const list = () => ['newest'];\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: sort catalog entries"]);
+
+  const plan = await generateTestPlan(root, { base: "main" });
+
+  assert.deepEqual(plan.suggestedCommands, [
+    "pnpm --filter @example/catalog test",
+    "pnpm --filter @example/catalog run typecheck",
+  ]);
+  assert.equal(plan.suggestedCommands.some((command) => command === "pnpm run typecheck"), false);
+  assert.equal(plan.suggestedCommands.some((command) => /identity/.test(command)), false);
+});
+
+test("generateTestPlan does not invent workspace filters for unrelated nested packages", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "examples/widget/src"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      packageManager: "pnpm@10.32.1",
+      scripts: { test: "node --test", typecheck: "tsc --noEmit" },
+    }),
+  );
+  await writeFile(
+    path.join(root, "examples/widget/package.json"),
+    JSON.stringify({ name: "example-widget", scripts: { test: "node --test" } }),
+  );
+  await writeFile(path.join(root, "examples/widget/src/index.ts"), "export const widget = 'base';\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/widget-example"]);
+  await writeFile(path.join(root, "examples/widget/src/index.ts"), "export const widget = 'changed';\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "docs: update widget example"]);
+
+  const plan = await generateTestPlan(root, { base: "main" });
+
+  assert.deepEqual(plan.suggestedCommands, ["pnpm test", "pnpm run typecheck"]);
+  assert.equal(plan.suggestedCommands.some((command) => command.includes("--filter")), false);
+});
+
+test("generateTestPlan uses a Python compose service and narrows pytest to related tests", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/orders"), { recursive: true });
+  await mkdir(path.join(root, "tests/orders"), { recursive: true });
+  await mkdir(path.join(root, "tests/identity"), { recursive: true });
+  await writeFile(
+    path.join(root, "pyproject.toml"),
+    [
+      "[project]",
+      'name = "example-api"',
+      "",
+      "[tool.pytest.ini_options]",
+      'testpaths = ["tests"]',
+    ].join("\n"),
+  );
+  await writeFile(path.join(root, "Dockerfile"), "FROM python:3.12-slim\nWORKDIR /workspace\n");
+  await writeFile(
+    path.join(root, "compose.yml"),
+    [
+      "services:",
+      "  db:",
+      "    image: postgres:17",
+      "  api:",
+      "    build: .",
+      "    command: python -m app",
+      "    volumes:",
+      "      - .:/workspace",
+    ].join("\n"),
+  );
+  await writeFile(path.join(root, "app/orders/service.py"), "def submit_order():\n    return 'queued'\n");
+  await writeFile(
+    path.join(root, "tests/orders/test_service.py"),
+    "def test_submit_order():\n    assert True\n",
+  );
+  await writeFile(
+    path.join(root, "tests/identity/test_service.py"),
+    "def test_identity_service():\n    assert True\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/order-retry"]);
+  await writeFile(path.join(root, "app/orders/service.py"), "def submit_order():\n    return 'retrying'\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "fix: retry queued orders"]);
+
+  const plan = await generateTestPlan(root, { base: "main" });
+
+  assert.deepEqual(plan.suggestedCommands, [
+    "docker compose run --rm api pytest tests/orders/test_service.py",
+  ]);
+});
+
+test("generateTestPlan supports variant compose files and container Python runners", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/billing"), { recursive: true });
+  await mkdir(path.join(root, "tests/billing"), { recursive: true });
+  await writeFile(
+    path.join(root, "pyproject.toml"),
+    [
+      "[project]",
+      'name = "example-service"',
+      "",
+      "[tool.pytest.ini_options]",
+      'testpaths = ["tests"]',
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "Dockerfile.dev"),
+    [
+      "FROM python:3.12-slim",
+      "WORKDIR /workspace",
+      "RUN pip install uv",
+      'CMD ["uv", "run", "python", "-m", "src"]',
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "docker-compose.dev.yml"),
+    [
+      "services:",
+      "  database:",
+      "    image: postgres:17",
+      "  backend:",
+      "    build:",
+      "      context: .",
+      "      dockerfile: Dockerfile.dev",
+      "    ports:",
+      '      - "8080:8080"',
+      "    volumes:",
+      "      - .:/workspace",
+      "  task-worker:",
+      "    build:",
+      "      context: .",
+      "      dockerfile: Dockerfile.dev",
+      "    command: uv run celery -A src worker",
+      "    volumes:",
+      "      - .:/workspace",
+    ].join("\n"),
+  );
+  await writeFile(path.join(root, "src/billing/service.py"), "def capture():\n    return 'pending'\n");
+  await writeFile(path.join(root, "tests/billing/test_service.py"), "def test_capture():\n    assert True\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/capture-status"]);
+  await writeFile(path.join(root, "src/billing/service.py"), "def capture():\n    return 'completed'\n");
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: expose capture completion"]);
+
+  const plan = await generateTestPlan(root, { base: "main" });
+
+  assert.deepEqual(plan.suggestedCommands, [
+    "docker compose -f docker-compose.dev.yml run --rm backend uv run pytest tests/billing/test_service.py",
+  ]);
 });
 
 test("generateTestPlan scopes monorepo changes to the requested package", async () => {
@@ -1692,6 +2022,10 @@ test("generateE2ePlan detects Django service apps from a workspace root", async 
     ["Django==5.0.0", "djangorestframework==3.15.0", "pytest==8.0.0"].join("\n"),
   );
   await writeFile(path.join(appRoot, "admin.py"), "class ListingAdmin:\n    list_display = ['id']\n");
+  await writeFile(
+    path.join(appRoot, "schema.py"),
+    "status = OpenApiParameter(name='status', type=str)\n",
+  );
   await writeFile(path.join(appRoot, "tests/test_admin.py"), "def test_admin():\n    assert True\n");
   await git(workspaceRoot, ["add", "."]);
   await git(workspaceRoot, ["commit", "-m", "base"]);
@@ -1699,6 +2033,13 @@ test("generateE2ePlan detects Django service apps from a workspace root", async 
 
   await git(workspaceRoot, ["switch", "-c", "feature/listing-admin-contract"]);
   await writeFile(path.join(appRoot, "admin.py"), "class ListingAdmin:\n    list_display = ['id', 'status']\n");
+  await writeFile(
+    path.join(appRoot, "schema.py"),
+    [
+      "status = OpenApiParameter(name='status', type=str)",
+      "commission = OpenApiParameter(name='commission_percentage', type=float)",
+    ].join("\n"),
+  );
   await writeFile(path.join(appRoot, "tests/test_admin.py"), "def test_admin_status():\n    assert True\n");
   await git(workspaceRoot, ["add", "."]);
   await git(workspaceRoot, ["commit", "-m", "update listing admin"]);
@@ -1719,6 +2060,46 @@ test("generateE2ePlan detects Django service apps from a workspace root", async 
   assert.equal(flow.title, "Admin API contract smoke checklist");
   assert.equal(flow.languageBrief.actor, "API consumer or upstream service");
   assert.ok(flow.fixtureReadiness.backendSignals.includes("admin.py"));
+  assert.equal(plan.flows.flatMap((item) => item.entrypoints).some((entrypoint) => entrypoint.kind === "screen"), false);
+});
+
+test("generateE2ePlan keeps specific API intent in product language", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await writeFile(path.join(root, "manage.py"), "import django\n");
+  await writeFile(path.join(root, "requirements.txt"), "Django==5.0.0\ndjangorestframework==3.15.0\n");
+  await writeFile(
+    path.join(root, "views.py"),
+    "class OrderView:\n    request_serializer_class = LegacyOrderSerializer\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/expedited-order"]);
+  await writeFile(
+    path.join(root, "views.py"),
+    [
+      "class OrderView:",
+      "    request_serializer_class = ExpeditedOrderSerializer",
+      "    def post(self, request):",
+      "        serializer = self.request_serializer_class(data=request.data)",
+      "        serializer.is_valid(raise_exception=True)",
+      "        return Response(serializer.data, status=201)",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: add expedited order contract"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const flow = plan.flows.find((item) => item.intentId);
+
+  assert.ok(flow);
+  assert.equal(flow.title, "Add expedited order contract");
+  assert.equal(flow.kind, "api");
+  assert.equal(flow.languageBrief.actor, "API consumer or upstream service");
+  assert.match(flow.languageBrief.successSignal, /expected status, response shape, auth behavior/);
+  assert.equal(flow.entrypoints.some((entrypoint) => entrypoint.kind === "screen"), false);
 });
 
 test("generateE2ePlan names versioned API service paths with domain language", async () => {
@@ -3318,11 +3699,21 @@ test("generateE2ePlan captures Playwright execution profile and self-check block
     draftFile.selfCheck?.checks.find((check) => check.name === "Compiled actions")?.status,
     "fail",
   );
+  assert.equal(
+    draftFile.selfCheck?.checks.find((check) => check.name === "Skipped tests")?.status,
+    "fail",
+  );
+  assert.equal(
+    draftFile.selfCheck?.checks.find((check) => check.name === "Executable assertions")?.status,
+    "fail",
+  );
   assert.equal(draftFile.selfCheck?.blockers.some((blocker) => /Unresolved placeholders/.test(blocker)), false);
   assert.equal(draft.readinessSummary.reviewOnly > 0, true);
   assert.equal(draft.readinessSummary.selfCheckFail > 0, true);
   assert.equal(draft.readinessSummary.topBlockers.some((blocker) => /Unresolved placeholders/.test(blocker)), false);
   assert.deepEqual(draftFile.executionBlockers?.filter((blocker) => /Playwright|baseURL|start command/i.test(blocker)), []);
+  assert.equal(draftFile.executionBlockers?.some((blocker) => /Compiled actions/.test(blocker)), true);
+  assert.equal(draftFile.executionBlockers?.some((blocker) => /Skipped tests/.test(blocker)), false);
   assert.equal((draftFile.blockingValidationGapCount ?? 0) > 0, true);
   assert.deepEqual(draftFile.executionBlockers?.filter((blocker) => /validation gap/i.test(blocker)), []);
   assert.match(formatMarkdownE2eDraft(draft), /Review-only files: 1/);
@@ -3673,11 +4064,20 @@ test("generateE2eDraft emits runnable Playwright role and input actions", async 
   assert.equal(draftFile.selfCheck?.status, "pass");
   assert.equal(draftFile.selfCheck?.summary, "Playwright draft passed static runner checks.");
   assert.equal(draftFile.runnableStatus, "runnable-candidate");
+  assert.equal(
+    draftFile.selfCheck?.checks.find((check) => check.name === "Skipped tests")?.status,
+    "pass",
+  );
+  assert.equal(
+    draftFile.selfCheck?.checks.find((check) => check.name === "Executable assertions")?.status,
+    "pass",
+  );
   assert.equal(draft.readinessSummary.runnableCandidates, 1);
   assert.equal(draft.readinessSummary.selfCheckPass, 1);
   assert.equal(draft.readinessSummary.totalTodos, 0);
   assert.match(formatMarkdownE2eDraft(draft), /Draft Self Checks/);
   assert.match(formatMarkdownE2eDraft(draft), /Self-checks: 1 pass, 0 warning, 0 fail/);
+  assert.match(formatMarkdownE2eDraft(draft), /Static-runnable candidates \(not executed\): 1/);
   assert.doesNotMatch(formatMarkdownE2eDraft(draft), /Replace starter smoke assertions with domain assertions/);
   assert.doesNotMatch(spec, /page\.getByLabel\("Profile email"\)/);
   assert.doesNotMatch(spec, /\/\/ TODO: Fill profile email/);
@@ -4177,6 +4577,115 @@ test("generateE2ePlan skips access route folders when naming scenarios", async (
   assert.ok(plan.domainLanguage.scenarios.some((scenario) => scenario.title === "Bundle Apply Now"));
   assert.ok(!plan.domainLanguage.terms.some((term) => term.term === "Public"));
   assert.ok(!plan.domainLanguage.scenarios.some((scenario) => scenario.title === "Public primary journey"));
+});
+
+test("generateE2ePlan does not turn nested UI components or settlement vocabulary into payment routes", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/pages/operations/components"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: { test: "playwright test" },
+      dependencies: { "@playwright/test": "^1.56.0", vue: "^3.5.0" },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/pages/operations/components/SettlementSummaryPanel.vue"),
+    "<template><section>Settlement summary</section></template>\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/settlement-summary"]);
+  await writeFile(
+    path.join(root, "src/pages/operations/components/SettlementSummaryPanel.vue"),
+    "<template><section>Review settlement batch summary</section></template>\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: show settlement batch summary"]);
+
+  const plan = await generateE2ePlan(root, { base: "main" });
+  const relevantFlows = plan.flows.filter((flow) =>
+    flow.files.includes("src/pages/operations/components/SettlementSummaryPanel.vue")
+  );
+
+  assert.ok(relevantFlows.length > 0);
+  assert.equal(
+    relevantFlows.some((flow) => flow.entrypoints.some((entrypoint) => entrypoint.kind === "route")),
+    false,
+  );
+  assert.equal(
+    relevantFlows.some((flow) => flow.setupHints.some((hint) => hint.kind === "payment")),
+    false,
+  );
+});
+
+test("generateE2ePlan does not navigate to API routes or reuse unchanged success copy", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/app/api/catalog"), { recursive: true });
+  await mkdir(path.join(root, "src/pages/profile"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: { test: "playwright test" },
+      dependencies: { "@playwright/test": "^1.56.0", next: "^15.0.0", react: "^19.0.0" },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/app/api/catalog/route.ts"),
+    "export async function GET() { return Response.json({ items: [] }); }\n",
+  );
+  await writeFile(
+    path.join(root, "src/pages/profile/ProfilePage.tsx"),
+    [
+      "export function ProfilePage() {",
+      "  return <main>",
+      "    <p>Settings saved</p>",
+      "    <button>Save profile</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/catalog-profile"]);
+  await writeFile(
+    path.join(root, "src/app/api/catalog/route.ts"),
+    "export async function GET() { return Response.json({ items: ['new'] }); }\n",
+  );
+  await writeFile(
+    path.join(root, "src/pages/profile/ProfilePage.tsx"),
+    [
+      "export function ProfilePage() {",
+      "  return <main>",
+      "    <p>Settings saved</p>",
+      "    <button data-testid=\"profile-save\">Save profile</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: update catalog and profile save"]);
+
+  const plan = await generateE2ePlan(root, { base: "main" });
+  const apiFlows = plan.flows.filter((flow) => flow.files.includes("src/app/api/catalog/route.ts"));
+  const profileFlows = plan.flows.filter((flow) => flow.files.includes("src/pages/profile/ProfilePage.tsx"));
+
+  assert.ok(apiFlows.length > 0);
+  assert.equal(
+    apiFlows.some((flow) => flow.entrypoints.some((entrypoint) => entrypoint.kind === "route" && entrypoint.value === "/api/catalog")),
+    false,
+  );
+  assert.ok(profileFlows.length > 0);
+  assert.equal(
+    profileFlows.some((flow) => flow.languageBrief.successSignal === 'visible text "Settings saved" appears'),
+    false,
+  );
 });
 
 test("generateE2ePlan matches workspace core flows for package scans", async () => {
@@ -5751,6 +6260,10 @@ test("qa command emits a PR comment draft without requiring a manifest", async (
   assert.match(markdown, /- QA proposal: /);
   assert.match(markdown, /QA analysis: completed independently of runner setup/);
   assert.match(markdown, /Automation stage:/);
+  assert.match(markdown, /## QA Decision Layers/);
+  assert.match(markdown, /### 1\. Important QA And Risk Map/);
+  assert.match(markdown, /### 2\. Executable Evidence Available Now/);
+  assert.match(markdown, /### 3\. Manual Or Agent QA Contracts/);
   assert.match(markdown, /QA analysis and scenario routing do not require the optional automation runner/);
   assert.match(markdown, /- Repository validation: `/);
   assert.match(markdown, /- Optional automation gap/);
@@ -7707,6 +8220,33 @@ async function initGitRepo(root) {
   await git(root, ["init"]);
   await git(root, ["config", "user.email", "qamap@example.invalid"]);
   await git(root, ["config", "user.name", "QAMap Test"]);
+}
+
+async function withoutBaseRefEnvironment(callback) {
+  const names = [
+    "QAMAP_BASE_REF",
+    "GITHUB_BASE_REF",
+    "CI_MERGE_REQUEST_TARGET_BRANCH_NAME",
+    "BITBUCKET_PR_DESTINATION_BRANCH",
+    "BUILDKITE_PULL_REQUEST_BASE_BRANCH",
+    "CHANGE_TARGET",
+    "SYSTEM_PULLREQUEST_TARGETBRANCH",
+  ];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  for (const name of names) {
+    delete process.env[name];
+  }
+  try {
+    return await callback();
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
 }
 
 async function writeWorkspaceGuardrails(root) {

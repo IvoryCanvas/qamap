@@ -20,11 +20,23 @@ pnpm exec qamap init --scripts .
 
 Use `npx --yes @ivorycanvas/qamap@latest ...` for one-off human runs without installing QAMap into the target repository. Packaged agent skills use an explicit `npm exec --package` form so they do not invoke the target repository's package manager or Corepack metadata flow.
 
+`--base` is optional. QAMap resolves it from an explicit flag, CI pull-request metadata, `branch.<name>.qamap-base` or `qamap.base` Git config, and finally the nearest long-lived branch in local Git history. Reports include the selected source and reason. If multiple long-lived refs point to the same commit, they are reported as equivalent rather than presented as separately proven PR metadata.
+
+`--include-working-tree` compares the selected merge base directly with the final worktree, then adds untracked files. This is a net-state comparison: a committed file that was later removed locally does not remain as stale QA evidence.
+
 ## Reading The Output
 
 Human-facing reports (`text` and `markdown` formats) open with an **At a Glance** section: evidence-backed change intent, behavior lifecycle, affected behavior, the reviewer question to answer before merge, concrete repository evidence, trace coverage, the proposed draft path, and optional automation gaps. The **QA Reasoning Trace** section then gives each selected scenario a stable ID and shows the causal path from a diff source to affected behavior, risk, routing decision, and optional artifact. Runner information appears later as an automation adapter. When printed to an interactive terminal the report is colorized (headings, statuses, priority tags, inline commands); files written with `--output`, pipes, CI logs, and the machine formats (`json`, `agent`, `sarif`) are always plain. The standard `NO_COLOR` and `FORCE_COLOR` environment variables are honored.
 
 Scenario routing and draft mapping answer different questions. Routing explains what the changed behavior should prove before merge. **Draft Mapping And Context Gaps** explains why an optional generated artifact may still need a selector, fixture, runner, or repository fact. Those draft gaps do not invalidate the runner-independent QA judgment and are not automatically PR merge requirements.
+
+Human QA output makes that boundary visible in three layers:
+
+1. **Important QA And Risk Map** keeps every evidence-backed scenario, including cases that require human review.
+2. **Executable Evidence Available Now** lists existing validation commands and structurally self-checked drafts without claiming they ran.
+3. **Manual Or Agent QA Contracts** preserves the exact setup, action, outcome, and missing evidence for scenarios that cannot yet compile deterministically.
+
+`static-runnable` means the generated artifact has an entrypoint, observable assertion, no skipped placeholder, and passing QAMap self-checks. It does not mean the target application or command was executed.
 
 Draft readiness is reported as a **stage on a fixed four-step journey**, for example `Stage: setup needed (1 of 4) — readiness 0/100`. A fresh repository usually starts at stage 1 — that is the expected starting point, not a failure. Each stage maps to a stable compatibility `readiness.level` value in the `json` and `agent` formats:
 
@@ -92,6 +104,8 @@ That means QAMap is most valuable when it becomes the team's verification base: 
 | `qamap init --scripts .` | Add collision-safe `qa`, `qa:local`, and `qa:e2e` package scripts for repeat use in a JavaScript repository. |
 
 For monorepos, pass `--workspace-root` when scanning a package. Package-local checks still use the package directory, while repo-level guardrails such as `AGENTS.md`, `.github/workflows`, `LICENSE`, `SECURITY.md`, and `CONTRIBUTING.md` are read from the workspace root.
+
+Suggested validation commands follow the changed ownership boundary where possible. JavaScript workspaces receive package-scoped commands, and Python repositories can receive related pytest paths through a detected Compose service and container runner. These are commands to run, never pre-recorded pass results.
 
 ### Short Package Scripts
 

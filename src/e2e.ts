@@ -70,7 +70,7 @@ export type E2eFlowKind =
   | "command"
   | "domain"
   | "changed-file";
-export type E2eEntrypointKind = "route" | "screen" | "command";
+export type E2eEntrypointKind = "route" | "screen" | "endpoint" | "command";
 export type E2eEntrypointConfidence = "high" | "medium" | "low";
 export type E2eSetupHintKind = "auth" | "network" | "fixture" | "environment" | "payment" | "state";
 export type E2eSetupHintConfidence = "high" | "medium" | "low";
@@ -272,6 +272,7 @@ export interface E2ePlanResult {
   workspaceRoot?: string;
   generatedAt: string;
   base: string;
+  baseResolution: TestPlanResult["baseResolution"];
   head: string;
   includeWorkingTree: boolean;
   project: E2eProjectProfile;
@@ -637,6 +638,7 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
     workspaceRoot: testPlan.workspaceRoot,
     generatedAt: new Date().toISOString(),
     base: testPlan.base,
+    baseResolution: testPlan.baseResolution,
     head: testPlan.head,
     includeWorkingTree: testPlan.includeWorkingTree,
     project,
@@ -2749,6 +2751,7 @@ function inferFlowSuccessSignal(flow: Omit<E2eFlow, "languageBrief">): string {
   const visibleOutcome = flow.selectors.find(
     (selector) =>
       selector.kind === "visible-text" &&
+      Boolean(selector.addedInDiff) &&
       (isVisibleSuccessOutcome(selector.value) || isDiffBackedStateMarker(flow, selector)),
   );
   if (visibleOutcome) {
@@ -2820,6 +2823,7 @@ function isApiContractFocusedFlow(flow: Omit<E2eFlow, "languageBrief">): boolean
     return false;
   }
   return (
+    flow.kind === "api" ||
     /\bapi contract\b/i.test(flow.title) ||
     (flow.coverage.some((target) => target.title === "API contract compatibility") &&
       !hasUserFacingEntrypointOrFile(flow))
@@ -2903,6 +2907,7 @@ export function formatMarkdownE2ePlan(result: E2ePlanResult): string {
     lines.push(`- Workspace root: \`${escapeMarkdownInline(result.workspaceRoot)}\``);
   }
   lines.push(`- Base: \`${escapeMarkdownInline(result.base)}\``);
+  lines.push(`- Base selection: ${escapeMarkdownInline(result.baseResolution.reason)}`);
   lines.push(`- Head: \`${escapeMarkdownInline(result.head)}\``);
   if (result.includeWorkingTree) {
     lines.push("- Includes working tree changes: yes");
@@ -3337,7 +3342,7 @@ export function formatMarkdownE2eDraft(result: E2eDraftResult): string {
   lines.push(
     `Summary: ${result.actionSummary.required} required action${result.actionSummary.required === 1 ? "" : "s"}, ${result.actionSummary.recommended} recommended action${result.actionSummary.recommended === 1 ? "" : "s"}.`,
   );
-  lines.push(`- Runnable candidates: ${result.readinessSummary.runnableCandidates}`);
+  lines.push(`- Static-runnable candidates (not executed): ${result.readinessSummary.runnableCandidates}`);
   lines.push(`- Near-runnable files: ${result.readinessSummary.nearRunnable}`);
   lines.push(`- Review-only files: ${result.readinessSummary.reviewOnly}`);
   lines.push(
@@ -5249,6 +5254,12 @@ function intentFlowDisplayTitle(
   intent: ChangeIntentAnalysis["intents"][number],
   domainLanguage?: DomainLanguageSummary,
 ): string {
+  if (
+    !isBroadIntentDisplayTitle(intent.title) &&
+    ((intent.confidence !== "low" && !intent.reviewRequired) || isSpecificIntentDisplayTitle(intent.title))
+  ) {
+    return intent.title;
+  }
   const actionStages = intent.lifecycle.filter(
     (stage) =>
       (stage.kind === "trigger" || stage.kind === "side-effect") &&
@@ -5271,6 +5282,14 @@ function intentFlowDisplayTitle(
   }
   const subject = summarizeFlowSubject(intent.files, "Changed behavior", domainLanguage);
   return `${subject}: ${actions.map(titleCase).join(" / ")}`;
+}
+
+function isSpecificIntentDisplayTitle(title: string): boolean {
+  return title.trim().split(/\s+/).filter(Boolean).length >= 3;
+}
+
+function isBroadIntentDisplayTitle(title: string): boolean {
+  return /^(?:update|change|adjust|prepare|refactor|refine|improve|polish|fix|work on|misc|cleanup)\b/i.test(title.trim());
 }
 
 function conciseLifecycleAction(label: string): string | undefined {
@@ -5771,15 +5790,18 @@ async function inferFlowSetupHints(
     );
   }
 
-  const paymentPathSignal = /(?:^|\/|[-_])(payment|billing|checkout|purchase|subscription|invoice|settlement)(?:\/|[-_.]|$)/i;
+  const paymentPathSignal = /(?:^|\/|[-_])(payment|billing|checkout|purchase|subscription|invoice)(?:\/|[-_.]|$)/i;
   const paymentProviderSignal = /(?:stripe|\biap\b|in-app-purchase|storekit|revenuecat)/i;
-  const changedPaymentSignal = /(?:payment|billing|checkout|purchase|subscription|invoice|settlement)/i;
+  const paymentActionSignal = /(?:submit|complete|start|confirm|process|create|cancel|declin|refund|renew|retry|restore)[A-Za-z0-9_\s-]{0,48}(?:payment|checkout|purchase|subscription|invoice)|(?:payment|checkout|purchase|subscription)[A-Za-z0-9_\s-]{0,48}(?:submit|complete|start|confirm|process|cancel|declin|refund|renew|retry|restore)/i;
+  const mutatingRequestSignal = /\bmethod\s*:\s*["'](?:POST|PUT|PATCH|DELETE)["']|\.(?:post|put|patch|delete)\s*\(/i;
   if (
-    paymentPathSignal.test(filesText) ||
     paymentProviderSignal.test(signalText) ||
-    changedPaymentSignal.test(changedText)
+    (paymentPathSignal.test(filesText) && (
+      paymentActionSignal.test(changedText) ||
+      mutatingRequestSignal.test(signalText)
+    ))
   ) {
-    const paymentFiles = matchingFiles(/payment|billing|checkout|purchase|subscription|invoice|settlement|stripe|iap|in-app-purchase|storekit|revenuecat/i);
+    const paymentFiles = matchingFiles(/payment|billing|checkout|purchase|subscription|invoice|stripe|iap|in-app-purchase|storekit|revenuecat/i);
     hints.push(
       setupHint(
         "payment",
@@ -6467,7 +6489,7 @@ function entrypointsFromPath(file: string, runner: E2eRunnerName): E2eEntrypoint
   const route = routeEntrypointFromPath(file);
   if (route && runner !== "maestro") {
     entrypoints.push({
-      kind: "route",
+      kind: isApiRouteFile(file) ? "endpoint" : "route",
       value: route.value,
       file,
       confidence: route.confidence,
@@ -6503,7 +6525,7 @@ function entrypointsFromText(file: string, text: string, runner: E2eRunnerName):
     }
   }
 
-  if (runner !== "playwright") {
+  if (runner !== "playwright" && isPotentialScreenEntrypointFile(file)) {
     const screenMatcher = /(?:navigation\.)?navigate\(\s*["']([^"'/]{2,80})["']|name\s*=\s*["']([^"'/]{2,80})["']/g;
     for (const match of text.matchAll(screenMatcher)) {
       const screen = normalizeScreenName(match[1] ?? match[2]);
@@ -6564,7 +6586,29 @@ function screenEntrypointFromPath(
 }
 
 function isPotentialRouteEntrypointFile(file: string): boolean {
-  return isUiImplementationFile(file) || /(?:^|\/)(?:app|pages|routes)\/.*(?:page|route)\.[cm]?[jt]sx?$/i.test(file);
+  if (!isUiImplementationFile(file) && !/(?:^|\/)(?:app|pages|routes)\/.*(?:page|route)\.[cm]?[jt]sx?$/i.test(file)) {
+    return false;
+  }
+  const segments = toPosixPath(file).split("/");
+  const appIndex = lastIndexOfAny(segments, ["app"]);
+  const pageIndex = lastIndexOfAny(segments, ["pages", "routes"]);
+  const routeRootIndex = appIndex >= 0 ? appIndex : pageIndex;
+  if (routeRootIndex < 0) {
+    return false;
+  }
+  const routeSegments = segments.slice(routeRootIndex + 1);
+  if (routeSegments.slice(0, -1).some(isNonRouteImplementationSegment)) {
+    return false;
+  }
+  if (appIndex >= 0) {
+    const basename = stripKnownExtension(path.basename(file));
+    return /^(?:index|page|route)$/i.test(basename);
+  }
+  return true;
+}
+
+function isNonRouteImplementationSegment(segment: string): boolean {
+  return /^(?:components?|composables?|hooks?|lib|services?|stores?|styles?|tests?|utils?)$/i.test(segment);
 }
 
 function isRouteConfigEntrypointFile(file: string): boolean {
@@ -8178,7 +8222,7 @@ function draftExecutionBlockers(
   // Missing validation evidence describes the repository before this draft exists.
   // Keep it as PR guidance, but do not treat it as proof that the generated file cannot execute.
   if (selfCheck?.status === "fail") {
-    blockers.push(...selfCheck.blockers);
+    blockers.push(...rootSelfCheckBlockers(selfCheck.blockers));
   }
   if (!verificationOnly && runner !== "manual") {
     for (const receipt of scenarioAutomation.filter(
@@ -8191,6 +8235,13 @@ function draftExecutionBlockers(
     }
   }
   return uniqueStrings(blockers).slice(0, 8);
+}
+
+function rootSelfCheckBlockers(blockers: string[]): string[] {
+  const hasUncompiledAction = blockers.some((blocker) => blocker.startsWith("Compiled actions:"));
+  return blockers.filter((blocker) =>
+    !(hasUncompiledAction && blocker.startsWith("Skipped tests:"))
+  );
 }
 
 function draftRunnableStatus(
@@ -8291,6 +8342,14 @@ function evaluatePlaywrightDraftSelfCheck(
       ? "No TODO comments remain in the generated draft."
       : `${todoCount} TODO marker${todoCount === 1 ? "" : "s"} remain for reviewer follow-up.`,
   ));
+  const skippedTests = content.match(/\btest\.(?:fixme|skip)\s*\(|\btest\.describe\.skip\s*\(/g)?.length ?? 0;
+  checks.push(draftSelfCheckItem(
+    "Skipped tests",
+    skippedTests === 0 ? "pass" : "fail",
+    skippedTests === 0
+      ? "The generated artifact does not disable or skip its test cases."
+      : `${skippedTests} skipped or fixme test marker${skippedTests === 1 ? "" : "s"} keep this artifact review-only.`,
+  ));
   const weakSmokeAssertions = content.match(/expect\(page\.locator\(["']body["']\)\)\.toBeVisible\(\)/g)?.length ?? 0;
   checks.push(draftSelfCheckItem(
     "Domain assertions",
@@ -8298,6 +8357,14 @@ function evaluatePlaywrightDraftSelfCheck(
     weakSmokeAssertions === 0
       ? "The draft does not rely on body-only smoke assertions."
       : `${weakSmokeAssertions} body-only smoke assertion${weakSmokeAssertions === 1 ? "" : "s"} cannot count as changed-behavior coverage.`,
+  ));
+  const executableAssertions = content.match(/await expect\((?!page\.locator\(["']body["']\))/g)?.length ?? 0;
+  checks.push(draftSelfCheckItem(
+    "Executable assertions",
+    executableAssertions > 0 ? "pass" : "fail",
+    executableAssertions > 0
+      ? `${executableAssertions} observable Playwright assertion${executableAssertions === 1 ? "" : "s"} were generated.`
+      : "No observable changed-behavior assertion was generated; navigation or clicks alone cannot be labeled runnable coverage.",
   ));
   const uncompiledSteps = content.match(/QAMap could not infer a stable locator for this step/g)?.length ?? 0;
   checks.push(draftSelfCheckItem(

@@ -152,7 +152,7 @@ export interface BehaviorAnalyzerAdapter {
 }
 
 export interface InferredBehaviorEntrypoint {
-  kind: "route" | "screen" | "command";
+  kind: "route" | "screen" | "endpoint" | "command";
   value: string;
   file: string;
   confidence: BehaviorConfidence;
@@ -526,6 +526,9 @@ function surfaceForEntrypoint(kind: InferredBehaviorEntrypoint["kind"]): Behavio
   }
   if (kind === "screen") {
     return "mobile";
+  }
+  if (kind === "endpoint") {
+    return "api";
   }
   return "cli";
 }

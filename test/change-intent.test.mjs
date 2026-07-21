@@ -869,6 +869,25 @@ test("persisted record date validation does not fabricate scheduling QA", async 
   assert.equal(lifecycleLabels.some((label) => /na n/i.test(label)), false);
 });
 
+test("recording the current server timestamp does not fabricate scheduling QA", async (t) => {
+  const root = await makeRepo(t);
+  await write(root, "src/audit.py", "def record_consent():\n    return None\n");
+  commit(root, "benchmark baseline");
+  branch(root, "feat/consent-audit");
+  await write(
+    root,
+    "src/audit.py",
+    "def record_consent():\n    consent_agreed_at = timezone.now()\n    return consent_agreed_at\n",
+  );
+  commit(root, "feat: record consent audit timestamp");
+
+  const analysis = await analyze(root, ["src/audit.py"]);
+  const scenarioTitles = analysis.intents.flatMap((intent) => intent.scenarios.map((scenario) => scenario.title));
+
+  assert.equal(analysis.intents.length, 1);
+  assert.equal(scenarioTitles.some((title) => /Scheduling, calendar/i.test(title)), false);
+});
+
 test("change intent marks connected working-tree signals as review-required diff evidence", async (t) => {
   const root = await makeRepo(t);
   await write(root, "src/form.tsx", "export function Form() { return null; }\n");

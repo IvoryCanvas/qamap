@@ -2,6 +2,10 @@ import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import YAML from "yaml";
+import { collectProjectFiles } from "./fs.js";
+import { collectChangedFiles, resolveBaseRef, resolveMergeBase } from "./git-context.js";
+import type { BaseRefResolution } from "./git-context.js";
 import { TOOL_NAME, VERSION } from "./version.js";
 
 const execFileAsync = promisify(execFile);
@@ -36,6 +40,7 @@ export interface TestPlanResult {
   workspaceRoot?: string;
   generatedAt: string;
   base: string;
+  baseResolution: BaseRefResolution;
   head: string;
   includeWorkingTree: boolean;
   changedFiles: TestPlanChangedFile[];
@@ -54,10 +59,14 @@ export async function generateTestPlan(rootInput: string, options: TestPlanOptio
     throw new Error(`Test plan path must be inside workspace root: ${root}`);
   }
 
-  const base = options.base ?? (await defaultBaseRef(gitRoot));
   const head = options.head ?? "HEAD";
+  const baseResolution = await resolveBaseRef(gitRoot, { explicit: options.base, head });
+  const base = baseResolution.ref;
   const includeWorkingTree = options.includeWorkingTree ?? false;
-  const changedFiles = scopeChangedFiles(await getChangedFiles(gitRoot, base, head, includeWorkingTree), relativeRoot);
+  const changedFiles = scopeChangedFiles(
+    await collectChangedFiles(gitRoot, { base, head, includeWorkingTree }),
+    relativeRoot,
+  );
   const suggestedCommands = uniqueCommands([
     ...normalizeValidationCommands(options.validationCommands),
     ...commandsForChangedTestEvidence(changedFiles),
@@ -74,6 +83,7 @@ export async function generateTestPlan(rootInput: string, options: TestPlanOptio
     workspaceRoot,
     generatedAt: new Date().toISOString(),
     base,
+    baseResolution,
     head,
     includeWorkingTree,
     changedFiles,
@@ -91,6 +101,7 @@ export function formatMarkdownTestPlan(result: TestPlanResult): string {
     lines.push(`- Workspace root: \`${escapeMarkdownInline(result.workspaceRoot)}\``);
   }
   lines.push(`- Base: \`${escapeMarkdownInline(result.base)}\``);
+  lines.push(`- Base selection: ${escapeMarkdownInline(result.baseResolution.reason)}`);
   lines.push(`- Head: \`${escapeMarkdownInline(result.head)}\``);
   if (result.includeWorkingTree) {
     lines.push("- Includes working tree changes: yes");
@@ -326,7 +337,7 @@ async function discoverSuggestedCommands(
 ): Promise<string[]> {
   const commandGroups = await Promise.all([
     discoverJavaScriptCommands(root, workspaceRoot, changedFiles),
-    discoverPythonCommands(root),
+    discoverPythonCommands(root, changedFiles),
     discoverGoCommands(root),
     discoverRustCommands(root),
     discoverJvmCommands(root),
@@ -340,19 +351,112 @@ async function discoverJavaScriptCommands(
   changedFiles: TestPlanChangedFile[],
 ): Promise<string[]> {
   const packageJsonPath = path.join(root, "package.json");
-  let parsed: { packageManager?: string; scripts?: Record<string, string> };
+  let parsed: { packageManager?: string; scripts?: Record<string, string>; workspaces?: unknown };
   try {
     parsed = JSON.parse(await fs.readFile(packageJsonPath, "utf8")) as {
       packageManager?: string;
       scripts?: Record<string, string>;
+      workspaces?: unknown;
     };
   } catch {
     return [];
   }
 
   const packageManager = await detectPackageManager(root, parsed.packageManager, workspaceRoot);
+  const affectedPackages = await isJavaScriptWorkspaceRoot(root, parsed.workspaces)
+    ? await discoverAffectedJavaScriptPackages(root, changedFiles)
+    : [];
+  if (affectedPackages.length > 0) {
+    return affectedPackages.flatMap((affectedPackage) => {
+      const platformBuildScripts = discoverPlatformBuildScripts(
+        affectedPackage.scripts,
+        affectedPackage.changedFiles,
+      );
+      return preferredJavaScriptScripts(affectedPackage.scripts, platformBuildScripts)
+        .map((script) => workspaceScriptCommand(
+          packageManager,
+          affectedPackage.name ?? `./${affectedPackage.path}`,
+          script,
+        ));
+    });
+  }
+
   const platformBuildScripts = discoverPlatformBuildScripts(parsed.scripts ?? {}, changedFiles.map((file) => file.path));
-  const preferredScripts = uniqueCommands([
+  return preferredJavaScriptScripts(parsed.scripts ?? {}, platformBuildScripts)
+    .map((script) => (script === "test" ? `${packageManager} test` : `${packageManager} run ${script}`));
+}
+
+async function isJavaScriptWorkspaceRoot(root: string, workspaces: unknown): Promise<boolean> {
+  const hasPackageWorkspaces = Array.isArray(workspaces) || (
+    isRecord(workspaces) && Array.isArray(workspaces.packages)
+  );
+  return hasPackageWorkspaces || await hasAnyFile(root, [
+    "pnpm-workspace.yaml",
+    "pnpm-workspace.yml",
+    "lerna.json",
+    "rush.json",
+  ]);
+}
+
+interface AffectedJavaScriptPackage {
+  path: string;
+  name?: string;
+  scripts: Record<string, string>;
+  changedFiles: string[];
+}
+
+async function discoverAffectedJavaScriptPackages(
+  root: string,
+  changedFiles: TestPlanChangedFile[],
+): Promise<AffectedJavaScriptPackage[]> {
+  const packages = new Map<string, AffectedJavaScriptPackage>();
+  for (const changedFile of changedFiles) {
+    let directory = path.posix.dirname(toPosixPath(changedFile.path));
+    while (directory !== "." && directory !== "/") {
+      const packageJsonPath = path.join(root, directory, "package.json");
+      const packageJson = await readJavaScriptPackage(packageJsonPath);
+      if (packageJson) {
+        const existing = packages.get(directory);
+        if (existing) {
+          existing.changedFiles.push(changedFile.path);
+        } else {
+          packages.set(directory, {
+            path: directory,
+            name: packageJson.name,
+            scripts: packageJson.scripts ?? {},
+            changedFiles: [changedFile.path],
+          });
+        }
+        break;
+      }
+      const parent = path.posix.dirname(directory);
+      if (parent === directory) {
+        break;
+      }
+      directory = parent;
+    }
+  }
+  return [...packages.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function readJavaScriptPackage(
+  packageJsonPath: string,
+): Promise<{ name?: string; scripts?: Record<string, string> } | undefined> {
+  try {
+    return JSON.parse(await fs.readFile(packageJsonPath, "utf8")) as {
+      name?: string;
+      scripts?: Record<string, string>;
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function preferredJavaScriptScripts(
+  scripts: Record<string, string>,
+  platformBuildScripts: string[],
+): string[] {
+  return uniqueCommands([
     ...platformBuildScripts,
     "test",
     "typecheck",
@@ -360,10 +464,34 @@ async function discoverJavaScriptCommands(
     "build",
     "test:e2e",
     "e2e",
-  ]);
-  return preferredScripts
-    .filter((script) => isUsableScript(parsed.scripts?.[script]))
-    .map((script) => (script === "test" ? `${packageManager} test` : `${packageManager} run ${script}`));
+  ]).filter((script) => isUsableScript(scripts[script]));
+}
+
+function workspaceScriptCommand(packageManager: string, target: string, script: string): string {
+  const scopedTarget = shellArgument(target);
+  if (packageManager === "pnpm") {
+    return script === "test"
+      ? `pnpm --filter ${scopedTarget} test`
+      : `pnpm --filter ${scopedTarget} run ${script}`;
+  }
+  if (packageManager === "yarn") {
+    return `yarn workspace ${scopedTarget} ${script}`;
+  }
+  if (packageManager === "bun") {
+    return script === "test"
+      ? `bun --filter ${scopedTarget} test`
+      : `bun --filter ${scopedTarget} run ${script}`;
+  }
+  return script === "test"
+    ? `npm test --workspace ${scopedTarget}`
+    : `npm run ${script} --workspace ${scopedTarget}`;
+}
+
+function shellArgument(value: string): string {
+  if (/^[A-Za-z0-9_./:@=-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function discoverPlatformBuildScripts(scripts: Record<string, string>, changedFiles: string[]): string[] {
@@ -403,7 +531,7 @@ function platformScriptRank(name: string): number {
   return 2;
 }
 
-async function discoverPythonCommands(root: string): Promise<string[]> {
+async function discoverPythonCommands(root: string, changedFiles: TestPlanChangedFile[]): Promise<string[]> {
   const pyproject = await readTextIfExists(path.join(root, "pyproject.toml"));
   const hasPythonMarker =
     Boolean(pyproject) ||
@@ -422,6 +550,8 @@ async function discoverPythonCommands(root: string): Promise<string[]> {
   }
 
   const runner = await detectPythonRunner(root, pyproject);
+  const dockerTarget = await detectPythonComposeTarget(root);
+  const pytestTargets = await discoverRelevantPythonTests(root, changedFiles);
   const commands: string[] = [];
   const hasToxSignal = await exists(path.join(root, "tox.ini"));
   const hasPytestSignal =
@@ -432,19 +562,238 @@ async function discoverPythonCommands(root: string): Promise<string[]> {
   const hasMypySignal = /\[tool\.mypy/i.test(pyproject ?? "") || (await hasAnyFile(root, ["mypy.ini", ".mypy.ini"]));
 
   if (hasToxSignal) {
-    commands.push(withRunner(runner, "tox"));
+    commands.push(withPythonEnvironment(runner, dockerTarget, "tox"));
   }
   if (hasPytestSignal) {
-    commands.push(withRunner(runner, "pytest"));
+    const targetSuffix = pytestTargets.length > 0
+      ? ` ${pytestTargets.map(shellArgument).join(" ")}`
+      : "";
+    commands.push(withPythonEnvironment(runner, dockerTarget, `pytest${targetSuffix}`));
   }
   if (hasRuffSignal) {
-    commands.push(withRunner(runner, "ruff check ."));
+    commands.push(withPythonEnvironment(runner, dockerTarget, "ruff check ."));
   }
   if (hasMypySignal) {
-    commands.push(withRunner(runner, "mypy ."));
+    commands.push(withPythonEnvironment(runner, dockerTarget, "mypy ."));
   }
 
   return commands;
+}
+
+function withPythonEnvironment(
+  runner: string | undefined,
+  dockerTarget: PythonComposeTarget | undefined,
+  command: string,
+): string {
+  if (dockerTarget) {
+    const usesDefaultComposeFile = [
+      "compose.yml",
+      "compose.yaml",
+      "docker-compose.yml",
+      "docker-compose.yaml",
+    ].includes(dockerTarget.composeFile);
+    const composeOption = usesDefaultComposeFile ? "" : ` -f ${shellArgument(dockerTarget.composeFile)}`;
+    const containerCommand = dockerTarget.runner ? `${dockerTarget.runner} ${command}` : command;
+    return `docker compose${composeOption} run --rm ${shellArgument(dockerTarget.service)} ${containerCommand}`;
+  }
+  return withRunner(runner, command);
+}
+
+interface PythonComposeTarget {
+  composeFile: string;
+  service: string;
+  runner?: string;
+}
+
+async function detectPythonComposeTarget(root: string): Promise<PythonComposeTarget | undefined> {
+  const composeFiles = await discoverComposeFiles(root);
+  const candidates: Array<PythonComposeTarget & { score: number }> = [];
+  for (const composeFile of composeFiles) {
+    let parsed: unknown;
+    try {
+      parsed = YAML.parse(await fs.readFile(path.join(root, composeFile), "utf8"));
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed) || !isRecord(parsed.services)) {
+      continue;
+    }
+
+    for (const [serviceName, service] of Object.entries(parsed.services)) {
+      if (!isRecord(service)) {
+        continue;
+      }
+      const serialized = JSON.stringify(service);
+      const build = service.build;
+      const buildsRoot = build === "." || (
+        isRecord(build) && (build.context === undefined || build.context === ".")
+      );
+      const dockerfile = isRecord(build) && typeof build.dockerfile === "string"
+        ? build.dockerfile
+        : "Dockerfile";
+      const dockerfileText = buildsRoot
+        ? await readTextIfExists(path.join(root, dockerfile))
+        : undefined;
+      const dockerfileUsesPython = /^\s*FROM\s+[^\n]*python/im.test(dockerfileText ?? "");
+      const explicitPython = /python|pytest|django|flask|fastapi|gunicorn|uvicorn|celery/i.test(serialized);
+      if (!explicitPython && !dockerfileUsesPython) {
+        continue;
+      }
+      const runner = detectContainerPythonRunner(dockerfileText);
+      const primaryService = /^(?:app|api|web|backend|server)$/i.test(serviceName);
+      const backgroundService = /(?:^|[-_])(?:worker|beat|scheduler|consumer|queue)(?:$|[-_])/i.test(serviceName);
+      candidates.push({
+        composeFile,
+        service: serviceName,
+        runner,
+        score:
+          (explicitPython ? 2 : 0) +
+          (dockerfileUsesPython ? 4 : 0) +
+          (primaryService ? 5 : 0) +
+          (backgroundService ? -4 : 0) +
+          (Array.isArray(service.ports) && service.ports.length > 0 ? 2 : 0) +
+          (Array.isArray(service.volumes) && service.volumes.some((volume) => String(volume).startsWith(".:")) ? 1 : 0) +
+          composeFilePreference(composeFile),
+      });
+    }
+  }
+  const selected = candidates.sort((left, right) =>
+    right.score - left.score || left.composeFile.localeCompare(right.composeFile) || left.service.localeCompare(right.service)
+  )[0];
+  if (!selected) {
+    return undefined;
+  }
+  return {
+    composeFile: selected.composeFile,
+    service: selected.service,
+    runner: selected.runner,
+  };
+}
+
+function detectContainerPythonRunner(dockerfileText: string | undefined): string | undefined {
+  const normalized = (dockerfileText ?? "").replace(/[\"',\[\]]+/g, " ");
+  if (/\buv\s+run\b/i.test(normalized)) {
+    return "uv run";
+  }
+  if (/\bpoetry\s+run\b/i.test(normalized)) {
+    return "poetry run";
+  }
+  return undefined;
+}
+
+async function discoverComposeFiles(root: string): Promise<string[]> {
+  try {
+    return (await fs.readdir(root))
+      .filter((file) => /^(?:docker-)?compose(?:[._-][A-Za-z0-9_-]+)*\.ya?ml$/i.test(file))
+      .sort((left, right) => composeFilePreference(right) - composeFilePreference(left) || left.localeCompare(right));
+  } catch {
+    return [];
+  }
+}
+
+function composeFilePreference(file: string): number {
+  if (/^(?:docker-)?compose\.ya?ml$/i.test(file)) return 5;
+  if (/(?:^|[._-])local(?:[._-]|\.)/i.test(file)) return 4;
+  if (/(?:^|[._-])dev(?:[._-]|\.)/i.test(file)) return 3;
+  if (/(?:^|[._-])test(?:[._-]|\.)/i.test(file)) return 2;
+  if (/(?:^|[._-])prod(?:[._-]|\.)/i.test(file)) return -3;
+  return 0;
+}
+
+async function discoverRelevantPythonTests(
+  root: string,
+  changedFiles: TestPlanChangedFile[],
+): Promise<string[]> {
+  const directlyChangedTests = changedFiles
+    .map((file) => file.path)
+    .filter(isPythonTestFile);
+  if (directlyChangedTests.length > 0) {
+    return uniqueCommands(directlyChangedTests).slice(0, 6);
+  }
+
+  const changedSources = changedFiles
+    .map((file) => file.path)
+    .filter((file) => file.endsWith(".py") && !isPythonTestFile(file));
+  if (changedSources.length === 0) {
+    return [];
+  }
+
+  let projectFiles: Awaited<ReturnType<typeof collectProjectFiles>>;
+  try {
+    projectFiles = await collectProjectFiles(root, 4_000);
+  } catch {
+    return [];
+  }
+  const testFiles = projectFiles.map((file) => file.path).filter(isPythonTestFile);
+  const ranked = testFiles
+    .map((testFile) => ({
+      file: testFile,
+      score: Math.max(...changedSources.map((sourceFile) => pythonTestRelevance(sourceFile, testFile))),
+    }))
+    .filter((candidate) => candidate.score >= 4)
+    .sort((left, right) => right.score - left.score || left.file.localeCompare(right.file));
+  return ranked.slice(0, 6).map((candidate) => candidate.file);
+}
+
+const ignoredPythonPathTokens = new Set([
+  "app",
+  "apps",
+  "src",
+  "lib",
+  "project",
+  "service",
+  "services",
+  "test",
+  "tests",
+  "unit",
+  "integration",
+  "python",
+]);
+const genericPythonFileStems = new Set([
+  "api",
+  "client",
+  "handler",
+  "index",
+  "model",
+  "models",
+  "service",
+  "utils",
+  "view",
+  "views",
+]);
+
+function pythonTestRelevance(sourceFile: string, testFile: string): number {
+  const sourceBase = pythonFileStem(sourceFile);
+  const testBase = pythonFileStem(testFile).replace(/^test_/, "").replace(/_test$/, "");
+  const sourceTokens = meaningfulPythonPathTokens(sourceFile);
+  const testTokens = new Set(meaningfulPythonPathTokens(testFile));
+  const sharedTokens = sourceTokens.filter((token) => testTokens.has(token));
+  const basenameScore = sourceBase === testBase
+    ? (genericPythonFileStems.has(sourceBase) ? 2 : 6)
+    : 0;
+  return basenameScore + Math.min(6, sharedTokens.length * 2);
+}
+
+function meaningfulPythonPathTokens(filePath: string): string[] {
+  return uniqueCommands(
+    toPosixPath(filePath)
+      .replace(/\.py$/i, "")
+      .split(/[\/_-]+/)
+      .map((token) => token.toLowerCase())
+      .filter((token) => token.length >= 3 && !ignoredPythonPathTokens.has(token)),
+  );
+}
+
+function pythonFileStem(filePath: string): string {
+  return path.posix.basename(toPosixPath(filePath)).replace(/\.py$/i, "").toLowerCase();
+}
+
+function isPythonTestFile(filePath: string): boolean {
+  return /(?:^|\/)test_[^/]+\.py$|(?:^|\/)[^/]+_test\.py$/i.test(filePath);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function detectPythonRunner(root: string, pyproject: string | undefined): Promise<string | undefined> {
@@ -666,18 +1015,6 @@ function stripScopedPath(filePath: string, relativeRoot: string, prefix: string)
   return undefined;
 }
 
-async function defaultBaseRef(root: string): Promise<string> {
-  for (const candidate of ["origin/main", "main", "origin/master", "master"]) {
-    try {
-      await git(root, ["rev-parse", "--verify", "--quiet", candidate]);
-      return candidate;
-    } catch {
-      // Try the next common default branch name.
-    }
-  }
-  throw new Error("Could not infer a base ref. Pass --base <ref>.");
-}
-
 export interface AddedDiffTextOptions {
   base: string;
   head: string;
@@ -724,23 +1061,18 @@ export async function collectAddedDiffEvidence(
   const relativeRoot = workspaceRoot ? toPosixPath(path.relative(workspaceRoot, root)) : "";
   const byFile: AddedDiffEvidence = {};
   try {
+    const diffTarget = options.includeWorkingTree
+      ? await resolveMergeBase(gitRoot, options.base, options.head)
+      : `${options.base}...${options.head}`;
     const { stdout } = await git(gitRoot, [
       "diff",
       "--no-color",
       "--find-renames",
       "--unified=0",
-      `${options.base}...${options.head}`,
+      diffTarget,
     ]);
     mergeAddedDiffEvidence(byFile, stdout, relativeRoot);
     if (options.includeWorkingTree) {
-      const { stdout: workingTree } = await git(gitRoot, [
-        "diff",
-        "--no-color",
-        "--find-renames",
-        "--unified=0",
-        "HEAD",
-      ]);
-      mergeAddedDiffEvidence(byFile, workingTree, relativeRoot);
       await mergeUntrackedDiffEvidence(byFile, gitRoot, relativeRoot);
     }
   } catch {
@@ -936,70 +1268,6 @@ function mergeAddedDiffEvidence(byFile: AddedDiffEvidence, diffText: string, rel
     }
   }
   flushHunk();
-}
-
-async function getChangedFiles(
-  root: string,
-  base: string,
-  head: string,
-  includeWorkingTree: boolean,
-): Promise<TestPlanChangedFile[]> {
-  const { stdout } = await git(root, ["diff", "--name-status", "--diff-filter=ACDMRTUXB", `${base}...${head}`]);
-  const committedChanges = parseChangedFiles(stdout);
-  if (!includeWorkingTree) {
-    return committedChanges;
-  }
-
-  return mergeChangedFiles(committedChanges, await getWorkingTreeChangedFiles(root));
-}
-
-async function getWorkingTreeChangedFiles(root: string): Promise<TestPlanChangedFile[]> {
-  const { stdout: trackedStdout } = await git(root, ["diff", "--name-status", "--diff-filter=ACDMRTUXB", "HEAD"]);
-  const { stdout: untrackedStdout } = await git(root, ["ls-files", "--others", "--exclude-standard"]);
-  return [
-    ...parseChangedFiles(trackedStdout),
-    ...untrackedStdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((filePath) => ({ status: "A", path: filePath })),
-  ];
-}
-
-function parseChangedFiles(stdout: string): TestPlanChangedFile[] {
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map(parseChangedFile);
-}
-
-function mergeChangedFiles(...groups: TestPlanChangedFile[][]): TestPlanChangedFile[] {
-  const filesByPath = new Map<string, TestPlanChangedFile>();
-  for (const group of groups) {
-    for (const file of group) {
-      filesByPath.set(file.path, file);
-    }
-  }
-  return [...filesByPath.values()];
-}
-
-function parseChangedFile(line: string): TestPlanChangedFile {
-  const [status, firstPath, secondPath] = line.split(/\t+/);
-  if (!status || !firstPath) {
-    throw new Error(`Could not parse git diff entry: ${line}`);
-  }
-  if (status.startsWith("R") || status.startsWith("C")) {
-    return {
-      status,
-      previousPath: firstPath,
-      path: secondPath ?? firstPath,
-    };
-  }
-  return {
-    status,
-    path: firstPath,
-  };
 }
 
 async function git(root: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
