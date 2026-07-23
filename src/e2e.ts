@@ -5499,18 +5499,51 @@ function scopeIntentScenarios(
     })
     .map((scenario) => {
       const evidence = scopeIntentEvidence(scenario.evidence, files);
+      const scopedEvidence = specializePrimary && scenario.kind === "primary"
+        ? mergeScopedIntentEvidence(evidence, fallbackEvidence)
+        : evidence.length > 0
+          ? evidence
+          : fallbackEvidence.map((item) => ({ ...item }));
       const scopedScenario = {
         ...scenario,
         setup: [...scenario.setup],
         steps: [...scenario.steps],
         assertions: [...scenario.assertions],
         edgeCases: [...scenario.edgeCases],
-        evidence: evidence.length > 0 ? evidence : fallbackEvidence.map((item) => ({ ...item })),
+        evidence: scopedEvidence,
       };
       return specializePrimary && scenario.kind === "primary"
         ? specializePrimaryScenario(scopedScenario, lifecycle)
         : scopedScenario;
     });
+}
+
+function mergeScopedIntentEvidence(
+  evidence: ChangeIntentEvidence[],
+  fallbackEvidence: ChangeIntentEvidence[],
+): ChangeIntentEvidence[] {
+  const seen = new Set<string>();
+  return [...evidence, ...fallbackEvidence]
+    .filter((item) => {
+      const key = [
+        item.kind,
+        item.commit ?? "",
+        item.file ?? "",
+        item.previousFile ?? "",
+        item.symbol ?? "",
+        item.relation ?? "",
+        item.side ?? "",
+        item.startLine ?? "",
+        item.endLine ?? "",
+        item.value,
+      ].join(":");
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .map((item) => ({ ...item }));
 }
 
 function specializePrimaryScenario(

@@ -584,11 +584,17 @@ function buildLifecycle(
     if (isImplementationOnlyLifecycleStep(`${signal.label} ${signal.symbol}`)) {
       continue;
     }
-    const alreadyRepresented = stages.some((stage) =>
+    const representedIndex = stages.findIndex((stage) =>
       stage.label.toLowerCase().includes(signal.symbol.toLowerCase()) ||
       (stage.kind === signal.kind && lifecycleLabelsOverlap(stage.label, signal.label)),
     );
-    if (alreadyRepresented) {
+    if (representedIndex >= 0) {
+      const represented = stages[representedIndex];
+      stages[representedIndex] = {
+        ...represented,
+        evidence: uniqueEvidence([...represented.evidence, signal.evidence]),
+        files: uniqueStrings([...represented.files, signal.file]),
+      };
       continue;
     }
     stages.push(createLifecycleStage(signal.kind, signal.label, "medium", [signal.evidence], [signal.file]));
@@ -1151,7 +1157,7 @@ function lifecycleEvidence(
   fallback: ChangeIntentEvidence[],
 ): ChangeIntentEvidence[] {
   const evidence = uniqueEvidence(lifecycle.flatMap((stage) => stage.evidence));
-  return evidence.length > 0 ? evidence : fallback;
+  return uniqueEvidence([...evidence, ...fallback]);
 }
 
 function scenarioEvidenceFor(
@@ -1203,6 +1209,13 @@ function selectPrimaryLifecycleSteps(lifecycle: BehaviorLifecycleStage[]): strin
   const counts = new Map<BehaviorLifecycleStageKind, number>();
   const steps: string[] = [];
   for (const stage of lifecycle) {
+    if (
+      !hasActionableLocatedDiffEvidence(stage.evidence) &&
+      stage.evidence.every((item) => item.kind === "commit") &&
+      isContextOnlyCommitLifecycleStep(stage.label)
+    ) {
+      continue;
+    }
     if (hasCommitBackedAction && isImplementationShapedTriggerStage(stage)) {
       continue;
     }
@@ -1221,6 +1234,10 @@ function selectPrimaryLifecycleSteps(lifecycle: BehaviorLifecycleStage[]): strin
     steps.push(stage.label);
   }
   return steps;
+}
+
+function isContextOnlyCommitLifecycleStep(label: string): boolean {
+  return /\b(?:affected|changed|intended|related)\s+(?:product\s+)?(?:behavior|flow|result|state|surface|view)\b/i.test(label);
 }
 
 function isImplementationShapedTriggerStage(stage: BehaviorLifecycleStage): boolean {

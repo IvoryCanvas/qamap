@@ -97,7 +97,12 @@ test("QA reasoning traces expose weak links without claiming product execution",
   }]);
   assert.equal(partialTrace.status, "partial");
   assert.equal(partialTrace.behavior[0].relation, "intent-context");
-  assert.equal(partialTrace.artifact?.draftPath, "tests/e2e/preferences.spec.ts");
+  assert.equal(partialTrace.artifact?.draftPath, "tests/e2e/preferences-review.md");
+  assert.equal(partialTrace.artifact?.status, "partial");
+  assert.equal(partialTrace.artifact?.flowCount, 2);
+  assert.equal(partialTrace.artifact?.compiledFlowCount, 1);
+  assert.equal(partialTrace.artifact?.flows.length, 2);
+  assert.ok(partialTrace.gaps.some((gap) => /1 of 2 affected flow artifacts/.test(gap)));
   assert.ok(partialTrace.gaps.some((gap) => /No lifecycle stage shares/.test(gap)));
 });
 
@@ -1529,6 +1534,66 @@ test("one change intent produces separate QA flows for distinct user surfaces", 
   );
   assert.ok(accountQaFlow);
   assert.ok(creditsQaFlow);
+  const primaryTrace = qa.traces.find(
+    (trace) => trace.scenario.id === intent.scenarios.find((scenario) => scenario.kind === "primary")?.id,
+  );
+  assert.ok(primaryTrace);
+  assert.equal(primaryTrace.status, "traceable");
+  assert.equal(primaryTrace.artifact?.status, "compiled");
+  assert.equal(primaryTrace.artifact?.flowCount, 2);
+  assert.equal(primaryTrace.artifact?.compiledFlowCount, 2);
+  const multiFlowAgentSummary = JSON.parse(formatAgentQaDraft(qa));
+  const multiFlowTrace = multiFlowAgentSummary.traces.find(
+    (trace) => trace.scenario?.id === primaryTrace.scenario.id,
+  );
+  assert.equal(multiFlowTrace?.artifact?.flowCoverage, "2/2");
+  assert.match(formatMarkdownQaDraft(qa), /flow coverage 2\/2/);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: ".qamap-e2e",
+  });
+  const accountDraft = draft.files.find((file) =>
+    file.changedFiles.some((changedFile) => changedFile.includes("/account/")),
+  );
+  const creditsDraft = draft.files.find((file) =>
+    file.changedFiles.some((changedFile) => changedFile.includes("/credits/")),
+  );
+  assert.ok(accountDraft);
+  assert.ok(creditsDraft);
+  assert.notEqual(accountDraft.path, creditsDraft.path);
+  const accountPrimaryReceipt = accountDraft.scenarioAutomation.find(
+    (receipt) => receipt.kind === "primary",
+  );
+  const creditsPrimaryReceipt = creditsDraft.scenarioAutomation.find(
+    (receipt) => receipt.kind === "primary",
+  );
+  const accountDraftContent = await readFile(path.join(root, accountDraft.path), "utf8");
+  const creditsDraftContent = await readFile(path.join(root, creditsDraft.path), "utf8");
+  assert.ok(accountPrimaryReceipt);
+  assert.ok(creditsPrimaryReceipt);
+  assert.equal(
+    accountPrimaryReceipt.status,
+    "compiled",
+    `${JSON.stringify(accountPrimaryReceipt)}\n${accountDraftContent}`,
+  );
+  assert.equal(
+    creditsPrimaryReceipt.status,
+    "compiled",
+    `${JSON.stringify(creditsPrimaryReceipt)}\n${creditsDraftContent}`,
+  );
+  assert.ok(accountPrimaryReceipt.mappedSteps > 0, JSON.stringify(accountPrimaryReceipt));
+  assert.ok(accountPrimaryReceipt.mappedAssertions > 0, JSON.stringify(accountPrimaryReceipt));
+  assert.ok(creditsPrimaryReceipt.mappedSteps > 0, JSON.stringify(creditsPrimaryReceipt));
+  assert.ok(creditsPrimaryReceipt.mappedAssertions > 0, JSON.stringify(creditsPrimaryReceipt));
+  assert.match(accountDraftContent, /getByTestId\("plan-confirm"\)\.click/);
+  assert.match(accountDraftContent, /getByText\("Plan activated"\)/);
+  assert.doesNotMatch(accountDraftContent, /credits-confirm|Credits updated/);
+  assert.match(creditsDraftContent, /getByTestId\("credits-confirm"\)\.click/);
+  assert.match(creditsDraftContent, /getByText\("Credits updated"\)/);
+  assert.doesNotMatch(creditsDraftContent, /plan-confirm|Plan activated/);
+  assert.doesNotMatch(`${accountDraftContent}\n${creditsDraftContent}`, /test\.fixme/);
 
   const oversizedQa = structuredClone(qa);
   oversizedQa.changeAnalysis.intents = Array.from({ length: 12 }, (_, index) => ({

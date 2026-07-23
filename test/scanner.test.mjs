@@ -6738,7 +6738,8 @@ test("diff-added selectors rank first and name the changed behavior", async () =
   });
   const pinDraft = writtenDraft.files.find((file) => /pin/i.test(file.flowTitle));
   assert.ok(pinDraft);
-  assert.equal(pinDraft.scenarioAutomation?.find((receipt) => receipt.kind === "primary")?.status, "compiled");
+  const pinPrimaryReceipt = pinDraft.scenarioAutomation?.find((receipt) => receipt.kind === "primary");
+  assert.equal(pinPrimaryReceipt?.status, "compiled", JSON.stringify(pinPrimaryReceipt));
   const spec = await readFile(path.join(root, pinDraft.path), "utf8");
   assert.match(spec, /page\.getByTestId\("note-input"\)\.fill\("QAMap sample value"\)/);
   assert.match(spec, /page\.getByTestId\("add-note"\)\.click\(\)/);
