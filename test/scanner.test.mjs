@@ -7050,6 +7050,120 @@ test("interactive selectors use rendered labels without leaking nested attribute
   assert.equal(buttonLabels.includes("true"), false, JSON.stringify(buttonLabels));
 });
 
+test("a single diff-added action grounds the primary scenario without inventing an outcome", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/workspaces"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    "export default function WorkspacesPage() { return <main><h1>Workspaces</h1></main>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/workspace-promotion"]);
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    [
+      "export default function WorkspacesPage({ navigate }) {",
+      "  function handleExplore() { navigate(\"/offers\"); }",
+      "  return <main>",
+      "    <h1>Workspaces</h1>",
+      "    <section>",
+      "      <h2>Discover a better workspace plan</h2>",
+      "      <ActionButton onClick={handleExplore}>",
+      "        <span>Browse offers</span>",
+      "        <Icon aria-hidden=\"true\" size={16} />",
+      "      </ActionButton>",
+      "    </section>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: add workspace promotion banner"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    runner: "playwright",
+    output: "tests/e2e",
+  });
+  const promotionDraft = draft.files.find((file) => /workspace promotion/i.test(file.flowTitle));
+  assert.ok(promotionDraft, JSON.stringify(draft.files));
+  const spec = await readFile(path.join(root, promotionDraft.path), "utf8");
+  assert.match(spec, /page\.getByRole\("button", \{ name: "Browse offers" \}\)\.click\(\)/);
+  assert.doesNotMatch(spec, /page\.getByRole\("button", \{ name: "true" \}\)/);
+
+  const primaryScenario = promotionDraft.qaScenarios?.find((scenario) => scenario.kind === "primary");
+  assert.match(primaryScenario?.steps[0] ?? "", /Browse Offers/);
+  assert.match(primaryScenario?.steps[0] ?? "", /workspace promotion banner/i);
+  const primaryReceipt = promotionDraft.scenarioAutomation?.find((receipt) => receipt.kind === "primary");
+  assert.equal(primaryReceipt?.mappedSteps, 1);
+  assert.equal(primaryReceipt?.mappedAssertions, 0);
+  assert.equal(primaryReceipt?.status, "partial");
+});
+
+test("multiple diff-added actions remain ungrounded when the primary scenario is ambiguous", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/workspaces"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    "export default function WorkspacesPage() { return <main><h1>Workspaces</h1></main>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/workspace-choices"]);
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    [
+      "export default function WorkspacesPage({ navigate }) {",
+      "  function handleBrowse() { navigate(\"/offers\"); }",
+      "  function handleCompare() { navigate(\"/plans\"); }",
+      "  return <main>",
+      "    <h1>Workspaces</h1>",
+      "    <section>",
+      "      <h2>Choose a workspace path</h2>",
+      "      <button onClick={handleBrowse}>Browse offers</button>",
+      "      <button onClick={handleCompare}>Compare plans</button>",
+      "    </section>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: add workspace choice banner"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    runner: "playwright",
+    output: "tests/e2e",
+  });
+  const choiceDraft = draft.files.find((file) => /workspace choice/i.test(file.flowTitle));
+  assert.ok(choiceDraft, JSON.stringify(draft.files));
+  const spec = await readFile(path.join(root, choiceDraft.path), "utf8");
+
+  assert.doesNotMatch(spec, /getByRole\("button", \{ name: "(?:Browse offers|Compare plans)" \}\)\.click\(\)/);
+  const primaryScenario = choiceDraft.qaScenarios?.find((scenario) => scenario.kind === "primary");
+  assert.deepEqual(primaryScenario?.steps, ["Add workspace choice banner."]);
+  const primaryReceipt = choiceDraft.scenarioAutomation?.find((receipt) => receipt.kind === "primary");
+  assert.equal(primaryReceipt?.mappedSteps, 0);
+  assert.equal(primaryReceipt?.status, "not-compiled");
+});
+
 test("explicit head analysis reads selectors from the target revision instead of the checkout", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);

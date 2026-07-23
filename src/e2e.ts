@@ -5849,12 +5849,17 @@ async function buildFlow(
   const selectors = interactionEvidenceApplies
     ? await inferFlowSelectors(root, files, runner, addedDiffText, analysisRevision)
     : [];
+  const groundedScenario = groundSingleDiffActionInPrimaryScenario(
+    candidate.steps,
+    candidate.qaScenarios,
+    selectors,
+  );
   const flow: Omit<E2eFlow, "languageBrief"> = {
     kind: candidate.kind,
     title: candidate.title,
     reason: candidate.reason,
     files,
-    steps: refineStepsForInferredSelectors(candidate.steps, selectors),
+    steps: refineStepsForInferredSelectors(groundedScenario.steps, selectors),
     coverage,
     coverageEvidence: evaluateFlowCoverageEvidence(
       { title: candidate.title, files, coverage, changedFiles },
@@ -5880,7 +5885,7 @@ async function buildFlow(
     intentConfidence: candidate.intentConfidence,
     intentEvidence: candidate.intentEvidence,
     lifecycle: candidate.lifecycle,
-    qaScenarios: candidate.qaScenarios,
+    qaScenarios: groundedScenario.qaScenarios,
   };
   return {
     ...flow,
@@ -5890,6 +5895,51 @@ async function buildFlow(
 
 function isVerificationOnlyKind(kind: E2eFlowKind): boolean {
   return kind === "config" || kind === "test-evidence" || kind === "documentation" || kind === "generated-artifact";
+}
+
+function groundSingleDiffActionInPrimaryScenario(
+  steps: string[],
+  scenarios: IntentQaScenario[] | undefined,
+  selectors: E2eSelector[],
+): { steps: string[]; qaScenarios: IntentQaScenario[] | undefined } {
+  if (!scenarios) {
+    return { steps, qaScenarios: scenarios };
+  }
+  const primary = scenarios.find((scenario) => scenario.kind === "primary");
+  if (!primary || primary.steps.length !== 1) {
+    return { steps, qaScenarios: scenarios };
+  }
+
+  const actionSelectors = selectors.filter(
+    (selector) =>
+      Boolean(selector.addedInDiff) &&
+      !isInputSelector(selector) &&
+      selectorCanDriveInteraction(selector),
+  );
+  if (actionSelectors.length !== 1) {
+    return { steps, qaScenarios: scenarios };
+  }
+
+  const originalStep = primary.steps[0];
+  const actionSelector = actionSelectors[0];
+  if (
+    isAssertionStep(originalStep) ||
+    isInputStep(originalStep) ||
+    isEntrypointPreparationStep(originalStep) ||
+    selectorMatchesStep(actionSelector, originalStep)
+  ) {
+    return { steps, qaScenarios: scenarios };
+  }
+
+  const groundedStep = `${actionVerbForSelector(actionSelector)} using ${selectorStepLabel(actionSelector)} to exercise ${lowercaseFirst(stripTerminalPunctuation(originalStep))}.`;
+  return {
+    steps: steps.map((step) => step === originalStep ? groundedStep : step),
+    qaScenarios: scenarios.map((scenario) =>
+      scenario.id === primary.id
+        ? { ...scenario, steps: scenario.steps.map((step) => step === originalStep ? groundedStep : step) }
+        : scenario
+    ),
+  };
 }
 
 function preferDiffAdded(
