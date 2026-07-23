@@ -2260,6 +2260,114 @@ test("visible outcomes survive browser scheduling implementation details", async
   );
 });
 
+test("built-in type predicates do not become QA lifecycle conditions", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/CatalogBanner.tsx";
+  await write(
+    root,
+    file,
+    "export function CatalogBanner() { return <section>Catalog</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/catalog-banner");
+
+  await write(
+    root,
+    file,
+    [
+      "export function CatalogBanner({ rawEntries }) {",
+      "  const entries = Array.isArray(rawEntries) ? rawEntries : [];",
+      "  function openCatalog() { return navigate('/catalog'); }",
+      "  return <button onClick={openCatalog}>Open catalog ({entries.length})</button>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: add catalog entry banner");
+
+  const analysis = await analyze(root, [file]);
+  const primary = analysis.intents[0].scenarios.find((scenario) => scenario.kind === "primary");
+  assert.ok(primary);
+  assert.equal(
+    analysis.intents[0].lifecycle.some((stage) =>
+      stage.evidence.some((item) => /^(?:Array\.)?isArray$/i.test(item.symbol ?? ""))
+    ),
+    false,
+  );
+  assert.equal(primary.steps.some((step) => /\bis array\b/i.test(step)), false);
+});
+
+test("visible product outcomes survive built-in type predicate filtering", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/CatalogResults.tsx";
+  await write(
+    root,
+    file,
+    "export function CatalogResults() { return <section>Catalog</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/catalog-results");
+
+  await write(
+    root,
+    file,
+    [
+      "export function CatalogResults({ entries }) {",
+      "  if (Array.isArray(entries)) {",
+      "    showCatalogResults();",
+      "  }",
+      "  return <section>Catalog results</section>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: show catalog results");
+
+  const analysis = await analyze(root, [file]);
+  assert.ok(
+    analysis.intents[0].lifecycle.some((stage) =>
+      stage.kind === "observable-outcome" &&
+      stage.evidence.some((item) => item.symbol === "showCatalogResults")
+    ),
+  );
+  assert.equal(
+    analysis.intents[0].lifecycle.some((stage) => /\bis array\b/i.test(stage.label)),
+    false,
+  );
+});
+
+test("product-defined readiness predicates remain lifecycle evidence", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/WorkspacePanel.tsx";
+  await write(
+    root,
+    file,
+    "export function WorkspacePanel() { return <section>Workspace</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/workspace-ready");
+
+  await write(
+    root,
+    file,
+    [
+      "export function WorkspacePanel({ workspace }) {",
+      "  if (isWorkspaceReady(workspace)) {",
+      "    showWorkspacePanel();",
+      "  }",
+      "  return <section>Workspace ready</section>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: show ready workspace");
+
+  const analysis = await analyze(root, [file]);
+  assert.ok(
+    analysis.intents[0].lifecycle.some((stage) =>
+      stage.kind === "condition" &&
+      stage.evidence.some((item) => item.symbol === "isWorkspaceReady")
+    ),
+  );
+});
+
 test("evidence-routed failure QA does not reuse an unrelated action selector", async (t) => {
   const root = await makeRepo(t);
   await write(

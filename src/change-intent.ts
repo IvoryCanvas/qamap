@@ -185,6 +185,15 @@ const implementationSchedulingCalls = new Set([
   "setinterval",
   "settimeout",
 ]);
+const implementationPredicateCalls = new Set([
+  "array.isarray",
+  "arraybuffer.isview",
+  "number.isfinite",
+  "number.isinteger",
+  "number.isnan",
+  "number.issafeinteger",
+  "object.hasown",
+]);
 
 export async function analyzeChangeIntents(
   rootInput: string,
@@ -1920,6 +1929,9 @@ function collectCodeBehaviorSignalsFromText(
   for (const expression of conditionExpressions) {
     const identifiers = expression.match(/\b(?:is|has|can|should|show|hide)[A-Z_][A-Za-z0-9_$]*/g) ?? [];
     for (const symbol of identifiers) {
+      if (isImplementationPredicateCall(symbol, expression)) {
+        continue;
+      }
       const label = `Check ${humanizeIdentifier(symbol)}.`;
       signals.push({
         kind: "condition",
@@ -2010,7 +2022,7 @@ function lifecycleKindForIdentifier(identifier: string): BehaviorLifecycleStageK
   const value = identifier.toLowerCase();
   const leaf = identifier.split(".").at(-1) ?? identifier;
   const leafValue = leaf.toLowerCase();
-  if (implementationSchedulingCalls.has(leafValue)) {
+  if (implementationSchedulingCalls.has(leafValue) || isImplementationPredicateCall(identifier)) {
     return undefined;
   }
   if (/^(?:on|handle)(?:press|click|submit|change|complete|open|response|message|select|toggle)/.test(leafValue)) {
@@ -2033,6 +2045,13 @@ function lifecycleKindForIdentifier(identifier: string): BehaviorLifecycleStageK
     return "condition";
   }
   return undefined;
+}
+
+function isImplementationPredicateCall(identifier: string, expression = identifier): boolean {
+  const names = expression.match(/\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*/g) ?? [
+    identifier,
+  ];
+  return names.some((name) => implementationPredicateCalls.has(name.toLowerCase()));
 }
 
 function codeSignalLabel(kind: BehaviorLifecycleStageKind, symbol: string): string {
