@@ -2153,6 +2153,113 @@ test("callback action synonyms retain behavior supported by the commit intent", 
   assert.ok(primary.steps.some((step) => /\bview\b/i.test(step)));
 });
 
+test("browser scheduling helpers do not become observable product proof", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/ReviewPanel.tsx";
+  await write(
+    root,
+    file,
+    "export function ReviewPanel() { return <section>Review</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/contextual-review");
+
+  await write(
+    root,
+    file,
+    [
+      "export function ReviewPanel() {",
+      "  function alignPanel() {",
+      "    requestAnimationFrame(() => setAligned(true));",
+      "  }",
+      "  return <button onClick={alignPanel}>Review layout</button>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: add contextual component review");
+
+  const analysis = await analyze(root, [file]);
+  const [intent] = analysis.intents;
+  const primary = intent.scenarios.find((scenario) => scenario.kind === "primary");
+  assert.ok(primary);
+  assert.equal(intent.lifecycle.some((stage) => /requestAnimationFrame/i.test(stage.label)), false);
+  assert.equal(primary.assertions.some((assertion) => /requestAnimationFrame/i.test(assertion)), false);
+});
+
+test("product request calls remain side-effect evidence", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/ReviewRequest.tsx";
+  await write(
+    root,
+    file,
+    "export function ReviewRequest() { return <section>Review</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/review-request");
+
+  await write(
+    root,
+    file,
+    [
+      "export function ReviewRequest() {",
+      "  function sendReviewRequest() {",
+      "    return requestReview();",
+      "  }",
+      "  return <button onClick={sendReviewRequest}>Request review</button>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: request component review");
+
+  const analysis = await analyze(root, [file]);
+  assert.ok(
+    analysis.intents[0].lifecycle.some((stage) =>
+      stage.kind === "side-effect" &&
+      stage.evidence.some((item) => item.symbol === "requestReview" && item.startLine)
+    ),
+  );
+});
+
+test("visible outcomes survive browser scheduling implementation details", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/AlignedPanel.tsx";
+  await write(
+    root,
+    file,
+    "export function AlignedPanel() { return <section>Panel</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/aligned-panel");
+
+  await write(
+    root,
+    file,
+    [
+      "export function AlignedPanel() {",
+      "  const [isAligned, setAligned] = useState(false);",
+      "  function alignPanel() {",
+      "    requestAnimationFrame(() => setAligned(true));",
+      "  }",
+      "  return <section>",
+      "    <button onClick={alignPanel}>Align panel</button>",
+      "    {isAligned && <p>Panel aligned</p>}",
+      "  </section>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: show aligned panel result");
+
+  const analysis = await analyze(root, [file]);
+  const primary = analysis.intents[0].scenarios.find((scenario) => scenario.kind === "primary");
+  assert.ok(primary);
+  assert.ok(primary.assertions.some((assertion) => /aligned panel|panel aligned/i.test(assertion)));
+  assert.equal(primary.assertions.some((assertion) => /requestAnimationFrame/i.test(assertion)), false);
+  assert.equal(
+    analysis.intents[0].lifecycle.some((stage) => /requestAnimationFrame/i.test(stage.label)),
+    false,
+  );
+});
+
 test("evidence-routed failure QA does not reuse an unrelated action selector", async (t) => {
   const root = await makeRepo(t);
   await write(

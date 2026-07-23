@@ -172,6 +172,19 @@ const ignoredCallNames = new Set([
   "test",
   "while",
 ]);
+const implementationSchedulingCalls = new Set([
+  "cancelanimationframe",
+  "cancelidlecallback",
+  "clearimmediate",
+  "clearinterval",
+  "cleartimeout",
+  "queuemicrotask",
+  "requestanimationframe",
+  "requestidlecallback",
+  "setimmediate",
+  "setinterval",
+  "settimeout",
+]);
 
 export async function analyzeChangeIntents(
   rootInput: string,
@@ -1997,6 +2010,9 @@ function lifecycleKindForIdentifier(identifier: string): BehaviorLifecycleStageK
   const value = identifier.toLowerCase();
   const leaf = identifier.split(".").at(-1) ?? identifier;
   const leafValue = leaf.toLowerCase();
+  if (implementationSchedulingCalls.has(leafValue)) {
+    return undefined;
+  }
   if (/^(?:on|handle)(?:press|click|submit|change|complete|open|response|message|select|toggle)/.test(leafValue)) {
     return "trigger";
   }
