@@ -1465,6 +1465,205 @@ test("E2E planning promotes commit intent before runner-specific draft generatio
   assert.ok(boundedAgentSummary.flows.length > 0);
 });
 
+test("React storage evidence compiles reload persistence into the primary Playwright draft", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { react: "19.0.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(
+    root,
+    "src/pages/density.tsx",
+    "export function DensityPage() { return <p>Default density</p>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/density-persistence");
+
+  await write(
+    root,
+    "src/pages/density.tsx",
+    [
+      "import { useState } from 'react';",
+      "",
+      "export function DensityPage() {",
+      "  const [density, setDensity] = useState(() => window.localStorage.getItem('workspace-density') ?? 'comfortable');",
+      "  const [saved, setSaved] = useState(false);",
+      "",
+      "  function saveDensity() {",
+      "    window.localStorage.setItem('workspace-density', density);",
+      "    setSaved(true);",
+      "  }",
+      "",
+      "  return <main>",
+      "    <input aria-label=\"Workspace density\" value={density} onChange={(event) => setDensity(event.target.value)} />",
+      "    <button data-testid=\"density-save\" onClick={saveDensity}>Save density</button>",
+      "    {saved ? <p>Density saved</p> : null}",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: persist workspace density and restore it after re-entry");
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: ".generated-e2e",
+  });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  const primaryReceipt = file.scenarioAutomation.find((receipt) => receipt.kind === "primary");
+
+  assert.match(spec, /const persistedField = page\.getByLabel\("Workspace density"\)/);
+  assert.match(spec, /Repository evidence links localStorage key "workspace-density"/);
+  assert.match(spec, /await persistedField\.fill\(persistedValue\)/);
+  assert.match(spec, /await page\.reload\(\)/);
+  assert.match(spec, /await expect\(persistedField\)\.toHaveValue\(persistedValue\)/);
+  assert.equal(spec.match(/getByTestId\("density-save"\)\.click\(\)/g)?.length, 1);
+  assert.match(file.languageBrief.trigger, /save density/i);
+  assert.doesNotMatch(file.languageBrief.trigger, /re-entry/i);
+  assert.equal(
+    primaryReceipt?.status,
+    "compiled",
+    JSON.stringify({ primaryReceipt, scenarios: file.qaScenarios, spec }),
+  );
+  assert.equal(primaryReceipt?.mappedAssertions, primaryReceipt?.totalAssertions);
+});
+
+test("Vue storage evidence compiles the same persistence proof without framework-specific rules", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { vue: "3.5.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(
+    root,
+    "src/pages/draft.vue",
+    "<template><p>Untitled draft</p></template>\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/draft-persistence");
+
+  await write(
+    root,
+    "src/pages/draft.vue",
+    [
+      "<script setup>",
+      "import { ref } from 'vue';",
+      "",
+      "const title = ref(window.sessionStorage.getItem('draft-title') ?? '');",
+      "const saved = ref(false);",
+      "",
+      "function saveDraft() {",
+      "  window.sessionStorage.setItem('draft-title', title.value);",
+      "  saved.value = true;",
+      "}",
+      "</script>",
+      "",
+      "<template>",
+      "  <main>",
+      "    <input aria-label=\"Draft title\" v-model=\"title\" />",
+      "    <button data-testid=\"draft-save\" @click=\"saveDraft\">Save draft</button>",
+      "    <p v-if=\"saved\">Draft saved</p>",
+      "  </main>",
+      "</template>",
+    ].join("\n"),
+  );
+  commit(root, "feat: persist draft title and restore it after re-entry");
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: ".generated-e2e",
+  });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  const primaryReceipt = file.scenarioAutomation.find((receipt) => receipt.kind === "primary");
+
+  assert.match(spec, /const persistedField = page\.getByLabel\("Draft title"\)/);
+  assert.match(spec, /Repository evidence links sessionStorage key "draft-title"/);
+  assert.match(spec, /await page\.reload\(\)/);
+  assert.match(spec, /await expect\(persistedField\)\.toHaveValue\(persistedValue\)/);
+  assert.equal(spec.match(/getByTestId\("draft-save"\)\.click\(\)/g)?.length, 1);
+  assert.match(file.languageBrief.trigger, /save draft/i);
+  assert.doesNotMatch(file.languageBrief.trigger, /re-entry/i);
+  assert.equal(
+    primaryReceipt?.status,
+    "compiled",
+    JSON.stringify({ primaryReceipt, scenarios: file.qaScenarios, spec }),
+  );
+});
+
+test("a storage write without matching restoration evidence stays partial", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { react: "19.0.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(
+    root,
+    "src/pages/filter.tsx",
+    "export function FilterPage() { return <p>All records</p>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/filter-persistence");
+
+  await write(
+    root,
+    "src/pages/filter.tsx",
+    [
+      "import { useState } from 'react';",
+      "",
+      "export function FilterPage() {",
+      "  const [filter, setFilter] = useState('all');",
+      "  const restoredFilter = window.localStorage.getItem('different-filter-key');",
+      "",
+      "  function saveFilter() {",
+      "    window.localStorage.setItem('records-filter', filter);",
+      "  }",
+      "",
+      "  return <main>",
+      "    <input aria-label=\"Records filter\" value={filter} onChange={(event) => setFilter(event.target.value)} />",
+      "    <button data-testid=\"filter-save\" onClick={saveFilter}>Save filter</button>",
+      "    <p>{restoredFilter}</p>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: persist the records filter for re-entry");
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: ".generated-e2e",
+  });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  const primaryReceipt = file.scenarioAutomation.find((receipt) => receipt.kind === "primary");
+
+  assert.doesNotMatch(spec, /const persistedField|await page\.reload\(\)|toHaveValue\(persistedValue\)/);
+  assert.notEqual(
+    primaryReceipt?.status,
+    "compiled",
+    JSON.stringify({ primaryReceipt, scenarios: file.qaScenarios, spec }),
+  );
+  assert.match(primaryReceipt?.blockers.join("\n") ?? "", /assertion.*did not map/i);
+});
+
 test("one change intent produces separate QA flows for distinct user surfaces", async (t) => {
   const root = await makeRepo(t);
   await write(

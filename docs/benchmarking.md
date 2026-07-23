@@ -21,6 +21,7 @@ The command fails when any target violates its declared expectations. The corpus
 - a React change spanning two user surfaces that must produce two independent primary scenario receipts, actions, assertions, and compiled drafts;
 - a presentation-only React condition that must not create behavioral state-transition QA;
 - a web preferences change that must execute the submit action once, map the immediate visible outcome, and keep unproven persistence, request-failure, and re-entry QA explicit instead of manufacturing passing coverage;
+- a repository-backed web persistence change that must connect one changed storage write to the matching read key, editable field, save action, route, and reload assertion before its primary draft can be fully mapped;
 - a mobile reminder change that must become scheduling, calendar, duplicate, resynchronization, and entry-routing QA;
 - a CLI plus static-analysis-rule change that must verify command I/O and positive/negative controls without turning rule vocabulary into product scheduling, routing, API, or fixture QA;
 - an Expo app with Maestro;
@@ -133,5 +134,7 @@ Any new production heuristic must be exercised by at least two unrelated positiv
 The nested-action rule follows that contract. Independent note and record fixtures provide positive same-entity evidence for `input -> create -> changed action -> observable result`, while an unrelated member-creation control is a negative control and must not be borrowed as setup. The rule is based on source ownership, selector role, and shared entity terms rather than any product domain name.
 
 Cross-framework fixtures are semantic controls, not a claim that QAMap has separate product logic for each UI library. The same user-visible change is expressed through different syntax so a shared inference rule must survive both, while the negative control proves that merely seeing a condition is not enough to invent QA. Because every fixture is small, public, and deterministic, a regression can be reproduced without private source, network services, or a working application environment.
+
+The persistence compiler follows the same rule. React and Vue controls prove that one shared storage-to-field relationship can produce save, stored-value, reload, and restored-value commands. A mismatched read/write-key control must remain partial. Framework names and product vocabulary do not authorize the proof; the connected repository evidence does.
 
 Private repository names, proprietary code, file paths, credentials, production data, and raw smoke output must never enter a public fixture. For a public PR regression, first confirm a compatible license, record the canonical URL and exact base/head commits in `PROVENANCE.md`, and keep only a behavior-preserving minimum. The shared inference rule must remain domain-neutral and pass unrelated positive and negative controls.

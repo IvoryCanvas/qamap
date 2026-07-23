@@ -615,12 +615,21 @@ function removeRedundantOutcomeTimingTriggers(
     if (!isCommitOnlyCausalTrigger(stage)) {
       return true;
     }
+    if (isVerificationTimingTrigger(stage.label)) {
+      return false;
+    }
     if (/\b(?:clicked|pressed|selected|submitted|tapped)\b/i.test(stage.label)) {
       return true;
     }
     const timingPhrase = stripTerminalPunctuation(stage.label).toLowerCase();
     return !outcomeLabels.some((outcome) => outcome.includes(timingPhrase));
   });
+}
+
+function isVerificationTimingTrigger(label: string): boolean {
+  return /^(?:after|once|upon|when)\s+(?:an?\s+)?(?:app\s+)?(?:back navigation|re-?entry|refresh|reload|restart|resume)\b/i.test(
+    stripTerminalPunctuation(label),
+  );
 }
 
 function lifecycleFromCodeSignals(signals: CodeBehaviorSignal[]): BehaviorLifecycleStage[] {
@@ -1795,9 +1804,13 @@ function collectCodeBehaviorSignalsFromText(
     });
   }
   for (const match of text.matchAll(
-    /\b(?:onClick|onPress|onSubmit|onChange|onEnded)\s*=\s*\{\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)?\s*=>\s*(?:\{[^}\n]*?)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g,
+    /\b(onClick|onPress|onSubmit|onChange|onEnded)\s*=\s*\{\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)?\s*=>\s*(?:\{[^}\n]*?)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g,
   )) {
-    const symbol = match[1];
+    const eventName = match[1];
+    const symbol = match[2];
+    if (eventName === "onChange" && /^(?:set|update)[A-Z_]/.test(symbol.split(".").at(-1) ?? symbol)) {
+      continue;
+    }
     const label = `Trigger ${humanizeEventHandler(symbol.split(".").at(-1) ?? symbol)}.`;
     signals.push({
       kind: "trigger",
@@ -1968,7 +1981,7 @@ function extractTriggerPhrases(statement: string): string[] {
 function splitIntentClauses(statement: string): string[] {
   const stripped = stripTerminalPunctuation(statement.trim());
   const lifecycleVerb =
-    "(?:cache|cancel|clear|click|complete|delete|display|emit|fetch|fire|invalidate|navigate|notify|open|persist|post|publish|redirect|remove|render|request|resync|reset|save|schedule|select|send|show|store|submit|surface|sync|tap|toggle|track|update|upload)";
+    "(?:cache|cancel|clear|click|complete|delete|display|emit|fetch|fire|invalidate|navigate|notify|open|persist|post|publish|redirect|remove|render|request|resync|reset|restore|save|schedule|select|send|show|store|submit|surface|sync|tap|toggle|track|update|upload)";
   const clauses = stripped
     .split(new RegExp(`(?:,\\s*(?=${lifecycleVerb}\\b)|,?\\s+(?:and then|then|and)\\s+)`, "i"))
     .map((clause) => clause.trim())
@@ -1981,7 +1994,7 @@ function classifyLifecycleClause(clause: string): BehaviorLifecycleStageKind {
   if (/^(?:show|display|render|preview|tease|open|navigate|redirect|surface|return)\b/.test(value)) {
     return "observable-outcome";
   }
-  if (/^(?:save|persist|store|update|sync|resync|cache|set|cancel|remove|delete|invalidate|toggle)\b/.test(value)) {
+  if (/^(?:save|persist|restore|store|update|sync|resync|cache|set|cancel|remove|delete|invalidate|toggle)\b/.test(value)) {
     return "state-change";
   }
   if (/^(?:schedule|fire|send|notify|request|fetch|post|emit|track|publish|export|upload)\b/.test(value)) {
@@ -1996,7 +2009,7 @@ function classifyLifecycleClause(clause: string): BehaviorLifecycleStageKind {
   if (/\b(?:show|display|render|preview|tease|open|navigate|redirect|surface|return)\b/.test(value)) {
     return "observable-outcome";
   }
-  if (/\b(?:save|persist|store|update|sync|resync|cache|set|cancel|remove|delete|invalidate|toggle)\b/.test(value)) {
+  if (/\b(?:save|persist|restore|store|update|sync|resync|cache|set|cancel|remove|delete|invalidate|toggle)\b/.test(value)) {
     return "state-change";
   }
   if (/\b(?:schedule|fire|send|notify|request|fetch|post|emit|track|publish|export|upload)\b/.test(value)) {

@@ -675,7 +675,11 @@ function refineChangeIntentAssertions(changeAnalysis: ChangeIntentAnalysis, flow
     }
   }
   for (const flow of flows) {
-    if (!flow.intentId || !/^visible text ".+" appears$/u.test(flow.languageBrief.successSignal)) {
+    if (!flow.intentId) {
+      continue;
+    }
+    flow.steps = flow.steps.filter((step) => !isUncompiledPersistenceAssertion(flow, step));
+    if (!/^visible text ".+" appears$/u.test(flow.languageBrief.successSignal)) {
       continue;
     }
     const intent = changeAnalysis.intents.find((candidate) => candidate.id === flow.intentId);
@@ -4917,8 +4921,18 @@ type DraftE2eFlow = E2eFlow & {
   coreFlow?: MatchedCoreFlow;
   manifestMatch?: VerificationManifestMatch;
   manifestCheckMatches?: VerificationManifestMatch[];
+  persistenceProbe?: PlaywrightPersistenceProbe;
 };
 type AnalyzedChangeIntent = ChangeIntentAnalysis["intents"][number];
+
+interface PlaywrightPersistenceProbe {
+  storage: "localStorage" | "sessionStorage";
+  key: string;
+  assertions: string[];
+  inputSelector: E2eSelector;
+  actionSelector: E2eSelector;
+  sampleValue: string;
+}
 
 interface IntentFlowScope {
   label?: string;
@@ -7766,21 +7780,30 @@ async function buildDraftFlows(
       .map((scenario) => buildDomainScenarioDraftFlow(plan, scenario, baseFlows, addedDiffText)),
   );
 
+  let draftFlows: DraftE2eFlow[];
   if (manifestFlows.length === 0 && scenarioFlows.length === 0) {
-    return baseFlows.map((flow) => ({
+    draftFlows = baseFlows.map((flow) => ({
       ...flow,
       draftSource: flow.intentId ? "change-intent" : "heuristic",
     }));
+  } else {
+    const combined = prioritizeImportantBaseDraftFlow(dedupeDraftFlowsByOutputPath(
+      dedupeFlows([...manifestFlows, ...scenarioFlows, ...baseFlows]),
+      plan.recommendedRunner.name,
+    ), baseFlows).slice(0, 4);
+    draftFlows = combined.map((flow) => ({
+      ...flow,
+      draftSource: draftFlowSource(flow),
+    }));
   }
 
-  const combined = prioritizeImportantBaseDraftFlow(dedupeDraftFlowsByOutputPath(
-    dedupeFlows([...manifestFlows, ...scenarioFlows, ...baseFlows]),
-    plan.recommendedRunner.name,
-  ), baseFlows).slice(0, 4);
-  return combined.map((flow) => ({
+  if (plan.recommendedRunner.name !== "playwright") {
+    return draftFlows;
+  }
+  return Promise.all(draftFlows.map(async (flow) => ({
     ...flow,
-    draftSource: draftFlowSource(flow),
-  }));
+    persistenceProbe: await inferPlaywrightPersistenceProbe(plan.root, flow, addedDiffText),
+  })));
 }
 
 function prioritizeImportantBaseDraftFlow(flows: DraftE2eFlow[], baseFlows: E2eFlow[]): DraftE2eFlow[] {
@@ -8424,6 +8447,254 @@ function draftFlowSource(flow: E2eFlow): DraftFlowSource {
 
 function domainScenarioForFlow(flow: E2eFlow): DomainScenarioSuggestion | undefined {
   return (flow as DraftE2eFlow).domainScenario;
+}
+
+interface SourceFileText {
+  file: string;
+  text: string;
+}
+
+interface WebStorageWrite {
+  storage: "localStorage" | "sessionStorage";
+  key: string;
+  valueIdentifier: string;
+  file: string;
+  offset: number;
+}
+
+async function inferPlaywrightPersistenceProbe(
+  root: string,
+  flow: DraftE2eFlow,
+  addedDiffText: Record<string, string>,
+): Promise<PlaywrightPersistenceProbe | undefined> {
+  if (!primaryRouteEntrypoint(flow)) {
+    return undefined;
+  }
+  const assertions = primaryPersistenceAssertions(flow);
+  if (assertions.length === 0) {
+    return undefined;
+  }
+
+  const sourceFiles = (
+    await Promise.all(flow.files.slice(0, maxFilesPerFlow).map(async (file): Promise<SourceFileText | undefined> => {
+      const text = await readTextIfExists(path.join(root, file));
+      return text ? { file, text } : undefined;
+    }))
+  ).filter((source): source is SourceFileText => Boolean(source));
+
+  for (const source of sourceFiles) {
+    const changedWrites = extractWebStorageWrites(addedDiffText[source.file] ?? "", source.file);
+    if (changedWrites.length === 0) {
+      continue;
+    }
+    const sourceWrites = extractWebStorageWrites(source.text, source.file);
+    for (const write of sourceWrites) {
+      if (!changedWrites.some((candidate) => sameWebStorageWrite(candidate, write))) {
+        continue;
+      }
+      if (!hasConnectedWebStorageRead(sourceFiles, write)) {
+        continue;
+      }
+      const input = boundPersistenceInput(flow.selectors, sourceFiles, write);
+      if (!input) {
+        continue;
+      }
+      const handler = enclosingNamedHandler(source.text, write.offset);
+      if (!handler) {
+        continue;
+      }
+      const actionSelector = persistenceActionSelector(flow.selectors, source, handler);
+      if (!actionSelector) {
+        continue;
+      }
+      return {
+        storage: write.storage,
+        key: write.key,
+        assertions,
+        inputSelector: input.selector,
+        actionSelector,
+        sampleValue: persistenceSampleValue(input.type, input.selector.value),
+      };
+    }
+  }
+  return undefined;
+}
+
+function primaryPersistenceAssertions(flow: E2eFlow): string[] {
+  return flow.qaScenarios
+    ?.find((scenario) => scenario.kind === "primary")
+    ?.assertions.filter((assertion) =>
+      /\b(?:cache|persist|re-?entry|reload|resync|retain|store|survive|sync)\b/i.test(assertion)
+    ) ?? [];
+}
+
+function extractWebStorageWrites(text: string, file: string): WebStorageWrite[] {
+  const writes: WebStorageWrite[] = [];
+  const matcher =
+    /\b(?:(?:window|globalThis)\s*\.\s*)?(localStorage|sessionStorage)\s*\.\s*setItem\s*\(\s*(["'`])([^"'`]+)\2\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*){0,2})\s*\)/g;
+  for (const match of text.matchAll(matcher)) {
+    const storage = match[1] as WebStorageWrite["storage"];
+    const valueExpression = match[4];
+    const valueIdentifier = normalizePersistedValueIdentifier(valueExpression);
+    if (!valueIdentifier) {
+      continue;
+    }
+    writes.push({
+      storage,
+      key: match[3],
+      valueIdentifier,
+      file,
+      offset: match.index ?? 0,
+    });
+  }
+  return writes;
+}
+
+function normalizePersistedValueIdentifier(value: string): string | undefined {
+  const normalized = value.replace(/\.value$/i, "");
+  return /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*){0,2}$/.test(normalized)
+    ? normalized
+    : undefined;
+}
+
+function sameWebStorageWrite(left: WebStorageWrite, right: WebStorageWrite): boolean {
+  return left.storage === right.storage &&
+    left.key === right.key &&
+    left.valueIdentifier === right.valueIdentifier;
+}
+
+function hasConnectedWebStorageRead(sourceFiles: SourceFileText[], write: WebStorageWrite): boolean {
+  const readMatcher =
+    /\b(?:(?:window|globalThis)\s*\.\s*)?(localStorage|sessionStorage)\s*\.\s*getItem\s*\(\s*(["'`])([^"'`]+)\2\s*\)/g;
+  const identifierRoot = write.valueIdentifier.split(".")[0];
+  const identifierPattern = new RegExp(`\\b${escapeRegExp(identifierRoot)}\\b`);
+  for (const source of sourceFiles) {
+    for (const read of source.text.matchAll(readMatcher)) {
+      if (read[1] !== write.storage || read[3] !== write.key) {
+        continue;
+      }
+      const start = Math.max(0, (read.index ?? 0) - 240);
+      const end = Math.min(source.text.length, (read.index ?? 0) + read[0].length + 240);
+      if (identifierPattern.test(source.text.slice(start, end))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function boundPersistenceInput(
+  selectors: E2eSelector[],
+  sourceFiles: SourceFileText[],
+  write: WebStorageWrite,
+): { selector: E2eSelector; type?: string } | undefined {
+  const candidates = selectors
+    .filter((selector) => isInputSelector(selector))
+    .sort((left, right) =>
+      Number(right.file === write.file) - Number(left.file === write.file) ||
+      selectorEvidenceScore(right) - selectorEvidenceScore(left)
+    );
+  for (const selector of candidates) {
+    const source = sourceFiles.find((candidate) => candidate.file === selector.file);
+    if (!source) {
+      continue;
+    }
+    for (const element of source.text.matchAll(/<(?:input|textarea)\b[^>]*>/gi)) {
+      if (!element[0].includes(selector.value) || !elementBindsPersistedValue(element[0], write.valueIdentifier)) {
+        continue;
+      }
+      const type = element[0].match(/\btype\s*=\s*(?:"([^"]+)"|'([^']+)'|\{\s*["']([^"']+)["']\s*\})/i);
+      const inputType = (type?.[1] ?? type?.[2] ?? type?.[3])?.toLowerCase();
+      if (inputType && !playwrightFillableInputTypes.has(inputType)) {
+        continue;
+      }
+      return { selector, type: inputType };
+    }
+  }
+  return undefined;
+}
+
+const playwrightFillableInputTypes = new Set([
+  "email",
+  "number",
+  "search",
+  "tel",
+  "text",
+  "url",
+]);
+
+function elementBindsPersistedValue(element: string, valueIdentifier: string): boolean {
+  const expression = escapeRegExp(valueIdentifier);
+  return [
+    new RegExp(`\\b(?:value|defaultValue)\\s*=\\s*\\{\\s*${expression}\\s*\\}`),
+    new RegExp(`\\bv-model(?:\\.\\w+)*\\s*=\\s*["']${expression}["']`),
+    new RegExp(`\\b:value\\s*=\\s*["']${expression}["']`),
+    new RegExp(`\\bbind:value\\s*=\\s*\\{\\s*${expression}\\s*\\}`),
+  ].some((pattern) => pattern.test(element));
+}
+
+function enclosingNamedHandler(text: string, offset: number): string | undefined {
+  const prefix = text.slice(Math.max(0, offset - 2400), offset);
+  const matcher =
+    /(?:\bfunction\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{|\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{)/g;
+  let handler: string | undefined;
+  for (const match of prefix.matchAll(matcher)) {
+    handler = match[1] ?? match[2];
+  }
+  return handler;
+}
+
+function persistenceActionSelector(
+  selectors: E2eSelector[],
+  source: SourceFileText,
+  handler: string,
+): E2eSelector | undefined {
+  const handlerPattern = new RegExp(
+    `(?:onClick|@click(?:\\.\\w+)*|v-on:click(?:\\.\\w+)*|on:click)\\s*=\\s*(?:\\{\\s*)?["']?${escapeRegExp(handler)}\\b`,
+    "g",
+  );
+  const elements: string[] = [];
+  for (const match of source.text.matchAll(handlerPattern)) {
+    const element = sourceElementAroundOffset(source.text, match.index ?? 0);
+    if (element) {
+      elements.push(element);
+    }
+  }
+  return selectors
+    .filter((selector) =>
+      selector.file === source.file &&
+      !isInputSelector(selector) &&
+      selectorCanDriveInteraction(selector) &&
+      elements.some((element) => element.includes(selector.value))
+    )
+    .sort((left, right) =>
+      selectorEvidenceScore(right) - selectorEvidenceScore(left) ||
+      Number(/\b(?:save|submit|update|confirm|apply)\b/i.test(right.value)) -
+        Number(/\b(?:save|submit|update|confirm|apply)\b/i.test(left.value))
+    )[0];
+}
+
+function sourceElementAroundOffset(text: string, offset: number): string | undefined {
+  const start = text.lastIndexOf("<", offset);
+  const openingEnd = text.indexOf(">", offset);
+  if (start < 0 || openingEnd < 0) {
+    return undefined;
+  }
+  const opening = text.slice(start, openingEnd + 1);
+  const tag = opening.match(/^<([A-Za-z][\w.-]*)\b/)?.[1];
+  if (!tag || opening.endsWith("/>")) {
+    return opening;
+  }
+  const closing = new RegExp(`</${escapeRegExp(tag)}\\s*>`, "i").exec(
+    text.slice(openingEnd + 1, Math.min(text.length, openingEnd + 601)),
+  );
+  return closing
+    ? text.slice(start, openingEnd + 1 + closing.index + closing[0].length)
+    : opening;
+}
+
+function persistenceSampleValue(type: string | undefined, selector: string): string {
+  return type === "number" ? "42" : playwrightSampleInput(selector);
 }
 
 function buildScenarioAutomationReceipts(
@@ -9126,7 +9397,13 @@ function maestroCommandForStep(
 
 function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText: Record<string, string> = {}): string {
   const testName = flow.title.replaceAll('"', "'");
-  const selectorQueue = [...flow.selectors];
+  const persistenceProbe = playwrightPersistenceProbeForFlow(flow);
+  const selectorQueue = persistenceProbe
+    ? [
+        persistenceProbe.actionSelector,
+        ...flow.selectors.filter((selector) => selector !== persistenceProbe.actionSelector),
+      ]
+    : [...flow.selectors];
   const scenario = domainScenarioForFlow(flow);
   const lines: string[] = [];
   lines.push(`// Generated by QAMap ${VERSION}`);
@@ -9171,6 +9448,7 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText:
   appendPlaywrightTestStep(lines, flow.languageBrief.trigger, [
     `await page.goto(${routeDraft.expression});`,
   ]);
+  appendPlaywrightPersistencePreparation(lines, persistenceProbe);
   for (const step of draftExecutableSteps(flow, "playwright")) {
     const manifestCheck = manifestCheckForDraftStep(flow, step);
     const manifestBody = manifestCheck ? playwrightActionForManifestCheck(manifestCheck, step) : undefined;
@@ -9183,6 +9461,7 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText:
         : playwrightFallbackActionForStep(step));
     appendPlaywrightTestStep(lines, step, body);
   }
+  appendPlaywrightPersistenceAssertion(lines, persistenceProbe);
   appendObservedResponseAssertion(lines, flow, addedDiffText);
   appendDomainScenarioComments(lines, flow, "  //");
   appendPlaywrightCoverageComments(lines, flow);
@@ -9216,6 +9495,61 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText:
   }
   lines.push("");
   return lines.join("\n");
+}
+
+function playwrightPersistenceProbeForFlow(flow: E2eFlow): PlaywrightPersistenceProbe | undefined {
+  return (flow as DraftE2eFlow).persistenceProbe;
+}
+
+function appendPlaywrightPersistencePreparation(
+  lines: string[],
+  probe: PlaywrightPersistenceProbe | undefined,
+): void {
+  if (!probe) {
+    return;
+  }
+  lines.push("");
+  lines.push(`  const persistedField = ${playwrightLocator(probe.inputSelector)};`);
+  lines.push(`  const persistedValue = "${quoteJs(probe.sampleValue)}";`);
+  appendPlaywrightTestStep(lines, "Prepare a changed value for persistence proof", [
+    `// Repository evidence links ${probe.storage} key "${quoteJs(probe.key)}" to this field and the changed save action.`,
+    "await persistedField.fill(persistedValue);",
+  ]);
+}
+
+function appendPlaywrightPersistenceAssertion(
+  lines: string[],
+  probe: PlaywrightPersistenceProbe | undefined,
+): void {
+  if (!probe) {
+    return;
+  }
+  const [storedAssertion, restoredAssertion] = probe.assertions;
+  if (!storedAssertion) {
+    return;
+  }
+  const storageExpectation = [
+    `const storedValue = await page.evaluate(() => window.${probe.storage}.getItem("${quoteJs(probe.key)}"));`,
+    "await expect(storedValue).toBe(persistedValue);",
+  ];
+  if (!restoredAssertion) {
+    appendPlaywrightTestStep(lines, storedAssertion, [
+      `// Step intent: ${storedAssertion}`,
+      ...storageExpectation,
+      "await page.reload();",
+      "await expect(persistedField).toHaveValue(persistedValue);",
+    ]);
+    return;
+  }
+  appendPlaywrightTestStep(lines, storedAssertion, [
+    `// Step intent: ${storedAssertion}`,
+    ...storageExpectation,
+  ]);
+  appendPlaywrightTestStep(lines, restoredAssertion, [
+    `// Step intent: ${restoredAssertion}`,
+    "await page.reload();",
+    "await expect(persistedField).toHaveValue(persistedValue);",
+  ]);
 }
 
 interface PlaywrightRoutedScenarioDraft {

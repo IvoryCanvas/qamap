@@ -306,6 +306,38 @@
       }
     },
     {
+      "name": "web-persisted-workspace-setting",
+      "fixture": "test/benchmarks/web-persisted-workspace-setting",
+      "commitMessage": "feat: persist workspace density and restore it after re-entry",
+      "expect": {
+        "runner": "playwright",
+        "minFlows": 1,
+        "minChangeIntents": 1,
+        "minDiffAnchoredFlows": 1,
+        "mustHaveBehaviorKinds": ["flow", "state", "assertion", "source", "locator"],
+        "mustReachFiles": ["src/pages/density.tsx"],
+        "mustNameIntents": ["persist workspace density"],
+        "mustNameFlows": ["persist workspace density"],
+        "mustIncludeLifecycle": ["persist workspace density", "restore it after re-entry"],
+        "mustIncludeQaScenarios": ["Re-entry and stale state recovery"],
+        "mustFindEntrypoints": ["/density"],
+        "mustFindSelectors": ["Workspace density", "density-save"],
+        "mustFindSuccessSignals": ["Density saved"],
+        "minReasoningTraces": 2,
+        "maxMissingReasoningTraces": 0,
+        "maxUntraceableRequiredScenarios": 0,
+        "minPrimaryFlowReceipts": 1,
+        "maxMissingPrimaryFlowReceipts": 0,
+        "minCompiledPrimaryFlows": 1,
+        "maxReviewOnlyPrimaryFlows": 0,
+        "minPrimaryFlowsWithMappedSteps": 1,
+        "minPrimaryFlowsWithMappedAssertions": 1,
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 8192
+      }
+    },
+    {
       "name": "mobile-reminder-lifecycle",
       "fixture": "test/benchmarks/mobile-reminder-lifecycle",
       "commitMessage": "feat: schedule a summary reminder after survey completion, resync it when preferences change, and open the linked summary when tapped",
