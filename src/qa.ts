@@ -286,9 +286,7 @@ function truncateForAgent(value: string, maxLength = 140): string {
 }
 
 export function formatAgentQaDraft(result: QaDraftResult): string {
-  const scenarioAutomationById = new Map(
-    result.flows.flatMap((flow) => flow.scenarioAutomation).map((receipt) => [receipt.scenarioId, receipt]),
-  );
+  const scenarioAutomationById = aggregateScenarioAutomationById(result.flows);
   const requiredEvidence = result.missingEvidence
     .filter((item) => item.priority === "required")
     .slice(0, 8)
@@ -351,6 +349,9 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
         ? {
             draft: truncateForAgent(trace.artifact.draftPath, 120),
             status: trace.artifact.status,
+            flowCoverage: trace.artifact.flowCount > 1
+              ? `${trace.artifact.compiledFlowCount}/${trace.artifact.flowCount}`
+              : undefined,
           }
         : undefined,
       execution: trace.execution,
@@ -390,12 +391,17 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
           },
           automation: automation
             ? {
-                status: automation.status,
-                mappedSteps: automation.mappedSteps,
-                totalSteps: automation.totalSteps,
-                mappedAssertions: automation.mappedAssertions,
-                totalAssertions: automation.totalAssertions,
-                blocker: automation.blockers[0] ? truncateForAgent(automation.blockers[0], 160) : undefined,
+                status: automation.receipt.status,
+                flowCoverage: automation.flowCount > 1
+                  ? `${automation.compiledFlowCount}/${automation.flowCount}`
+                  : undefined,
+                mappedSteps: automation.receipt.mappedSteps,
+                totalSteps: automation.receipt.totalSteps,
+                mappedAssertions: automation.receipt.mappedAssertions,
+                totalAssertions: automation.receipt.totalAssertions,
+                blocker: automation.receipt.blockers[0]
+                  ? truncateForAgent(automation.receipt.blockers[0], 160)
+                  : undefined,
               }
             : undefined,
         };
@@ -456,7 +462,7 @@ interface AgentSummaryShape {
     behavior?: { id?: unknown; phase?: unknown; label?: string; relation?: unknown };
     risk?: { kind?: unknown; statement?: string };
     scenario?: { id?: unknown; decision?: unknown; title?: string };
-    artifact?: { draft?: string; status?: unknown };
+    artifact?: { draft?: string; status?: unknown; flowCoverage?: string };
     execution?: unknown;
   }>;
   intents: Array<{
@@ -484,6 +490,7 @@ interface AgentSummaryShape {
       };
       automation?: {
         status?: unknown;
+        flowCoverage?: string;
         mappedSteps?: unknown;
         totalSteps?: unknown;
         mappedAssertions?: unknown;
@@ -663,6 +670,7 @@ function serializeAgentSummary(summary: AgentSummaryShape): string {
       ? {
           draft: truncateForAgent(String(trace.artifact.draft ?? ""), 60),
           status: trace.artifact.status,
+          flowCoverage: trace.artifact.flowCoverage,
         }
       : undefined,
     execution: trace.execution,
@@ -1293,11 +1301,7 @@ function appendQaDecisionLayers(
   nextCommand: string | undefined,
 ): void {
   const scenarios = result.changeAnalysis.intents.flatMap((intent) => intent.scenarios);
-  const automationByScenario = new Map(
-    result.flows.flatMap((flow) =>
-      flow.scenarioAutomation.map((receipt) => [receipt.scenarioId, { receipt, flow }] as const)
-    ),
-  );
+  const automationByScenario = aggregateScenarioAutomationById(result.flows);
   const staticRunnableFlows = result.flows.filter((flow) => flow.runnableStatus === "runnable-candidate");
   const contractScenarios = scenarios.filter((scenario) => {
     const automation = automationByScenario.get(scenario.id)?.receipt;
@@ -1430,10 +1434,13 @@ function appendQaReasoningTraceMarkdown(lines: string[], result: QaDraftResult):
         `6. Repository verification: ${formatVerificationMode(verificationMode)}; no product E2E artifact is expected.`,
       );
     } else if (trace.artifact) {
+      const flowCoverage = trace.artifact.flowCount > 1
+        ? `flow coverage ${trace.artifact.compiledFlowCount}/${trace.artifact.flowCount}; `
+        : "";
       lines.push(
         `6. Optional artifact: \`${escapeMarkdownInline(trace.artifact.draftPath)}\` - ` +
           `${formatScenarioAutomationStatus(trace.artifact.status)} ` +
-          `(steps ${trace.artifact.mappedSteps}/${trace.artifact.totalSteps}; ` +
+          `(${flowCoverage}steps ${trace.artifact.mappedSteps}/${trace.artifact.totalSteps}; ` +
           `assertions ${trace.artifact.mappedAssertions}/${trace.artifact.totalAssertions})`,
       );
     } else {
@@ -1534,7 +1541,65 @@ function findScenarioAutomation(
   result: QaDraftResult,
   scenarioId: string,
 ): E2eScenarioAutomationReceipt | undefined {
-  return result.flows.flatMap((flow) => flow.scenarioAutomation).find((receipt) => receipt.scenarioId === scenarioId);
+  return aggregateScenarioAutomationById(result.flows).get(scenarioId)?.receipt;
+}
+
+interface QaScenarioAutomationAggregate {
+  receipt: E2eScenarioAutomationReceipt;
+  flowCount: number;
+  compiledFlowCount: number;
+}
+
+function aggregateScenarioAutomationById(
+  flows: QaDraftFlow[],
+): Map<string, QaScenarioAutomationAggregate> {
+  const grouped = new Map<string, E2eScenarioAutomationReceipt[]>();
+  for (const flow of flows) {
+    for (const receipt of flow.scenarioAutomation) {
+      const current = grouped.get(receipt.scenarioId) ?? [];
+      current.push(receipt);
+      grouped.set(receipt.scenarioId, current);
+    }
+  }
+
+  return new Map([...grouped.entries()].map(([scenarioId, receipts]) => {
+    const first = receipts[0];
+    const compiledFlowCount = receipts.filter((receipt) => receipt.status === "compiled").length;
+    const mappedSteps = receipts.reduce((sum, receipt) => sum + receipt.mappedSteps, 0);
+    const mappedAssertions = receipts.reduce((sum, receipt) => sum + receipt.mappedAssertions, 0);
+    const status: E2eScenarioAutomationReceipt["status"] = compiledFlowCount === receipts.length
+      ? "compiled"
+      : receipts.every((receipt) => receipt.status === "review-only")
+        ? "review-only"
+        : mappedSteps > 0 || mappedAssertions > 0
+          ? "partial"
+          : "not-compiled";
+    const decision = receipts.some((receipt) => receipt.decision === "required")
+      ? "required"
+      : receipts.some((receipt) => receipt.decision === "recommended")
+        ? "recommended"
+        : "review-only";
+    const flowGap = compiledFlowCount < receipts.length
+      ? `${compiledFlowCount} of ${receipts.length} affected flow drafts fully map this scenario.`
+      : undefined;
+    const receipt: E2eScenarioAutomationReceipt = {
+      ...first,
+      scenarioId,
+      decision,
+      status,
+      requiredSourceCount: receipts.reduce((sum, item) => sum + item.requiredSourceCount, 0),
+      referenceSourceCount: receipts.reduce((sum, item) => sum + item.referenceSourceCount, 0),
+      totalSteps: receipts.reduce((sum, item) => sum + item.totalSteps, 0),
+      totalAssertions: receipts.reduce((sum, item) => sum + item.totalAssertions, 0),
+      mappedSteps,
+      mappedAssertions,
+      blockers: uniqueStrings([
+        ...(flowGap ? [flowGap] : []),
+        ...receipts.flatMap((item) => item.blockers),
+      ]),
+    };
+    return [scenarioId, { receipt, flowCount: receipts.length, compiledFlowCount }];
+  }));
 }
 
 function formatEvidenceReference(evidence: ChangeIntentEvidence): string {

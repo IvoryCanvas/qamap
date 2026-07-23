@@ -108,6 +108,13 @@ function scoreTarget(target, plan, qa, durationMs) {
   const scenarioReceipts = [...new Map(
     qa.flows.flatMap((flow) => flow.scenarioAutomation ?? []).map((receipt) => [receipt.scenarioId, receipt]),
   ).values()];
+  const primaryFlowAutomation = qa.flows.map((flow) => ({
+    flowTitle: flow.title,
+    receipt: (flow.scenarioAutomation ?? []).find((receipt) => receipt.kind === "primary"),
+  }));
+  const primaryFlowReceipts = primaryFlowAutomation
+    .map((item) => item.receipt)
+    .filter(Boolean);
   const scenarioReceiptIds = new Set(scenarioReceipts.map((receipt) => receipt.scenarioId));
   const reasoningTraceIds = new Set(qa.traces.map((trace) => trace.scenario.id));
   const locatedQaScenarios = qaScenarios.filter((scenario) =>
@@ -149,6 +156,15 @@ function scoreTarget(target, plan, qa, durationMs) {
     scenarioTrace: qaScenarios.length > 0 ? `${locatedQaScenarios.length}/${qaScenarios.length}` : null,
     scenarioReceipts: scenarioReceipts.length,
     scenarioReceiptCoverage: qaScenarios.length > 0 ? `${scenarioReceipts.length}/${qaScenarios.length}` : null,
+    primaryFlowReceipts: primaryFlowReceipts.length,
+    primaryFlowReceiptCoverage: qa.flows.length > 0 ? `${primaryFlowReceipts.length}/${qa.flows.length}` : null,
+    missingPrimaryFlowReceipts: primaryFlowAutomation.filter((item) => !item.receipt).length,
+    compiledPrimaryFlows: primaryFlowReceipts.filter((receipt) => receipt.status === "compiled").length,
+    partialPrimaryFlows: primaryFlowReceipts.filter((receipt) => receipt.status === "partial").length,
+    notCompiledPrimaryFlows: primaryFlowReceipts.filter((receipt) => receipt.status === "not-compiled").length,
+    reviewOnlyPrimaryFlows: primaryFlowReceipts.filter((receipt) => receipt.status === "review-only").length,
+    primaryFlowsWithMappedSteps: primaryFlowReceipts.filter((receipt) => receipt.mappedSteps > 0).length,
+    primaryFlowsWithMappedAssertions: primaryFlowReceipts.filter((receipt) => receipt.mappedAssertions > 0).length,
     reasoningTraces: qa.traces.length,
     reasoningTraceCoverage: qaScenarios.length > 0 ? `${qa.traces.length}/${qaScenarios.length}` : null,
     traceableReasoning: qa.traces.filter((trace) => trace.status === "traceable").length,
@@ -338,6 +354,54 @@ function evaluateContract(expect, result, plan, qa) {
   }
   if (expect.minScenarioReceipts !== undefined && result.scenarioReceipts < expect.minScenarioReceipts) {
     failures.push(`expected at least ${expect.minScenarioReceipts} scenario receipt(s), got ${result.scenarioReceipts}`);
+  }
+  if (
+    expect.minPrimaryFlowReceipts !== undefined &&
+    result.primaryFlowReceipts < expect.minPrimaryFlowReceipts
+  ) {
+    failures.push(
+      `expected at least ${expect.minPrimaryFlowReceipts} primary flow receipt(s), got ${result.primaryFlowReceipts}`,
+    );
+  }
+  if (
+    expect.maxMissingPrimaryFlowReceipts !== undefined &&
+    result.missingPrimaryFlowReceipts > expect.maxMissingPrimaryFlowReceipts
+  ) {
+    failures.push(
+      `missing primary flow receipts ${result.missingPrimaryFlowReceipts} exceed ${expect.maxMissingPrimaryFlowReceipts}`,
+    );
+  }
+  if (
+    expect.minCompiledPrimaryFlows !== undefined &&
+    result.compiledPrimaryFlows < expect.minCompiledPrimaryFlows
+  ) {
+    failures.push(
+      `expected at least ${expect.minCompiledPrimaryFlows} compiled primary flow(s), got ${result.compiledPrimaryFlows}`,
+    );
+  }
+  if (
+    expect.maxReviewOnlyPrimaryFlows !== undefined &&
+    result.reviewOnlyPrimaryFlows > expect.maxReviewOnlyPrimaryFlows
+  ) {
+    failures.push(
+      `review-only primary flows ${result.reviewOnlyPrimaryFlows} exceed ${expect.maxReviewOnlyPrimaryFlows}`,
+    );
+  }
+  if (
+    expect.minPrimaryFlowsWithMappedSteps !== undefined &&
+    result.primaryFlowsWithMappedSteps < expect.minPrimaryFlowsWithMappedSteps
+  ) {
+    failures.push(
+      `expected at least ${expect.minPrimaryFlowsWithMappedSteps} primary flow(s) with mapped steps, got ${result.primaryFlowsWithMappedSteps}`,
+    );
+  }
+  if (
+    expect.minPrimaryFlowsWithMappedAssertions !== undefined &&
+    result.primaryFlowsWithMappedAssertions < expect.minPrimaryFlowsWithMappedAssertions
+  ) {
+    failures.push(
+      `expected at least ${expect.minPrimaryFlowsWithMappedAssertions} primary flow(s) with mapped assertions, got ${result.primaryFlowsWithMappedAssertions}`,
+    );
   }
   if (
     expect.maxMissingScenarioReceipts !== undefined &&
@@ -652,6 +716,8 @@ function printTable(rows) {
     ["reasoningTraceCoverage", 8],
     ["scenarioReceiptCoverage", 8],
     ["scenarioAutomation", 9],
+    ["primaryFlowReceiptCoverage", 8],
+    ["primaryFlowAutomation", 11],
     ["blankActions", 6],
     ["genericTitles", 8],
     ["mustReachRecall", 10],
@@ -686,6 +752,9 @@ function displayValue(row, key) {
   if (key === "scenarioAutomation") {
     return `${row.compiledScenarioReceipts ?? 0}/${row.partialScenarioReceipts ?? 0}/${row.notCompiledScenarioReceipts ?? 0}`;
   }
+  if (key === "primaryFlowAutomation") {
+    return `${row.compiledPrimaryFlows ?? 0}/${row.partialPrimaryFlows ?? 0}/${row.notCompiledPrimaryFlows ?? 0}/${row.reviewOnlyPrimaryFlows ?? 0}`;
+  }
   return row[key] ?? "-";
 }
 
@@ -697,7 +766,7 @@ function printDeltas(baselineRows, currentRows) {
       continue;
     }
     const deltas = [];
-    for (const key of ["flows", "changeIntents", "highConfidenceIntents", "importPropagatedFlows", "diffAnchoredFlows", "manifestFlowMatches", "behaviorNodes", "behaviorImpactedNodes", "manifestBehaviorNodes", "commitBehaviorNodes", "reasoningTraces", "traceableReasoning", "missingReasoningTraces", "untraceableRequiredScenarios", "scenarioReceipts", "missingScenarioReceipts", "compiledScenarioReceipts", "partialScenarioReceipts", "notCompiledScenarioReceipts", "mappedScenarioSteps", "mappedScenarioAssertions", "requiredScenarioGaps", "blankActions", "genericTitles", "readinessScore", "tryableDrafts", "totalTodos", "totalExecutionBlockers", "agentBytes"]) {
+    for (const key of ["flows", "changeIntents", "highConfidenceIntents", "importPropagatedFlows", "diffAnchoredFlows", "manifestFlowMatches", "behaviorNodes", "behaviorImpactedNodes", "manifestBehaviorNodes", "commitBehaviorNodes", "reasoningTraces", "traceableReasoning", "missingReasoningTraces", "untraceableRequiredScenarios", "scenarioReceipts", "missingScenarioReceipts", "primaryFlowReceipts", "missingPrimaryFlowReceipts", "compiledPrimaryFlows", "partialPrimaryFlows", "notCompiledPrimaryFlows", "reviewOnlyPrimaryFlows", "primaryFlowsWithMappedSteps", "primaryFlowsWithMappedAssertions", "compiledScenarioReceipts", "partialScenarioReceipts", "notCompiledScenarioReceipts", "mappedScenarioSteps", "mappedScenarioAssertions", "requiredScenarioGaps", "blankActions", "genericTitles", "readinessScore", "tryableDrafts", "totalTodos", "totalExecutionBlockers", "agentBytes"]) {
       const diff = (current[key] ?? 0) - (before[key] ?? 0);
       if (diff !== 0) {
         deltas.push(`${key} ${diff > 0 ? "+" : ""}${diff}`);
@@ -719,6 +788,8 @@ function shortLabel(key) {
     reasoningTraceCoverage: "path",
     scenarioReceiptCoverage: "receipt",
     scenarioAutomation: "map c/p/n",
+    primaryFlowReceiptCoverage: "flow map",
+    primaryFlowAutomation: "flow c/p/n/r",
     blankActions: "blank",
     genericTitles: "generic",
     mustReachRecall: "reach",

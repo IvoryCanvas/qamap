@@ -192,6 +192,43 @@
       }
     },
     {
+      "name": "web-react-multi-surface-state",
+      "fixture": "test/benchmarks/web-react-multi-surface-state",
+      "commitMessage": "feat: save workspace changes and show updated state",
+      "expect": {
+        "runner": "playwright",
+        "minFlows": 2,
+        "minChangeIntents": 1,
+        "minDiffAnchoredFlows": 2,
+        "minReasoningTraces": 1,
+        "maxMissingReasoningTraces": 0,
+        "minPrimaryFlowReceipts": 2,
+        "maxMissingPrimaryFlowReceipts": 0,
+        "minCompiledPrimaryFlows": 2,
+        "maxReviewOnlyPrimaryFlows": 0,
+        "minPrimaryFlowsWithMappedSteps": 2,
+        "minPrimaryFlowsWithMappedAssertions": 2,
+        "mustReachFiles": [
+          "src/features/profile/pages/ProfilePage.tsx",
+          "src/features/preferences/pages/PreferencesPage.tsx",
+          "src/features/workspace/services/saveWorkspaceChanges.ts"
+        ],
+        "mustNameFlows": ["Profile", "Preferences"],
+        "mustIncludeLifecycle": ["save workspace changes"],
+        "mustFindEntrypoints": ["/Profile", "/Preferences"],
+        "mustFindSelectors": [
+          "profile-save",
+          "preferences-save",
+          "Profile saved",
+          "Preferences saved"
+        ],
+        "mustFindSuccessSignals": ["Profile saved", "Preferences saved"],
+        "maxBlankActions": 0,
+        "maxGenericTitles": 0,
+        "maxAgentBytes": 8192
+      }
+    },
+    {
       "name": "web-react-presentation-control",
       "fixture": "test/benchmarks/web-react-presentation-control",
       "commitMessage": "fix: preserve banner theme contrast",

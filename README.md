@@ -79,6 +79,8 @@ QAMap keeps QA selection and test generation as two separate decisions:
 
 The human report preserves all important scenarios even when the repository has no test runner. It then separates **Important QA And Risk Map**, **Executable Evidence Available Now**, and **Manual Or Agent QA Contracts**. A `static-runnable` draft passed QAMap's structural self-checks, but the target application was not launched; only explicit execution can produce pass or fail evidence.
 
+When one change intent reaches multiple user surfaces, QAMap keeps a separate draft and automation receipt for each flow. Human and agent output report `flow coverage` across those artifacts, so one fully mapped screen cannot hide another screen whose action or assertion is still missing.
+
 Changes limited to analyzer rules, configuration, documentation, generated artifacts, or existing tests are routed to repository validation. QAMap does not mislabel them as blocked product E2E work, and it never claims that a suggested command has already passed.
 
 Suggested repository commands are scoped to affected workspace packages and related tests when the repo exposes enough evidence. Python projects can reuse root Compose variants and their primary application service; background workers are not selected as the default test entrypoint merely because they share an image.

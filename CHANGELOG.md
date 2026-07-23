@@ -2,9 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Added a domain-neutral two-surface React benchmark and per-flow compilation contracts. A benchmark can now require every affected flow to retain a primary scenario receipt, mapped action, mapped assertion, and fully compiled draft independently.
+
 ### Changed
 
 - Repository test planning and changed-file inspection code now stays on the analyzer-verification path when direct product behavior evidence is absent. Supporting utility conditions no longer turn an analyzer-focused change into product automation work.
+- Primary intent scenarios now retain located diff evidence alongside commit and lifecycle context. When a commit phrase and a code signal describe the same behavior, their provenance is merged instead of discarding the source hunk.
+- Multi-flow reasoning traces and compact agent output now aggregate every artifact for the same logical scenario and disclose `flowCoverage`. A compiled draft on one surface can no longer hide a partial or unmapped draft on another.
 
 ### Fixed
 
@@ -14,6 +20,7 @@
 - Repository and Git context analyzers no longer surface implementation guards such as numeric finiteness checks as affected product lifecycle stages.
 - Repository-validation routes no longer report missing product E2E compilation as a required scenario gap when automation is explicitly not applicable.
 - Analyzer reasoning traces, including emergency 4KB agent output, now retain the concrete false-negative and false-positive risk instead of falling back to a generic product outcome regression.
+- Surface-scoped primary scenarios no longer fall back to review-only when their flow has direct diff evidence, and abstract commit phrases such as refreshing an affected state no longer become fake user actions in generated E2E code.
 
 ## 0.4.7 - 2026-07-22
 

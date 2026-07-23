@@ -52,6 +52,9 @@ export interface QaTraceArtifact {
   totalSteps: number;
   mappedAssertions: number;
   totalAssertions: number;
+  flowCount: number;
+  compiledFlowCount: number;
+  flows: Array<Omit<QaTraceArtifactInput, "scenarioId">>;
 }
 
 export interface QaReasoningTrace {
@@ -75,12 +78,11 @@ export function buildQaReasoningTraces(
   intents: ChangeIntent[],
   artifacts: QaTraceArtifactInput[],
 ): QaReasoningTrace[] {
-  const artifactByScenario = new Map<string, QaTraceArtifactInput>();
+  const artifactsByScenario = new Map<string, QaTraceArtifactInput[]>();
   for (const artifact of artifacts) {
-    const current = artifactByScenario.get(artifact.scenarioId);
-    if (!current || compareTraceArtifacts(artifact, current) > 0) {
-      artifactByScenario.set(artifact.scenarioId, artifact);
-    }
+    const current = artifactsByScenario.get(artifact.scenarioId) ?? [];
+    current.push(artifact);
+    artifactsByScenario.set(artifact.scenarioId, current);
   }
 
   return intents.flatMap((intent) => intent.scenarios.map((scenario) => {
@@ -92,14 +94,17 @@ export function buildQaReasoningTraces(
       3,
     );
     const behavior = traceBehavior(intent.lifecycle, scenario, sources);
-    const artifactInput = artifactByScenario.get(scenario.id);
-    const artifact = artifactInput ? traceArtifact(artifactInput) : undefined;
+    const artifactInputs = artifactsByScenario.get(scenario.id) ?? [];
+    const artifact = artifactInputs.length > 0 ? traceArtifact(artifactInputs) : undefined;
     const hasLocatedSource = sources.some(isLocatedDiffSource);
     const hasEvidenceLinkedBehavior = behavior.some((stage) => stage.relation === "evidence-linked");
     const gaps = [
       hasLocatedSource ? undefined : "No located diff source supports this scenario.",
       hasEvidenceLinkedBehavior ? undefined : "No lifecycle stage shares this scenario's diff evidence.",
       artifact ? undefined : "No optional automation artifact maps this scenario yet.",
+      artifact && artifact.compiledFlowCount < artifact.flowCount
+        ? `${artifact.compiledFlowCount} of ${artifact.flowCount} affected flow artifacts fully map this scenario.`
+        : undefined,
     ].filter((value): value is string => Boolean(value));
 
     return {
@@ -128,22 +133,6 @@ export function buildQaReasoningTraces(
       gaps,
     };
   }));
-}
-
-function compareTraceArtifacts(left: QaTraceArtifactInput, right: QaTraceArtifactInput): number {
-  const statusRank: Record<E2eScenarioAutomationStatus, number> = {
-    compiled: 3,
-    partial: 2,
-    "not-compiled": 1,
-    "review-only": 0,
-  };
-  const statusDifference = statusRank[left.status] - statusRank[right.status];
-  if (statusDifference !== 0) {
-    return statusDifference;
-  }
-  const leftMapped = left.mappedSteps + left.mappedAssertions;
-  const rightMapped = right.mappedSteps + right.mappedAssertions;
-  return leftMapped - rightMapped;
 }
 
 function traceBehavior(
@@ -181,15 +170,31 @@ function traceBehaviorStage(
   };
 }
 
-function traceArtifact(input: QaTraceArtifactInput): QaTraceArtifact {
+function traceArtifact(inputs: QaTraceArtifactInput[]): QaTraceArtifact {
+  const representative = inputs.find((input) => input.status !== "compiled") ?? inputs[0];
+  const compiledFlowCount = inputs.filter((input) => input.status === "compiled").length;
+  const mappedSteps = inputs.reduce((sum, input) => sum + input.mappedSteps, 0);
+  const totalSteps = inputs.reduce((sum, input) => sum + input.totalSteps, 0);
+  const mappedAssertions = inputs.reduce((sum, input) => sum + input.mappedAssertions, 0);
+  const totalAssertions = inputs.reduce((sum, input) => sum + input.totalAssertions, 0);
+  const status: E2eScenarioAutomationStatus = compiledFlowCount === inputs.length
+    ? "compiled"
+    : inputs.every((input) => input.status === "review-only")
+      ? "review-only"
+      : mappedSteps > 0 || mappedAssertions > 0
+        ? "partial"
+        : "not-compiled";
   return {
-    flowTitle: input.flowTitle,
-    draftPath: input.draftPath,
-    status: input.status,
-    mappedSteps: input.mappedSteps,
-    totalSteps: input.totalSteps,
-    mappedAssertions: input.mappedAssertions,
-    totalAssertions: input.totalAssertions,
+    flowTitle: representative.flowTitle,
+    draftPath: representative.draftPath,
+    status,
+    mappedSteps,
+    totalSteps,
+    mappedAssertions,
+    totalAssertions,
+    flowCount: inputs.length,
+    compiledFlowCount,
+    flows: inputs.map(({ scenarioId: _scenarioId, ...input }) => input),
   };
 }
 

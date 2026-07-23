@@ -69,7 +69,12 @@
           "required": ["draft", "status"],
           "properties": {
             "draft": { "type": "string" },
-            "status": { "type": "string", "enum": ["compiled", "partial", "not-compiled", "review-only"] }
+            "status": { "type": "string", "enum": ["compiled", "partial", "not-compiled", "review-only"] },
+            "flowCoverage": {
+              "type": "string",
+              "pattern": "^[0-9]+/[0-9]+$",
+              "description": "Compiled affected-flow artifacts over all affected-flow artifacts for this logical scenario."
+            }
           }
         },
         "execution": { "const": "not-run" }
@@ -270,6 +275,11 @@
                   "required": ["status", "mappedSteps", "totalSteps", "mappedAssertions", "totalAssertions"],
                   "properties": {
                     "status": { "type": "string", "enum": ["compiled", "partial", "not-compiled", "review-only"] },
+                    "flowCoverage": {
+                      "type": "string",
+                      "pattern": "^[0-9]+/[0-9]+$",
+                      "description": "Compiled affected-flow artifacts over all affected-flow artifacts for this logical scenario."
+                    },
                     "mappedSteps": { "type": "integer", "minimum": 0 },
                     "totalSteps": { "type": "integer", "minimum": 0 },
                     "mappedAssertions": { "type": "integer", "minimum": 0 },

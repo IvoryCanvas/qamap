@@ -18,6 +18,7 @@ The command fails when any target violates its declared expectations. The corpus
 - Vue and SvelteKit web changes with framework-native route files;
 - equivalent React and Vue conditional-state changes that must recover a changed action and observable outcome despite different syntax;
 - a nested React item action that must create the required item through same-entity controls before exercising the changed action;
+- a React change spanning two user surfaces that must produce two independent primary scenario receipts, actions, assertions, and compiled drafts;
 - a presentation-only React condition that must not create behavioral state-transition QA;
 - a web preferences change that must become submit, persistence, request-failure, and re-entry QA instead of a generic journey;
 - a mobile reminder change that must become scheduling, calendar, duplicate, resynchronization, and entry-routing QA;
@@ -65,6 +66,12 @@ Each target can declare:
 | `maxUntraceableRequiredScenarios` | Maximum required scenarios whose diff evidence cannot be joined to an evidence-linked lifecycle stage. Public trace fixtures keep this at zero. |
 | `minScenarioReceipts` | Minimum routed scenario receipts emitted by the E2E adapter. |
 | `maxMissingScenarioReceipts` | Maximum selected QA scenarios with no corresponding automation receipt. Public lifecycle fixtures keep this at zero. |
+| `minPrimaryFlowReceipts` | Minimum affected flows with their own primary scenario automation receipt. Unlike intent-level receipt counts, this cannot be satisfied twice by one strong flow. |
+| `maxMissingPrimaryFlowReceipts` | Maximum affected flows whose primary scenario has no automation receipt. |
+| `minCompiledPrimaryFlows` | Minimum affected flows whose primary scenario is fully mapped into its own draft. |
+| `maxReviewOnlyPrimaryFlows` | Maximum affected flows whose primary scenario lost located evidence and remained review-only. |
+| `minPrimaryFlowsWithMappedSteps` | Minimum affected flows whose primary receipt maps at least one behavior step to generated commands. |
+| `minPrimaryFlowsWithMappedAssertions` | Minimum affected flows whose primary receipt maps at least one observable assertion. |
 | `minRoutedRequiredScenarios` | Minimum critical scenarios promoted to required by located direct or supporting diff evidence. |
 | `maxRequiredScenarioGaps` | Maximum required scenarios that remain partial or not compiled. Use only for fixtures whose adapter coverage is expected to be complete. |
 | `minMappedScenarioAssertions` | Minimum selected assertions mapped to observable runner assertions across scenario receipts. |
@@ -107,7 +114,7 @@ node scripts/bench.mjs --baseline bench-results/<file>.json
 
 When both files exist, `pnpm bench` prefers the gitignored local config. CI always passes `--config bench.config.json --assert`, so private paths cannot affect the public quality gate.
 
-Saved results include intent titles, lifecycle and scenario terms, located-source coverage (`trace`), complete QA reasoning paths (`path`), scenario receipt coverage, flow titles, draft paths, recall gaps, raw readiness counts, self-check outcomes, TODOs, execution blockers, agent payload size, and timing. The table reports draft status as `runnable/near-runnable/review-only` and scenario compilation as `compiled/partial/not-compiled`. Use a saved baseline to see heuristic movement, but treat the committed expectation contract as the merge gate.
+Saved results include intent titles, lifecycle and scenario terms, located-source coverage (`trace`), complete QA reasoning paths (`path`), scenario receipt coverage, per-flow primary receipt coverage, flow titles, draft paths, recall gaps, raw readiness counts, self-check outcomes, TODOs, execution blockers, agent payload size, and timing. The table reports draft status as `runnable/near-runnable/review-only`, logical-scenario compilation as `compiled/partial/not-compiled`, and primary flow compilation as `compiled/partial/not-compiled/review-only`. Use a saved baseline to see heuristic movement, but treat the committed expectation contract as the merge gate.
 
 Every benchmark target also enforces the Behavior Graph base contract: graph schema version 1, at least one graph flow for every planned flow, at least one impacted node for a non-empty diff, and no edge whose endpoint is missing. The table reports `graph n/i` as total nodes versus impacted nodes. These checks keep the graph connected to real PR analysis while framework-specific adapters are introduced incrementally.
 
