@@ -521,6 +521,8 @@ const workspacePackageIgnoredDirectories = new Set([
   ".nuxt",
   ".turbo",
   ".cache",
+  ".worktree",
+  ".worktrees",
   "vendor",
 ]);
 
@@ -4812,6 +4814,12 @@ async function discoverWorkspacePackageDirectories(root: string): Promise<string
     }
 
     entries.sort((left, right) => left.name.localeCompare(right.name));
+    if (
+      directory !== root &&
+      entries.some((entry) => entry.name === ".git" && (entry.isFile() || entry.isDirectory()))
+    ) {
+      return;
+    }
     if (directory !== root && entries.some((entry) => entry.isFile() && entry.name === "package.json")) {
       directories.push(toPosixPath(path.relative(root, directory)));
       if (directories.length >= workspacePackageSearchLimit) {
@@ -6688,7 +6696,7 @@ const mockEvidenceNameTokens = new Set([
 ]);
 
 function isFixtureEvidenceIgnoredPath(file: string): boolean {
-  return /(?:^|\/)(?:node_modules|vendor|vendors|Pods|build|dist|coverage|\.next|\.nuxt|\.expo|\.turbo|\.yarn\/cache)\//i.test(file);
+  return /(?:^|\/)(?:node_modules|vendor|vendors|Pods|build|dist|coverage|\.next|\.nuxt|\.expo|\.turbo|\.worktrees?|\.yarn\/cache)\//i.test(file);
 }
 
 const fixtureEvidenceSourceExtensions = new Set([

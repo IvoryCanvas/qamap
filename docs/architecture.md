@@ -50,6 +50,8 @@ Product sources can contribute user actions, state, effects, and outcomes. Comma
 
 The same boundary applies downstream. E2E setup and fixture discovery only inspect runtime-relevant product, command, and configuration evidence. Analyzer rules and benchmark vocabulary may explain why a QA scenario exists, but `/api`, `fixture`, payment, scheduling, or routing words inside those files cannot create product setup requirements by themselves.
 
+Repository boundaries are evidence boundaries too. A nested directory containing its own `.git` file or directory is a separate working copy, even when it lives under the analyzed root. Project, import-graph, workspace-package, test, mock, and fixture discovery must not borrow evidence from that nested repository. This prevents an abandoned worktree or local clone from making the current change appear tested or fixture-ready.
+
 ## Scenario Routing and Compilation Receipts
 
 Scenario generation and test generation are separate decisions. QAMap first routes every proposed scenario from its evidence:

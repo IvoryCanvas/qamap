@@ -3020,6 +3020,76 @@ test("qa command points API-dependent flows at existing repo mock and seed files
   assert.doesNotMatch(markdown, /ios\/Pods/);
 });
 
+test("QA evidence discovery ignores nested Git working copies", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/pages/status"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: { dev: "vite" },
+      dependencies: { react: "^19.0.0", vite: "^7.0.0" },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/pages/status/StatusPage.tsx"),
+    "export function StatusPage() { return <button>Load status</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/status-refresh"]);
+  await writeFile(
+    path.join(root, "src/pages/status/StatusPage.tsx"),
+    [
+      "export async function loadStatus() {",
+      "  const response = await fetch('/api/status');",
+      "  return response.json();",
+      "}",
+      "export function StatusPage() {",
+      "  return <button data-testid=\"status-load\">Load status</button>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: refresh workspace status"]);
+
+  const nestedCopies = [
+    { directory: path.join(root, ".worktrees/stale-copy"), gitFile: true },
+    { directory: path.join(root, "scratch-checkout"), gitFile: false },
+  ];
+  for (const nested of nestedCopies) {
+    await mkdir(path.join(nested.directory, "tests/fixtures"), { recursive: true });
+    if (nested.gitFile) {
+      await writeFile(path.join(nested.directory, ".git"), "gitdir: /tmp/unrelated-worktree\n");
+    } else {
+      await mkdir(path.join(nested.directory, ".git"), { recursive: true });
+    }
+    await writeFile(
+      path.join(nested.directory, "tests/status.test.ts"),
+      "test('stale status', () => expect(true).toBe(true));\n",
+    );
+    await writeFile(path.join(nested.directory, "tests/fixtures/status.json"), '{"status":"stale"}\n');
+  }
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const qa = await generateQaDraft(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const discoveredPaths = [
+    ...plan.flows.flatMap((flow) => [
+      ...flow.files,
+      ...flow.fixtureReadiness.mockSignals,
+      ...(flow.fixtureReadiness.mockInsights ?? []).map((insight) => insight.file),
+    ]),
+    ...qa.flows.flatMap((flow) => flow.existingEvidencePaths),
+    ...qa.missingEvidence.map((item) => item.detail),
+    ...qa.prChecklist,
+  ];
+
+  assert.equal(plan.testSuite.hasTestSuite, false);
+  assert.equal(discoveredPaths.some((value) => /(?:^|\/)(?:\.worktrees|scratch-checkout)\//.test(value)), false);
+});
+
 test("analyzeFixtureSource extracts exports, handled routes, and sample keys", async () => {
   const { analyzeFixtureSource, insightCoversEndpoint } = await import("../dist/fixture-insight.js");
 
