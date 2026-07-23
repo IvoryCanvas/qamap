@@ -11,7 +11,7 @@ import type {
   E2eRunnerName,
   E2eScenarioAutomationReceipt,
 } from "./e2e.js";
-import type { ChangeIntentEvidence } from "./change-intent.js";
+import type { ChangeIntentEvidence, IntentQaScenario } from "./change-intent.js";
 import { buildQaReasoningTraces } from "./qa-trace.js";
 import type { QaReasoningTrace } from "./qa-trace.js";
 import { routeQaScenario } from "./scenario-routing.js";
@@ -285,8 +285,126 @@ function truncateForAgent(value: string, maxLength = 140): string {
   return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
 }
 
+interface AgentFlowFocus {
+  action: string;
+  assertion: string;
+}
+
+function buildAgentFlowFocus(
+  flow: QaDraftFlow,
+  scenariosById: Map<string, IntentQaScenario>,
+): AgentFlowFocus | undefined {
+  const scenario = findFullyCompiledFocusScenario(flow, scenariosById);
+  if (!scenario) {
+    return undefined;
+  }
+  const action = findEvidenceMatchedAgentStep(
+    flow.draftSteps.filter((step) => !isAgentAssertionStep(step)),
+    [flow.userJourney?.trigger, flow.title, ...scenario.steps],
+  );
+  const assertion =
+    findEvidenceMatchedAgentStep(
+      flow.draftSteps.filter(isAgentAssertionStep),
+      [flow.userJourney?.successSignal, ...scenario.assertions],
+    ) ?? scenario.assertions.slice(0, 2).join(" ");
+  if (!action || !assertion || isGenericAgentFocusAssertion(assertion)) {
+    return undefined;
+  }
+  return {
+    action: truncateForAgent(action, 120),
+    assertion: truncateForAgent(assertion, 120),
+  };
+}
+
+function findFullyCompiledFocusScenario(
+  flow: QaDraftFlow,
+  scenariosById: Map<string, IntentQaScenario>,
+): IntentQaScenario | undefined {
+  for (const receipt of flow.scenarioAutomation) {
+    if (
+      receipt.status !== "compiled" ||
+      receipt.totalSteps === 0 ||
+      receipt.mappedSteps !== receipt.totalSteps ||
+      receipt.totalAssertions === 0 ||
+      receipt.mappedAssertions !== receipt.totalAssertions
+    ) {
+      continue;
+    }
+    const scenario = scenariosById.get(receipt.scenarioId);
+    if (
+      !scenario ||
+      !agentFocusPhrasesMatch(flow.title, scenario.title) ||
+      scenario.assertions.length === 0
+    ) {
+      continue;
+    }
+    return scenario;
+  }
+  return undefined;
+}
+
+function isGenericAgentFocusAssertion(assertion: string): boolean {
+  const normalized = normalizeAgentFocusPhrase(assertion);
+  return normalized === "the externally observable result matches the commit intent";
+}
+
+function findEvidenceMatchedAgentStep(
+  steps: string[],
+  hints: Array<string | undefined>,
+): string | undefined {
+  const normalizedHints = hints
+    .map((hint) => normalizeAgentFocusPhrase(hint))
+    .filter((hint): hint is string => Boolean(hint));
+  return steps.find((step) => {
+    const normalizedStep = normalizeAgentFocusPhrase(step);
+    return normalizedStep !== undefined &&
+      normalizedHints.some((hint) => agentFocusPhrasesMatch(normalizedStep, hint));
+  });
+}
+
+function agentFocusPhrasesMatch(left: string, right: string): boolean {
+  const normalizedLeft = normalizeAgentFocusPhrase(left);
+  const normalizedRight = normalizeAgentFocusPhrase(right);
+  return Boolean(
+    normalizedLeft &&
+    normalizedRight &&
+    (
+      normalizedLeft === normalizedRight ||
+      ` ${normalizedLeft} `.includes(` ${normalizedRight} `) ||
+      ` ${normalizedRight} `.includes(` ${normalizedLeft} `)
+    )
+  );
+}
+
+function normalizeAgentFocusPhrase(value: string | undefined): string | undefined {
+  const normalized = value
+    ?.normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/^(?:verify|assert|expect|confirm|check)\s+/u, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+  return normalized || undefined;
+}
+
+function isAgentAssertionStep(step: string): boolean {
+  return /^(?:verify|assert|expect|confirm|check)\b/i.test(step.trim());
+}
+
+function compactAgentFlowFocus(focus: AgentFlowFocus | undefined, maxLength: number): AgentFlowFocus | undefined {
+  if (!focus) {
+    return undefined;
+  }
+  return {
+    action: truncateForAgent(focus.action, maxLength),
+    assertion: truncateForAgent(focus.assertion, maxLength),
+  };
+}
+
 export function formatAgentQaDraft(result: QaDraftResult): string {
   const scenarioAutomationById = aggregateScenarioAutomationById(result.flows);
+  const scenariosById = new Map(
+    result.changeAnalysis.intents.flatMap((intent) => intent.scenarios).map((scenario) => [scenario.id, scenario]),
+  );
   const requiredEvidence = result.missingEvidence
     .filter((item) => item.priority === "required")
     .slice(0, 8)
@@ -418,32 +536,36 @@ export function formatAgentQaDraft(result: QaDraftResult): string {
       : undefined,
     flowCount: result.flows.length,
     omittedFlowCount: Math.max(0, result.flows.length - agentListLimit),
-    flows: result.flows.slice(0, agentListLimit).map((flow) => ({
-      title: truncateForAgent(flow.title, 80),
-      source: truncateForAgent(flow.source, 60),
-      draft: truncateForAgent(flow.draftPath, 140),
-      runnable: flow.runnableStatus,
-      verificationMode: flow.verificationMode,
-      entry: flow.entrypointHints[0] ? truncateForAgent(flow.entrypointHints[0], 140) : undefined,
-      changedFiles: flow.changedFiles.slice(0, 4).map((file) => truncateForAgent(file, 140)),
-      reviewQuestion: flow.userJourney?.reviewQuestion
-        ? truncateForAgent(flow.userJourney.reviewQuestion, 180)
-        : undefined,
-      successSignal: flow.userJourney?.successSignal
-        ? truncateForAgent(flow.userJourney.successSignal)
-        : undefined,
-      steps: flow.draftSteps.slice(0, agentListLimit).map((step) => truncateForAgent(step)),
-      selectors: flow.selectorHints.slice(0, 5).map((selector) => truncateForAgent(selector, 100)),
-      existingEvidence: flow.existingEvidencePaths.length > 0
-        ? flow.existingEvidencePaths.slice(0, 4).map((file) => truncateForAgent(file, 140))
-        : undefined,
-      scenarioAutomation: flow.scenarioAutomation.slice(0, 4).map((receipt) => ({
-        id: receipt.scenarioId,
-        decision: receipt.decision,
-        status: receipt.status,
-      })),
-      evidence: flow.why.slice(0, 2).map((reason) => truncateForAgent(reason)),
-    })),
+    flows: result.flows.slice(0, agentListLimit).map((flow) => {
+      const focus = buildAgentFlowFocus(flow, scenariosById);
+      return {
+        title: truncateForAgent(flow.title, 80),
+        source: truncateForAgent(flow.source, 60),
+        draft: truncateForAgent(flow.draftPath, 140),
+        runnable: flow.runnableStatus,
+        verificationMode: flow.verificationMode,
+        entry: flow.entrypointHints[0] ? truncateForAgent(flow.entrypointHints[0], 140) : undefined,
+        changedFiles: flow.changedFiles.slice(0, 4).map((file) => truncateForAgent(file, 140)),
+        reviewQuestion: flow.userJourney?.reviewQuestion
+          ? truncateForAgent(flow.userJourney.reviewQuestion, 180)
+          : undefined,
+        successSignal: flow.userJourney?.successSignal
+          ? truncateForAgent(flow.userJourney.successSignal)
+          : undefined,
+        focus,
+        steps: flow.draftSteps.slice(0, agentListLimit).map((step) => truncateForAgent(step)),
+        selectors: flow.selectorHints.slice(0, 5).map((selector) => truncateForAgent(selector, 100)),
+        existingEvidence: flow.existingEvidencePaths.length > 0
+          ? flow.existingEvidencePaths.slice(0, 4).map((file) => truncateForAgent(file, 140))
+          : undefined,
+        scenarioAutomation: flow.scenarioAutomation.slice(0, 4).map((receipt) => ({
+          id: receipt.scenarioId,
+          decision: receipt.decision,
+          status: receipt.status,
+        })),
+        evidence: flow.why.slice(0, 2).map((reason) => truncateForAgent(reason)),
+      };
+    }),
     requiredEvidence,
     recommendedEvidenceCount: result.missingEvidence.filter((item) => item.priority === "recommended").length,
     requiredBootstrap,
@@ -508,6 +630,7 @@ interface AgentSummaryShape {
     entry?: unknown;
     reviewQuestion?: unknown;
     successSignal?: unknown;
+    focus?: AgentFlowFocus;
     changedFiles: string[];
     steps: string[];
     selectors: string[];
@@ -689,6 +812,7 @@ function serializeAgentSummary(summary: AgentSummaryShape): string {
         successSignal: flow.successSignal
           ? truncateForAgent(String(flow.successSignal), 100)
           : undefined,
+        focus: compactAgentFlowFocus(flow.focus, 80),
         steps: flow.steps.slice(0, 1).map((step) => truncateForAgent(step, 80)),
         selectors: flow.selectors.slice(0, 1),
         existingEvidence: flow.existingEvidence
@@ -777,6 +901,7 @@ function serializeAgentSummary(summary: AgentSummaryShape): string {
         successSignal: flow.successSignal
           ? truncateForAgent(String(flow.successSignal), 100)
           : undefined,
+        focus: compactAgentFlowFocus(flow.focus, 70),
         steps: flow.steps.slice(0, 1).map((step) => truncateForAgent(step, 60)),
         selectors: flow.selectors.slice(0, 1).map((selector) => truncateForAgent(selector, 60)),
         existingEvidence: flow.existingEvidence
@@ -843,6 +968,7 @@ function serializeAgentSummary(summary: AgentSummaryShape): string {
         successSignal: flow.successSignal
           ? truncateForAgent(String(flow.successSignal), 75)
           : undefined,
+        focus: compactAgentFlowFocus(flow.focus, 45),
         steps: flow.steps.slice(0, 1).map((step) => truncateForAgent(step, 45)),
         selectors: flow.selectors.slice(0, 1).map((selector) => truncateForAgent(selector, 45)),
         existingEvidence: flow.existingEvidence
@@ -914,6 +1040,7 @@ function secondaryAgentFlow(
     successSignal: flow.successSignal
       ? truncateForAgent(String(flow.successSignal), limits.success ?? 90)
       : undefined,
+    focus: compactAgentFlowFocus(flow.focus, Math.min(limits.question ?? 90, limits.success ?? 90)),
     steps: [],
     selectors: [],
     evidence: [],

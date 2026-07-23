@@ -393,6 +393,22 @@
             "type": "string",
             "description": "The observable result that would prove the flow still works."
           },
+          "focus": {
+            "type": "object",
+            "description": "Changed action and observable assertion preserved only when a same-title scenario is fully compiled, even if the ordered step list is compacted.",
+            "properties": {
+              "action": {
+                "type": "string",
+                "description": "A generated draft action that matches the flow trigger, title, or compiled scenario step."
+              },
+              "assertion": {
+                "type": "string",
+                "description": "An observable assertion matched from generated steps or the fully compiled scenario."
+              }
+            },
+            "required": ["action", "assertion"],
+            "minProperties": 1
+          },
           "steps": { "type": "array", "items": { "type": "string" } },
           "selectors": { "type": "array", "items": { "type": "string" } },
           "existingEvidence": {

@@ -137,6 +137,8 @@ Cross-framework fixtures are semantic controls, not a claim that QAMap has separ
 
 The persistence compiler follows the same rule. React and Vue controls prove that one shared storage-to-field relationship can produce save, stored-value, reload, and restored-value commands. A mismatched read/write-key control must remain partial. Framework names and product vocabulary do not authorize the proof; the connected repository evidence does.
 
+Agent-focus regressions use the same evidence standard. Independent nested-action and persistence fixtures must preserve the changed action and observable proof under the 4KB handoff limit. A flow whose title and success signal are replaced with unrelated language must not receive a `focus` capsule, even when its old ordered steps remain present.
+
 Repository-boundary regressions use nested working copies containing deliberately stale tests and fixtures. Those files must not change suite detection, existing-evidence paths, fixture guidance, or the PR checklist. The directory name is not the trust signal: any nested `.git` root is excluded, with common worktree directories skipped early for bounded scans.
 
 Private repository names, proprietary code, file paths, credentials, production data, and raw smoke output must never enter a public fixture. For a public PR regression, first confirm a compatible license, record the canonical URL and exact base/head commits in `PROVENANCE.md`, and keep only a behavior-preserving minimum. The shared inference rule must remain domain-neutral and pass unrelated positive and negative controls.

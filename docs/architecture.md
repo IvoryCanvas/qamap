@@ -77,6 +77,8 @@ Human output groups the same decision into three layers: the complete QA and ris
 
 The additive `route` object is the canonical machine decision above those compatibility values. It separates optional draft preparation from repository validation and names the next action directly: complete or review a draft, run an existing command, or define a missing command. Agent payload compaction preserves this object before lower-priority detail, so a repository-verification result cannot be misread as blocked product E2E work.
 
+Compact agent output also keeps an optional per-flow `focus` capsule. It is emitted only when a same-title scenario receipt proves every selected step and assertion was compiled. Its action must match an actual draft step to the flow trigger, title, or scenario, and its assertion cannot be the generic fallback used when no observable result was found. This lets an agent retain the PR-specific action and proof when setup-first ordering or the 4KB budget truncates the full sequence, without promoting partial or unrelated scenario language into executable evidence.
+
 ## QA Reasoning Trace
 
 `src/qa-trace.ts` assembles the existing evidence and receipts into one causal path for each scenario:

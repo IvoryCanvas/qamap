@@ -6827,8 +6827,58 @@ test("diff-added selectors rank first and name the changed behavior", async () =
 
   const qa = await generateQaDraft(root, { base: "main", head: "HEAD", runner: "playwright" });
   const qaMarkdown = formatMarkdownQaDraft(qa);
+  const agentOutput = formatAgentQaDraft(qa);
+  const agent = JSON.parse(agentOutput);
+  const agentPinFlow = agent.flows.find((item) => /pin/i.test(item.title));
   assert.match(qaMarkdown, /Behavior lifecycle: action: Pin notes to the top\./);
   assert.match(qaMarkdown, /Expected proof: Verify visible text "📌" appears\./);
+  assert.ok(agent.compaction, "expected the 4KB handoff path to be exercised");
+  assert.ok(agentPinFlow);
+  assert.match(agentPinFlow.focus.action, /pin notes to the top/i);
+  assert.match(agentPinFlow.focus.assertion, /visible text "📌" appears/i);
+  assert.ok(Buffer.byteLength(agentOutput) <= 4 * 1024);
+
+  const unmatchedQa = structuredClone(qa);
+  const unmatchedFlow = unmatchedQa.flows.find((item) => /pin/i.test(item.title));
+  assert.ok(unmatchedFlow);
+  unmatchedFlow.title = "Archive workspace";
+  unmatchedFlow.userJourney = {
+    ...unmatchedFlow.userJourney,
+    trigger: "Archive workspace.",
+    successSignal: "workspace archive completes",
+  };
+  const unmatchedAgent = JSON.parse(formatAgentQaDraft(unmatchedQa));
+  const unmatchedAgentFlow = unmatchedAgent.flows.find((item) => item.title === "Archive workspace");
+  assert.equal(unmatchedAgentFlow?.focus, undefined);
+
+  const partialQa = structuredClone(qa);
+  const partialFlow = partialQa.flows.find((item) => /pin/i.test(item.title));
+  assert.ok(partialFlow);
+  partialFlow.scenarioAutomation = partialFlow.scenarioAutomation.map((receipt) => ({
+    ...receipt,
+    status: "partial",
+  }));
+  const partialAgent = JSON.parse(formatAgentQaDraft(partialQa));
+  assert.equal(partialAgent.flows.find((item) => /pin/i.test(item.title))?.focus, undefined);
+
+  const genericQa = structuredClone(qa);
+  const genericFlow = genericQa.flows.find((item) => /pin/i.test(item.title));
+  assert.ok(genericFlow);
+  const genericAssertion = "Verify the externally observable result matches the commit intent.";
+  genericFlow.userJourney.successSignal = "the externally observable result matches the commit intent";
+  genericFlow.draftSteps = genericFlow.draftSteps.map((step) =>
+    /^(?:verify|assert|expect|confirm|check)\b/i.test(step) ? genericAssertion : step
+  );
+  const scenarioIds = new Set(genericFlow.scenarioAutomation.map((receipt) => receipt.scenarioId));
+  for (const intent of genericQa.changeAnalysis.intents) {
+    for (const scenario of intent.scenarios) {
+      if (scenarioIds.has(scenario.id)) {
+        scenario.assertions = [genericAssertion];
+      }
+    }
+  }
+  const genericAgent = JSON.parse(formatAgentQaDraft(genericQa));
+  assert.equal(genericAgent.flows.find((item) => /pin/i.test(item.title))?.focus, undefined);
 });
 
 test("nested actions do not borrow unrelated creation controls as prerequisites", async () => {

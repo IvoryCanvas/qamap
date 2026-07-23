@@ -1517,6 +1517,9 @@ test("React storage evidence compiles reload persistence into the primary Playwr
   assert.ok(file);
   const spec = await readFile(path.join(root, file.path), "utf8");
   const primaryReceipt = file.scenarioAutomation.find((receipt) => receipt.kind === "primary");
+  const qa = await generateQaDraft(root, { base: "main", head: "HEAD" });
+  const agent = JSON.parse(formatAgentQaDraft(qa));
+  const densityFlow = agent.flows.find((candidate) => /density/i.test(candidate.title));
 
   assert.match(spec, /const persistedField = page\.getByLabel\("Workspace density"\)/);
   assert.match(spec, /Repository evidence links localStorage key "workspace-density"/);
@@ -1532,6 +1535,13 @@ test("React storage evidence compiles reload persistence into the primary Playwr
     JSON.stringify({ primaryReceipt, scenarios: file.qaScenarios, spec }),
   );
   assert.equal(primaryReceipt?.mappedAssertions, primaryReceipt?.totalAssertions);
+  assert.ok(densityFlow?.focus, JSON.stringify(densityFlow));
+  assert.match(densityFlow.focus.action, /save density/i);
+  assert.ok(
+    densityFlow.focus.assertion,
+    JSON.stringify({ densityFlow, scenarios: qa.changeAnalysis.intents.flatMap((intent) => intent.scenarios) }),
+  );
+  assert.match(densityFlow.focus.assertion, /density/i);
 });
 
 test("Vue storage evidence compiles the same persistence proof without framework-specific rules", async (t) => {

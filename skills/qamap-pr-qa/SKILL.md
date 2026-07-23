@@ -37,7 +37,7 @@ Use QAMap as a final local QA pass before presenting a pull request for human re
    - `route` — the canonical applicable decision. Use `status`, `nextAction`, and the optional exact `command` before looking at legacy readiness scores. A `verification-*` status means use repository validation; a `draft-*` status describes optional automation preparation.
    - `intents[]` — commit/diff evidence, confidence, `reviewRequired`, ordered lifecycle, and primary/failure/boundary/state-transition scenarios. Read each scenario's structured `sources` before accepting it; a diff source carries `file`, head-side line numbers, symbol, and hunk.
    - If `reviewRequired` is true or the lifecycle conflicts with the PR, ask a human to confirm the intended behavior before promoting a draft.
-   - `flows[]` — affected flows with `draft` path, `runnable` status, entry route, capped steps, and selectors.
+   - `flows[]` — affected flows with `draft` path, `runnable` status, entry route, evidence-matched `focus`, capped steps, and selectors. Prefer `focus.action` and `focus.assertion` when stating what changed and what should be observed; `steps[0]` may only be setup.
    - `requiredEvidence[]` — evidence that must exist before the PR can be trusted; `recommendedEvidenceCount` for the rest.
    - `requiredBootstrap[]` — non-runner repository context that still needs clarification.
    - `automation` — an optional adapter handoff. It is not required to use the QA judgment.
@@ -57,6 +57,7 @@ Use QAMap as a final local QA pass before presenting a pull request for human re
 - Treat QAMap output as QA planning evidence, not proof that browser, device, API, or manual QA passed.
 - Prefer `route` over compatibility `readiness.level`. In particular, do not call repository validation blocked merely because the optional-automation score is blocked.
 - Preserve change intent, confidence, lifecycle, QA scenarios, their strongest file/line sources, affected flow, missing evidence, and validation command in the handoff.
+- Preserve `flows[].focus` when present. It is the compact changed action and observable proof, not a replacement for the surrounding ordered steps.
 - Keep automation optional until the scenario and its evidence have been reviewed.
 - Treat Playwright, Maestro, and manual output as adapters after QA design. Do not let runner selection replace review of the inferred intent and scenarios.
 - If the output is `review only` or `near runnable`, explain what blocks it from becoming trusted regression evidence.

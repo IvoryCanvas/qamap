@@ -146,6 +146,8 @@ Give an agent the same decisions in a versioned JSON contract under 4 KB:
 npx --yes @ivorycanvas/qamap@latest qa --format agent
 ```
 
+The compact payload keeps each flow's evidence-matched changed action and observable proof in `focus`, so an agent does not mistake a setup-first step for the purpose of the PR.
+
 Install the portable project skill so compatible agents can call QAMap before review:
 
 ```sh
