@@ -596,6 +596,13 @@ test("source roles distinguish product behavior from commands and analysis rules
   );
   assert.equal(
     classifyChangeSourceRole(
+      "src/repository-plan.ts",
+      "export interface TestPlanResult { suggestedCommands: string[] }\nexport function collectChangedFiles(): GitChangedFile[] { return []; }",
+    ).role,
+    "analysis-rule",
+  );
+  assert.equal(
+    classifyChangeSourceRole(
       "src/qa-trace.ts",
       "export function buildReasoningTrace(intent, evidence) { return routeQaScenario(intent.scenarios[0]); }",
     ).role,
@@ -805,6 +812,82 @@ test("analysis-only changes stay analyzer verification even inside a CLI reposit
   assert.equal(typeof compactSummary.flows[0].reviewQuestion, "string");
   assert.equal(typeof compactSummary.flows[0].successSignal, "string");
   assert.ok(compactSummary.flows[0].steps.length > 0);
+});
+
+test("repository analysis plumbing does not become product boundary QA", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({ name: "change-inspector", type: "module", bin: { inspect: "dist/cli.js" } }),
+  );
+  await write(
+    root,
+    "src/repository-plan.ts",
+    [
+      "export interface TestPlanResult { suggestedCommands: string[] }",
+      "export function collectChangedFiles(): string[] { return []; }",
+    ].join("\n"),
+  );
+  await write(root, "src/git-context.ts", "export const baseVariables = ['GITHUB_BASE_REF'];\n");
+  commit(root, "benchmark baseline");
+  branch(root, "fix/repository-analysis");
+  await write(
+    root,
+    "src/repository-plan.ts",
+    [
+      "export interface TestPlanResult { suggestedCommands: string[]; changedFiles: string[] }",
+      "export function collectChangedFiles(): string[] { return []; }",
+      "export function discoverSuggestedCommands(serviceName: string): string[] {",
+      "  const backgroundService = /(?:worker|scheduler|consumer)/i.test(serviceName);",
+      "  return backgroundService ? [] : ['test'];",
+      "}",
+    ].join("\n"),
+  );
+  await write(
+    root,
+    "src/git-context.ts",
+    [
+      "export const baseVariables = [",
+      "  'GITHUB_BASE_REF',",
+      "  'BITBUCKET_PR_DESTINATION_BRANCH',",
+      "];",
+      "export function resolveBaseRef(value: string) {",
+      "  if (!Number.isFinite(value.length)) throw new Error('invalid ref');",
+      "  return value;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "fix: improve repository analysis command discovery");
+
+  const analysis = await analyze(root, ["src/repository-plan.ts", "src/git-context.ts"]);
+  const titles = analysis.intents.flatMap((intent) => intent.scenarios.map((scenario) => scenario.title));
+
+  assert.ok(analysis.intents.flatMap((intent) => intent.evidence).some((item) => item.sourceRole === "analysis-rule"));
+  assert.ok(titles.some((title) => /analysis rule positive and negative controls/i.test(title)));
+  assert.equal(titles.some((title) => /Scheduling, calendar/i.test(title)), false);
+  assert.equal(titles.some((title) => /Destination path|destination routing/i.test(title)), false);
+  assert.equal(titles.some((title) => /Changed conditional state and fallback/i.test(title)), false);
+  assert.equal(titles.some((title) => /Failure, timeout, and retry handling/i.test(title)), false);
+});
+
+test("package API exports do not imply network failure QA", async (t) => {
+  const root = await makeRepo(t);
+  await write(root, "src/index.ts", "export { parseRecord } from './record.js';\n");
+  commit(root, "benchmark baseline");
+  branch(root, "fix/package-api");
+  await write(
+    root,
+    "src/index.ts",
+    "export { parseRecord, formatRecord } from './record.js';\n",
+  );
+  commit(root, "fix: export package root API");
+
+  const analysis = await analyze(root, ["src/index.ts"]);
+  const titles = analysis.intents.flatMap((intent) => intent.scenarios.map((scenario) => scenario.title));
+
+  assert.ok(analysis.intents.some((intent) => /export package root API/i.test(intent.title)));
+  assert.equal(titles.some((title) => /Failure, timeout, and retry handling/i.test(title)), false);
 });
 
 test("change intent ignores release-only commit metadata", async (t) => {

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- Repository test planning and changed-file inspection code now stays on the analyzer-verification path when direct product behavior evidence is absent. Supporting utility conditions no longer turn an analyzer-focused change into product automation work.
+
+### Fixed
+
+- Static matcher vocabulary, CI environment variable names, and background-service labels no longer fabricate scheduling, navigation, or conditional UI QA. Actual product scheduling and destination changes remain covered by the existing positive benchmark contracts.
+- Package root or public API exports no longer imply network timeout and retry QA without network behavior evidence.
+- Analyzer-focused changes no longer borrow unrelated mock handlers or fixture endpoints from benchmark and test directories as product E2E guidance.
+
 ## 0.4.7 - 2026-07-22
 
 ### Added

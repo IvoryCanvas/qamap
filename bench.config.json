@@ -315,7 +315,12 @@
         "minReasoningTraces": 3,
         "maxMissingReasoningTraces": 0,
         "maxUntraceableRequiredScenarios": 0,
-        "mustReachFiles": ["src/rules/rule-engine.ts", "src/cli.ts"],
+        "mustReachFiles": [
+          "src/rules/rule-engine.ts",
+          "src/repository-plan.ts",
+          "src/git-context.ts",
+          "src/cli.ts"
+        ],
         "mustIncludeQaScenarios": [
           "Changed analysis rule positive and negative controls",
           "Changed CLI arguments, output, and exit behavior"

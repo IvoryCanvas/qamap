@@ -84,13 +84,16 @@ function isAnalysisRuleSource(file: string, text: string): boolean {
   const vocabularyRuleSignal = /\b(?:analyzeEvidence|collect\w*Evidence|\w+Vocabulary|evidencePattern|rulePattern)\b/i.test(text);
   const ruleStructure = /\bRegExp\b|\.match(?:All)?\s*\(|\.test\s*\(|(?:^|\s)\/(?:\\.|[^/\n]){3,}\/\w*|mustNot|mustFind|pattern/i.test(text);
   const analyzerContractStructure = /\b(?:AddedDiffEvidence|ChangeIntentEvidence|QaReasoningTrace|build\w*(?:Trace|Evidence|Scenario)|collectAddedDiffEvidence|route\w*Scenario|scenarioAutomation|classifyChangeSourceRole|intent\.scenarios|trace\.scenario|routingReason)\b/i.test(text);
+  const qaPlanningStructure = /\b(?:TestPlanResult|TestPlanChangedFile|suggestedCommands|discoverSuggestedCommands|discoverRelevant\w*Tests|automationApplicable|verificationStatus)\b/i.test(text);
+  const repositoryAnalysisStructure = /\b(?:collectChangedFiles|resolveBaseRef|resolveMergeBase|BaseRefResolution|GitChangedFile|ChangedFilesOptions)\b/i.test(text);
   const analyzerSchema = /(?:^|\/)(?:schemas?|contracts?)(?:\/|$)/i.test(file) &&
     /\b(?:analysis-rule|qamap\.qa|reasoning trace|qa scenario)\b/i.test(text);
   if (analyzerSchema) {
     return true;
   }
   return (pathSignal && (staticAnalysisSignal || vocabularyRuleSignal || analyzerContractStructure)) ||
-    (staticAnalysisSignal && (ruleStructure || analyzerContractStructure));
+    (staticAnalysisSignal && (ruleStructure || analyzerContractStructure)) ||
+    (qaPlanningStructure && repositoryAnalysisStructure);
 }
 
 function isConfigurationPath(file: string): boolean {
