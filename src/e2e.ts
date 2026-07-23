@@ -10,6 +10,7 @@ import { defaultDomainManifestPath, loadDomainManifest, matchDomains } from "./d
 import { analyzeFixtureSource, insightCoversEndpoint } from "./fixture-insight.js";
 import type { FixtureFileInsight } from "./fixture-insight.js";
 import { collectProjectFiles } from "./fs.js";
+import { readFileAtRef } from "./git-context.js";
 import { buildReverseImportIndex, expandChangedFilesWithImporters, findImportingSurfaces } from "./import-graph.js";
 import type { ImportImpact } from "./import-graph.js";
 import { loadCoreFlowManifest, matchCoreFlows } from "./flows.js";
@@ -507,6 +508,11 @@ interface PackageJson {
   workspaces?: string[] | { packages?: string[] };
 }
 
+interface AnalysisRevision {
+  head: string;
+  includeWorkingTree: boolean;
+}
+
 const maxFilesPerFlow = 8;
 const workspacePackageSearchLimit = 200;
 const workspacePackageIgnoredDirectories = new Set([
@@ -571,6 +577,10 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
     testSuiteInventory,
     domainLanguage,
     addedDiffText,
+    {
+      head: testPlan.head,
+      includeWorkingTree: testPlan.includeWorkingTree,
+    },
     changeAnalysis,
   );
   refineChangeIntentAssertions(changeAnalysis, flows);
@@ -4957,14 +4967,15 @@ async function buildFlows(
   testSuiteInventory: TestSuiteInventory,
   domainLanguage: DomainLanguageSummary,
   addedDiffText: Record<string, string> = {},
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
   changeAnalysis?: ChangeIntentAnalysis,
 ): Promise<E2eFlow[]> {
   const files = changedFiles.map((file) => file.path);
   const importImpacts = await collectImportImpacts(root, files);
-  const fixtureContext = await collectFixtureReadinessContext(root, files);
+  const fixtureContext = await collectFixtureReadinessContext(root, files, analysisRevision);
   const flowResults = await Promise.all(
     buildFlowCandidates(files, runner, projectType, domainLanguage, importImpacts, changeAnalysis, addedDiffText).map((candidate) =>
-      buildFlow(root, runner, candidate, testSuiteInventory, fixtureContext, addedDiffText, files),
+      buildFlow(root, runner, candidate, testSuiteInventory, fixtureContext, addedDiffText, files, analysisRevision),
     ),
   );
   const flows = flowResults.filter((flow): flow is E2eFlow => Boolean(flow));
@@ -5823,6 +5834,7 @@ async function buildFlow(
   fixtureContext: FixtureReadinessContext,
   addedDiffText: Record<string, string> = {},
   changedFiles: string[] = [],
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<E2eFlow | undefined> {
   const files = uniqueStrings(candidate.files).slice(0, 20);
   if (files.length === 0) {
@@ -5832,10 +5844,10 @@ async function buildFlow(
   const coverage = candidate.coverage ?? buildCoverageTargets(candidate.kind, files, runner);
   const setupHints = analysisRuleFocused
     ? []
-    : await inferFlowSetupHints(root, files, candidate.kind, addedDiffText);
+    : await inferFlowSetupHints(root, files, candidate.kind, addedDiffText, analysisRevision);
   const interactionEvidenceApplies = !analysisRuleFocused && !isVerificationOnlyKind(candidate.kind);
   const selectors = interactionEvidenceApplies
-    ? await inferFlowSelectors(root, files, runner, addedDiffText)
+    ? await inferFlowSelectors(root, files, runner, addedDiffText, analysisRevision)
     : [];
   const flow: Omit<E2eFlow, "languageBrief"> = {
     kind: candidate.kind,
@@ -5848,7 +5860,7 @@ async function buildFlow(
       { title: candidate.title, files, coverage, changedFiles },
       testSuiteInventory,
     ),
-    entrypoints: interactionEvidenceApplies ? await inferFlowEntrypoints(root, files, runner) : [],
+    entrypoints: interactionEvidenceApplies ? await inferFlowEntrypoints(root, files, runner, analysisRevision) : [],
     setupHints,
     fixtureReadiness: await inferFlowFixtureReadiness(
       root,
@@ -5858,9 +5870,12 @@ async function buildFlow(
       fixtureContext,
       addedDiffText,
       analysisRuleFocused,
+      analysisRevision,
     ),
     selectors,
-    missingTestability: interactionEvidenceApplies ? await findFlowTestabilityGaps(root, files, runner, selectors) : [],
+    missingTestability: interactionEvidenceApplies
+      ? await findFlowTestabilityGaps(root, files, runner, selectors, analysisRevision)
+      : [],
     intentId: candidate.intentId,
     intentConfidence: candidate.intentConfidence,
     intentEvidence: candidate.intentEvidence,
@@ -6061,11 +6076,16 @@ function actionVerbForSelector(selector: E2eSelector): string {
   return "Activate";
 }
 
-async function inferFlowEntrypoints(root: string, files: string[], runner: E2eRunnerName): Promise<E2eEntrypoint[]> {
+async function inferFlowEntrypoints(
+  root: string,
+  files: string[],
+  runner: E2eRunnerName,
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
+): Promise<E2eEntrypoint[]> {
   const entrypoints: E2eEntrypoint[] = [];
   for (const file of files.slice(0, 10)) {
     entrypoints.push(...entrypointsFromPath(file, runner));
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (text) {
       entrypoints.push(...entrypointsFromText(file, text, runner));
     }
@@ -6078,6 +6098,7 @@ async function inferFlowSetupHints(
   files: string[],
   kind: E2eFlowKind,
   addedDiffText: Record<string, string> = {},
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<E2eSetupHint[]> {
   if (
     kind === "artifact" ||
@@ -6096,7 +6117,7 @@ async function inferFlowSetupHints(
   });
   const fileTexts: Array<{ file: string; text: string }> = [];
   for (const file of setupEvidenceFiles.slice(0, 12)) {
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (text) {
       fileTexts.push({ file, text });
     }
@@ -6238,7 +6259,11 @@ interface FixtureReadinessContext {
 
 const maxAnalyzedMockFiles = 24;
 
-async function collectFixtureReadinessContext(root: string, changedFiles: string[]): Promise<FixtureReadinessContext> {
+async function collectFixtureReadinessContext(
+  root: string,
+  changedFiles: string[],
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
+): Promise<FixtureReadinessContext> {
   const projectFiles = await collectProjectFiles(root, 12000);
   const changedMockFiles = changedFiles.filter(isMockOrFixtureFile).slice(0, maxFilesPerFlow);
   const projectMockEntries = projectFiles.filter((file) => isMockOrFixtureFile(file.path));
@@ -6249,10 +6274,9 @@ async function collectFixtureReadinessContext(root: string, changedFiles: string
   const walkTexts = new Map(projectFiles.map((file) => [file.path, file.text]));
   const mockFileInsights = new Map<string, FixtureFileInsight>();
   for (const file of changedMockFiles) {
-    let text = walkTexts.get(file);
-    if (text === undefined && fixtureEvidenceSourceExtensions.has(path.extname(file).toLowerCase())) {
-      text = await readTextIfExists(path.join(root, file));
-    }
+    const text = fixtureEvidenceSourceExtensions.has(path.extname(file).toLowerCase())
+      ? await readAnalyzedText(root, file, analysisRevision)
+      : walkTexts.get(file);
     if (text !== undefined) {
       mockFileInsights.set(file, analyzeFixtureSource(file, text));
     }
@@ -6282,6 +6306,7 @@ async function inferFlowFixtureReadiness(
   context: FixtureReadinessContext,
   addedDiffText: Record<string, string> = {},
   analysisRuleFocused = false,
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<E2eFixtureReadiness> {
   if (analysisRuleFocused) {
     return {
@@ -6342,7 +6367,7 @@ async function inferFlowFixtureReadiness(
     };
   }
 
-  const apiSignals = await findApiDependencySignals(root, files, kind, setupHints);
+  const apiSignals = await findApiDependencySignals(root, files, kind, setupHints, analysisRevision);
   const changedApiSignals = files.filter((file) => {
     const changedText = addedDiffText[file] ?? "";
     return isApiDependencyPath(file) || (changedText.length > 0 && hasApiDependencyText(changedText));
@@ -6355,7 +6380,7 @@ async function inferFlowFixtureReadiness(
       ...files,
       ...apiSignals,
       ...relatedChangedBackendFiles,
-    ]))),
+    ]), analysisRevision)),
     ...relatedChangedBackendFiles.flatMap(apiEndpointFromBackendFile),
   ]).slice(0, maxFilesPerFlow);
   const requiresMock = apiSignals.length > 0 || setupHints.some((hint) => hint.kind === "network" || hint.kind === "payment");
@@ -6532,6 +6557,7 @@ async function findApiDependencySignals(
   files: string[],
   kind: E2eFlowKind,
   setupHints: E2eSetupHint[],
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<string[]> {
   const signals = new Set<string>();
   if (kind === "api") {
@@ -6551,7 +6577,7 @@ async function findApiDependencySignals(
       signals.add(file);
       continue;
     }
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (text && hasApiDependencyText(text)) {
       signals.add(file);
     }
@@ -6569,10 +6595,14 @@ function hasApiDependencyText(text: string): boolean {
     /\b(?:api|http|network)(?:Request|Response)\b|\b(?:request|response)\.(?:headers|json|ok|status)\b/.test(text);
 }
 
-async function findApiEndpointHints(root: string, files: string[]): Promise<string[]> {
+async function findApiEndpointHints(
+  root: string,
+  files: string[],
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
+): Promise<string[]> {
   const endpoints: string[] = [];
   for (const file of files.slice(0, 12)) {
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (text) {
       endpoints.push(...extractApiEndpointHints(text));
     }
@@ -6803,13 +6833,14 @@ async function inferFlowSelectors(
   files: string[],
   runner: E2eRunnerName,
   addedDiffText: Record<string, string> = {},
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<E2eSelector[]> {
   const selectors: E2eSelector[] = [];
   for (const file of files.slice(0, 8)) {
     if (!isUiImplementationFile(file)) {
       continue;
     }
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (!text) {
       continue;
     }
@@ -7155,6 +7186,7 @@ async function findFlowTestabilityGaps(
   files: string[],
   runner: E2eRunnerName,
   selectors: E2eSelector[] = [],
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<string[]> {
   const gaps: string[] = [];
   const selectorFiles = new Set(
@@ -7164,7 +7196,7 @@ async function findFlowTestabilityGaps(
     if (!isUiImplementationFile(file)) {
       continue;
     }
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (!text) {
       continue;
     }
@@ -7810,8 +7842,20 @@ async function buildDraftFlows(
   }
   return Promise.all(draftFlows.map(async (flow) => ({
     ...flow,
-    persistenceProbe: await inferPlaywrightPersistenceProbe(plan.root, flow, addedDiffText),
+    persistenceProbe: await inferPlaywrightPersistenceProbe(
+      plan.root,
+      flow,
+      addedDiffText,
+      analysisRevisionForPlan(plan),
+    ),
   })));
+}
+
+function analysisRevisionForPlan(plan: E2ePlanResult): AnalysisRevision {
+  return {
+    head: plan.head,
+    includeWorkingTree: plan.includeWorkingTree,
+  };
 }
 
 function prioritizeImportantBaseDraftFlow(flows: DraftE2eFlow[], baseFlows: E2eFlow[]): DraftE2eFlow[] {
@@ -7968,17 +8012,24 @@ async function buildManifestDomainDraftFlow(
   // provenance on the best overlapping flow without claiming every matched
   // domain file belongs to that single draft.
   const files = baseFlow.files;
+  const analysisRevision = analysisRevisionForPlan(plan);
   const flow: Omit<DraftE2eFlow, "languageBrief"> = {
     ...baseFlow,
     reason: `${match.reason} ${baseFlow.reason}`,
     files,
     entrypoints: uniqueEntrypoints([
       ...baseFlow.entrypoints,
-      ...(await inferFlowEntrypoints(plan.root, files, plan.recommendedRunner.name)),
+      ...(await inferFlowEntrypoints(plan.root, files, plan.recommendedRunner.name, analysisRevision)),
     ]),
     selectors: uniqueSelectors([
       ...baseFlow.selectors,
-      ...(await inferFlowSelectors(plan.root, files, plan.recommendedRunner.name, addedDiffText)),
+      ...(await inferFlowSelectors(
+        plan.root,
+        files,
+        plan.recommendedRunner.name,
+        addedDiffText,
+        analysisRevision,
+      )),
     ]),
     draftSource: "verification-manifest",
     manifestMatch: match,
@@ -8001,17 +8052,18 @@ async function buildManifestDraftFlow(
   const baseFlow = bestBaseFlowForManifestMatch(manifestFiles, baseFlows);
   const files = uniqueStrings(manifestFiles.length > 0 ? manifestFiles : (baseFlow?.files ?? [])).slice(0, 20);
   const runner = plan.recommendedRunner.name;
+  const analysisRevision = analysisRevisionForPlan(plan);
   const manifestSteps = manifestStepsForMatch(match, relatedChecks);
   const baseCoverage = baseFlow?.coverage ?? buildCoverageTargets("domain", files, runner);
   const coverage = uniqueCoverageTargets([...manifestCoverageTargets(match, relatedChecks), ...baseCoverage]).slice(0, 7);
   const entrypoints = uniqueEntrypoints([
     ...manifestEntrypoints(plan, match, runner),
     ...filterEntrypointsForFiles(baseFlows.flatMap((flow) => flow.entrypoints), files),
-    ...(await inferFlowEntrypoints(plan.root, files, runner)),
+    ...(await inferFlowEntrypoints(plan.root, files, runner, analysisRevision)),
   ]);
   const selectors = uniqueSelectors([
     ...filterSelectorsForFiles(baseFlows.flatMap((flow) => flow.selectors), files),
-    ...(await inferFlowSelectors(plan.root, files, runner, addedDiffText)),
+    ...(await inferFlowSelectors(plan.root, files, runner, addedDiffText, analysisRevision)),
   ]);
   const refinedSteps = refineManifestStepsForInferredSelectors(
     refineStepsForInferredSelectors(manifestSteps.length > 0 ? manifestSteps : (baseFlow?.steps ?? []), selectors),
@@ -8020,7 +8072,7 @@ async function buildManifestDraftFlow(
   const executableSteps = refinedSteps.filter((step) => !isCoverageOnlyScenarioStep(step));
   const setupHints = uniqueSetupHints([
     ...filterSetupHintsForFiles(baseFlows.flatMap((flow) => flow.setupHints), files),
-    ...(await inferFlowSetupHints(plan.root, files, "domain", addedDiffText)),
+    ...(await inferFlowSetupHints(plan.root, files, "domain", addedDiffText, analysisRevision)),
   ]);
   const flow: Omit<DraftE2eFlow, "languageBrief"> = {
     kind: baseFlow?.kind ?? "domain",
@@ -8034,7 +8086,7 @@ async function buildManifestDraftFlow(
     setupHints,
     fixtureReadiness: scenarioFixtureReadiness(baseFlow, setupHints),
     selectors,
-    missingTestability: await findFlowTestabilityGaps(plan.root, files, runner, selectors),
+    missingTestability: await findFlowTestabilityGaps(plan.root, files, runner, selectors, analysisRevision),
     draftSource: "verification-manifest",
     manifestMatch: match,
     manifestCheckMatches: relatedChecks,
@@ -8170,22 +8222,23 @@ async function buildDomainScenarioDraftFlow(
   const matchedIntent = matchingChangeIntentForFiles(plan.changeAnalysis, files);
   const coverage = baseFlow?.coverage ?? buildCoverageTargets("domain", files, plan.recommendedRunner.name);
   const runner = plan.recommendedRunner.name;
+  const analysisRevision = analysisRevisionForPlan(plan);
   const entrypoints = uniqueEntrypoints([
     ...domainScenarioEntrypoints(plan, scenario, runner),
     ...coreFlowEntrypoints(plan, coreFlow, runner),
     ...filterEntrypointsForFiles(baseFlows.flatMap((flow) => flow.entrypoints), files),
-    ...(await inferFlowEntrypoints(plan.root, files, runner)),
+    ...(await inferFlowEntrypoints(plan.root, files, runner, analysisRevision)),
   ]);
   const selectors = uniqueSelectors([
     ...filterSelectorsForFiles(baseFlows.flatMap((flow) => flow.selectors), files),
-    ...(await inferFlowSelectors(plan.root, files, runner, addedDiffText)),
+    ...(await inferFlowSelectors(plan.root, files, runner, addedDiffText, analysisRevision)),
   ]);
   const refinedSteps = refineStepsForInferredSelectors(steps, selectors);
   const executableSteps = refinedSteps.filter((step) => !isCoverageOnlyScenarioStep(step));
   const setupHints = uniqueSetupHints([
     ...filterSetupHintsForFiles(baseFlows.flatMap((flow) => flow.setupHints), files),
     ...(shouldInferDomainScenarioSetupHints(baseFlow)
-      ? await inferFlowSetupHints(plan.root, files, "domain", addedDiffText)
+      ? await inferFlowSetupHints(plan.root, files, "domain", addedDiffText, analysisRevision)
       : []),
   ]);
   const draftScenario = {
@@ -8206,7 +8259,7 @@ async function buildDomainScenarioDraftFlow(
     setupHints,
     fixtureReadiness: scenarioFixtureReadiness(baseFlow, setupHints),
     selectors,
-    missingTestability: await findFlowTestabilityGaps(plan.root, files, runner, selectors),
+    missingTestability: await findFlowTestabilityGaps(plan.root, files, runner, selectors, analysisRevision),
     intentId: baseFlow?.intentId ?? matchedIntent?.id,
     intentConfidence: baseFlow?.intentConfidence ?? matchedIntent?.confidence,
     intentEvidence: baseFlow?.intentEvidence ?? matchedIntent?.evidence,
@@ -8474,6 +8527,7 @@ async function inferPlaywrightPersistenceProbe(
   root: string,
   flow: DraftE2eFlow,
   addedDiffText: Record<string, string>,
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<PlaywrightPersistenceProbe | undefined> {
   if (!primaryRouteEntrypoint(flow)) {
     return undefined;
@@ -8485,7 +8539,7 @@ async function inferPlaywrightPersistenceProbe(
 
   const sourceFiles = (
     await Promise.all(flow.files.slice(0, maxFilesPerFlow).map(async (file): Promise<SourceFileText | undefined> => {
-      const text = await readTextIfExists(path.join(root, file));
+      const text = await readAnalyzedText(root, file, analysisRevision);
       return text ? { file, text } : undefined;
     }))
   ).filter((source): source is SourceFileText => Boolean(source));
@@ -11705,12 +11759,17 @@ function extractInteractiveTextSelectors(file: string, text: string): E2eSelecto
       continue;
     }
 
+    const renderedBody = body.replace(/<[^>]*>/g, " ");
+    const staticRenderedBody = renderedBody.replace(/\{[^{}]*\}/g, " ");
     const values = uniqueStrings([
-      normalizeRenderedText(body) ?? "",
-      ...[...body.matchAll(/\{\{?\s*([A-Za-z_$][\w$]*)\s*\}?\}/g)]
+      normalizeRenderedText(staticRenderedBody) ?? "",
+      ...[...renderedBody.matchAll(/\{\{?\s*([A-Za-z_$][\w$]*)\s*\}?\}/g)]
         .flatMap((identifier) => renderedLiteralValues(text, identifier[1])),
-      ...[...body.matchAll(/["'`]([^"'`\n]{2,80})["'`]/g)]
-        .map((literal) => normalizeSelectorValue(literal[1]) ?? ""),
+      ...[...renderedBody.matchAll(/\{([^{}]{1,300})\}/g)]
+        .flatMap((expression) =>
+          [...expression[1].matchAll(/["'`]([^"'`\n]{2,80})["'`]/g)]
+            .map((literal) => normalizeSelectorValue(literal[1]) ?? "")
+        ),
     ]).filter(isUsefulSelector);
     const kind: E2eSelectorKind = isButton ? "role-button" : isLink ? "role-link" : "click-text";
     for (const value of values) {
@@ -11921,6 +11980,17 @@ async function readTextIfExists(filePath: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+async function readAnalyzedText(
+  root: string,
+  file: string,
+  analysisRevision: AnalysisRevision,
+): Promise<string | undefined> {
+  if (analysisRevision.includeWorkingTree) {
+    return readTextIfExists(path.join(root, file));
+  }
+  return readFileAtRef(root, analysisRevision.head, file);
 }
 
 async function hasAnyFile(root: string, fileNames: string[]): Promise<boolean> {

@@ -7003,6 +7003,89 @@ test("diff-added selectors rank first and name the changed behavior", async () =
   assert.equal(genericAgent.flows.find((item) => /pin/i.test(item.title))?.focus, undefined);
 });
 
+test("interactive selectors use rendered labels without leaking nested attributes", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/workspaces"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    "export default function WorkspacesPage() { return <main><h1>Workspaces</h1></main>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/workspace-actions"]);
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    [
+      "export default function WorkspacesPage({ isReady, onExplore }) {",
+      "  return <main>",
+      "    <h1>Workspaces</h1>",
+      "    <ActionButton onClick={onExplore}>",
+      "      <span>Browse offers</span>",
+      "      <Icon aria-hidden=\"true\" size={16} />",
+      "    </ActionButton>",
+      "    <button>{isReady ? \"Continue\" : \"Wait\"}</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: add workspace actions"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const selectors = plan.flows.flatMap((flow) => flow.selectors);
+  const buttonLabels = selectors
+    .filter((selector) => selector.kind === "role-button")
+    .map((selector) => selector.value);
+
+  assert.ok(buttonLabels.includes("Browse offers"), JSON.stringify(buttonLabels));
+  assert.ok(buttonLabels.includes("Continue"), JSON.stringify(buttonLabels));
+  assert.ok(buttonLabels.includes("Wait"), JSON.stringify(buttonLabels));
+  assert.equal(buttonLabels.includes("true"), false, JSON.stringify(buttonLabels));
+});
+
+test("explicit head analysis reads selectors from the target revision instead of the checkout", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/workspaces"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    "export default function WorkspacesPage() { return <button>Legacy action</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/publish-workspace"]);
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    "export default function WorkspacesPage() { return <button>Publish workspace</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: publish workspace"]);
+  const featureHead = (await git(root, ["rev-parse", "HEAD"])).stdout.trim();
+  await git(root, ["switch", "main"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: featureHead, runner: "playwright" });
+  const buttonLabels = plan.flows
+    .flatMap((flow) => flow.selectors)
+    .filter((selector) => selector.kind === "role-button")
+    .map((selector) => selector.value);
+
+  assert.ok(buttonLabels.includes("Publish workspace"), JSON.stringify(buttonLabels));
+  assert.equal(buttonLabels.includes("Legacy action"), false, JSON.stringify(buttonLabels));
+});
+
 test("nested actions do not borrow unrelated creation controls as prerequisites", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
