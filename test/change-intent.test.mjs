@@ -8,7 +8,11 @@ import ts from "typescript";
 import { analyzeChangeIntents } from "../dist/change-intent.js";
 import { generateE2eDraft, generateE2ePlan } from "../dist/e2e.js";
 import { formatAgentQaDraft, formatMarkdownQaDraft, generateQaDraft } from "../dist/qa.js";
-import { buildQaReasoningTraces, qaTraceIdForScenario } from "../dist/qa-trace.js";
+import {
+  buildQaReasoningTraces,
+  qaTraceIdForScenario,
+  summarizeQaTraceEvidence,
+} from "../dist/qa-trace.js";
 import { routeQaScenario } from "../dist/scenario-routing.js";
 import { classifyChangeSourceRole } from "../dist/source-role.js";
 import {
@@ -59,7 +63,12 @@ test("QA reasoning traces expose weak links without claiming product execution",
   const [reviewTrace] = buildQaReasoningTraces([reviewIntent], []);
   assert.equal(reviewTrace.id, qaTraceIdForScenario(reviewScenario.id));
   assert.equal(reviewTrace.status, "review-only");
+  assert.equal(reviewTrace.evidenceAssessment.disposition, "source-gap");
+  assert.equal(reviewTrace.evidenceAssessment.uniqueSourceCount, 1);
   assert.equal(reviewTrace.behavior[0].relation, "evidence-linked");
+  assert.equal(reviewTrace.manifestCorrection.kind, "add-or-correct-flow");
+  assert.equal(reviewTrace.manifestCorrection.target, ".qamap/manifest.yaml > flows");
+  assert.equal(reviewTrace.manifestCorrection.requiresHumanApproval, true);
   assert.equal(reviewTrace.execution, "not-run");
   assert.ok(reviewTrace.gaps.some((gap) => /No located diff source/.test(gap)));
   assert.ok(reviewTrace.gaps.some((gap) => /No optional automation artifact/.test(gap)));
@@ -85,6 +94,7 @@ test("QA reasoning traces expose weak links without claiming product execution",
     totalSteps: 1,
     mappedAssertions: 0,
     totalAssertions: 1,
+    manifestUpdatePath: ".qamap/manifest.yaml > flows.preferences.anchors",
   }, {
     scenarioId: partialScenario.id,
     flowTitle: "Preferences",
@@ -96,14 +106,32 @@ test("QA reasoning traces expose weak links without claiming product execution",
     totalAssertions: 1,
   }]);
   assert.equal(partialTrace.status, "partial");
+  assert.equal(partialTrace.evidenceAssessment.disposition, "mapping-gap");
   assert.equal(partialTrace.behavior[0].relation, "intent-context");
   assert.equal(partialTrace.artifact?.draftPath, "tests/e2e/preferences-review.md");
   assert.equal(partialTrace.artifact?.status, "partial");
   assert.equal(partialTrace.artifact?.flowCount, 2);
   assert.equal(partialTrace.artifact?.compiledFlowCount, 1);
   assert.equal(partialTrace.artifact?.flows.length, 2);
+  assert.equal(partialTrace.manifestCorrection.kind, "review-existing");
+  assert.equal(partialTrace.manifestCorrection.target, ".qamap/manifest.yaml > flows.preferences.anchors");
+  assert.equal(partialTrace.manifestCorrection.candidate.sourceFile, "src/preferences.ts");
+  assert.equal(partialTrace.manifestCorrection.candidate.sourceSymbol, "savePreferences");
+  assert.equal(partialTrace.manifestCorrection.candidate.sourceLine, 12);
   assert.ok(partialTrace.gaps.some((gap) => /1 of 2 affected flow artifacts/.test(gap)));
   assert.ok(partialTrace.gaps.some((gap) => /No lifecycle stage shares/.test(gap)));
+
+  const evidenceSummary = summarizeQaTraceEvidence([
+    partialTrace,
+    { ...partialTrace, id: "trace:duplicate-source" },
+  ]);
+  assert.deepEqual(evidenceSummary, {
+    totalTraces: 2,
+    confirmed: 0,
+    sourceGaps: 0,
+    mappingGaps: 2,
+    uniqueSources: 1,
+  });
 });
 
 test("diff evidence preserves renamed paths and head-side hunk locations", async (t) => {
@@ -821,6 +849,11 @@ test("analysis-only changes stay analyzer verification even inside a CLI reposit
   assert.equal(compactSummary.route.nextAction, "define-repository-command");
   assert.equal(compactSummary.scenarioCoverage.automationApplicable, false);
   assert.equal(compactSummary.scenarioCoverage.requiredGaps, 0);
+  assert.deepEqual(compactSummary.evidenceSummary, qa.evidenceSummary);
+  if (qa.evidenceSummary.sourceGaps + qa.evidenceSummary.mappingGaps > 0) {
+    assert.equal(compactSummary.manifestCorrection.requiresHumanApproval, true);
+    assert.match(compactSummary.manifestCorrection.target, /\.qamap\/manifest\.yaml/);
+  }
   assert.ok(compactSummary.traces.length > 0);
   assert.equal(typeof compactSummary.traces[0].source.file, "string");
   assert.match(compactSummary.traces[0].risk.statement, /miss intended evidence or report unrelated behavior/i);
@@ -1364,6 +1397,14 @@ test("E2E planning promotes commit intent before runner-specific draft generatio
   assert.equal(agentSummary.intents[0].scenarioCount, plan.changeAnalysis.intents[0].scenarios.length);
   assert.ok(agentSummary.intents[0].omittedScenarioCount > 0);
   const agentCalendarScenario = agentSummary.intents[0].scenarios.find((scenario) => /calendar/i.test(scenario.title));
+  assert.ok(
+    agentCalendarScenario,
+    `expected the compact agent payload to retain calendar evidence: ${JSON.stringify({
+      bytes: Buffer.byteLength(formatAgentQaDraft(qa)),
+      compaction: agentSummary.compaction,
+      scenarios: agentSummary.intents[0].scenarios.map((scenario) => scenario.title),
+    })}`,
+  );
   assert.match(agentCalendarScenario.sources[0].symbol, /timezone/i);
   assert.equal(agentCalendarScenario.sources[0].relation, "direct");
   assert.equal(agentCalendarScenario.sources[0].side, "head");
@@ -1375,11 +1416,18 @@ test("E2E planning promotes commit intent before runner-specific draft generatio
   const requiredTrace = qa.traces.find((trace) => trace.scenario.decision === "required");
   assert.ok(requiredTrace);
   assert.equal(requiredTrace.status, "traceable");
+  assert.equal(requiredTrace.evidenceAssessment.disposition, "confirmed");
   assert.ok(requiredTrace.sources.some((source) => source.file === "src/pages/preferences.tsx" && source.startLine));
   assert.ok(requiredTrace.behavior.some((stage) => stage.relation === "evidence-linked"));
   assert.ok(requiredTrace.artifact?.draftPath.endsWith(".spec.ts"));
+  assert.equal(requiredTrace.manifestCorrection.requiresHumanApproval, true);
   assert.equal(requiredTrace.execution, "not-run");
   assert.equal(agentSummary.traceCount, qa.traces.length);
+  assert.deepEqual(agentSummary.evidenceSummary, qa.evidenceSummary);
+  assert.equal(
+    agentSummary.evidenceSummary.uniqueSources,
+    new Set(qa.traces.flatMap((trace) => trace.sources.map((source) => JSON.stringify(source)))).size,
+  );
   assert.ok(agentSummary.traces.length > 0);
   assert.ok(agentSummary.traces.every((trace) => trace.source?.file && trace.behavior?.phase));
   assert.ok(agentSummary.traces.every((trace) => trace.execution === "not-run"));
@@ -1387,7 +1435,10 @@ test("E2E planning promotes commit intent before runner-specific draft generatio
   assert.match(qaMarkdown, /confidence: (?:medium|high)/);
   assert.match(qaMarkdown, /Scenario routing:/);
   assert.match(qaMarkdown, /E2E draft mapping:/);
+  assert.match(qaMarkdown, /Evidence status: \d+ confirmed/);
   assert.match(qaMarkdown, /## QA Reasoning Trace/);
+  assert.match(qaMarkdown, /Evidence status: `confirmed`/);
+  assert.match(qaMarkdown, /If this trace is wrong: review `\.qamap\/manifest\.yaml > flows`/);
   assert.match(qaMarkdown, /1\. Diff evidence:[\s\S]*2\. Affected behavior:[\s\S]*3\. Risk:[\s\S]*4\. QA scenario:/);
   assert.match(qaMarkdown, /Product QA execution: not run/);
   assert.equal(agentSummary.execution.status, "not-run");
@@ -1463,6 +1514,227 @@ test("E2E planning promotes commit intent before runner-specific draft generatio
   assert.equal(boundedAgentSummary.schema.name, "qamap.qa");
   assert.ok(boundedAgentSummary.intents.length > 0);
   assert.ok(boundedAgentSummary.flows.length > 0);
+});
+
+test("React storage evidence compiles reload persistence into the primary Playwright draft", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { react: "19.0.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(
+    root,
+    "src/pages/density.tsx",
+    "export function DensityPage() { return <p>Default density</p>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/density-persistence");
+
+  await write(
+    root,
+    "src/pages/density.tsx",
+    [
+      "import { useState } from 'react';",
+      "",
+      "export function DensityPage() {",
+      "  const [density, setDensity] = useState(() => window.localStorage.getItem('workspace-density') ?? 'comfortable');",
+      "  const [saved, setSaved] = useState(false);",
+      "",
+      "  function saveDensity() {",
+      "    window.localStorage.setItem('workspace-density', density);",
+      "    setSaved(true);",
+      "  }",
+      "",
+      "  return <main>",
+      "    <input aria-label=\"Workspace density\" value={density} onChange={(event) => setDensity(event.target.value)} />",
+      "    <button data-testid=\"density-save\" onClick={saveDensity}>Save density</button>",
+      "    {saved ? <p>Density saved</p> : null}",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: persist workspace density and restore it after re-entry");
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: ".generated-e2e",
+  });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  const primaryReceipt = file.scenarioAutomation.find((receipt) => receipt.kind === "primary");
+  const qa = await generateQaDraft(root, { base: "main", head: "HEAD" });
+  const agent = JSON.parse(formatAgentQaDraft(qa));
+  const densityFlow = agent.flows.find((candidate) => /density/i.test(candidate.title));
+
+  assert.match(spec, /const persistedField = page\.getByLabel\("Workspace density"\)/);
+  assert.match(spec, /Repository evidence links localStorage key "workspace-density"/);
+  assert.match(spec, /await persistedField\.fill\(persistedValue\)/);
+  assert.match(spec, /await page\.reload\(\)/);
+  assert.match(spec, /await expect\(persistedField\)\.toHaveValue\(persistedValue\)/);
+  assert.equal(spec.match(/getByTestId\("density-save"\)\.click\(\)/g)?.length, 1);
+  assert.match(file.languageBrief.trigger, /save density/i);
+  assert.doesNotMatch(file.languageBrief.trigger, /re-entry/i);
+  assert.equal(
+    primaryReceipt?.status,
+    "compiled",
+    JSON.stringify({ primaryReceipt, scenarios: file.qaScenarios, spec }),
+  );
+  assert.equal(primaryReceipt?.mappedAssertions, primaryReceipt?.totalAssertions);
+  assert.ok(densityFlow?.focus, JSON.stringify(densityFlow));
+  assert.match(densityFlow.focus.action, /save density/i);
+  assert.ok(
+    densityFlow.focus.assertion,
+    JSON.stringify({ densityFlow, scenarios: qa.changeAnalysis.intents.flatMap((intent) => intent.scenarios) }),
+  );
+  assert.match(densityFlow.focus.assertion, /density/i);
+});
+
+test("Vue storage evidence compiles the same persistence proof without framework-specific rules", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { vue: "3.5.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(
+    root,
+    "src/pages/draft.vue",
+    "<template><p>Untitled draft</p></template>\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/draft-persistence");
+
+  await write(
+    root,
+    "src/pages/draft.vue",
+    [
+      "<script setup>",
+      "import { ref } from 'vue';",
+      "",
+      "const title = ref(window.sessionStorage.getItem('draft-title') ?? '');",
+      "const saved = ref(false);",
+      "",
+      "function saveDraft() {",
+      "  window.sessionStorage.setItem('draft-title', title.value);",
+      "  saved.value = true;",
+      "}",
+      "</script>",
+      "",
+      "<template>",
+      "  <main>",
+      "    <input aria-label=\"Draft title\" v-model=\"title\" />",
+      "    <button data-testid=\"draft-save\" @click=\"saveDraft\">Save draft</button>",
+      "    <p v-if=\"saved\">Draft saved</p>",
+      "  </main>",
+      "</template>",
+    ].join("\n"),
+  );
+  commit(root, "feat: persist draft title and restore it after re-entry");
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: ".generated-e2e",
+  });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  const primaryReceipt = file.scenarioAutomation.find((receipt) => receipt.kind === "primary");
+  const conditionalReceipt = file.scenarioAutomation.find((receipt) =>
+    receipt.kind === "state-transition" && /conditional state and fallback/i.test(receipt.title)
+  );
+
+  assert.match(spec, /const persistedField = page\.getByLabel\("Draft title"\)/);
+  assert.match(spec, /Repository evidence links sessionStorage key "draft-title"/);
+  assert.match(spec, /await page\.reload\(\)/);
+  assert.match(spec, /await expect\(persistedField\)\.toHaveValue\(persistedValue\)/);
+  assert.equal(
+    spec.match(/getByTestId\("draft-save"\)\.click\(\)/g)?.length,
+    2,
+    "The persistence proof and transient completion-state proof each exercise the save action.",
+  );
+  assert.equal(conditionalReceipt?.status, "compiled");
+  assert.equal(
+    spec.match(/expect\(page\.getByText\("Draft saved"\)\)\.not\.toBeVisible\(\)/g)?.length,
+    2,
+  );
+  assert.match(file.languageBrief.trigger, /save draft/i);
+  assert.doesNotMatch(file.languageBrief.trigger, /re-entry/i);
+  assert.equal(
+    primaryReceipt?.status,
+    "compiled",
+    JSON.stringify({ primaryReceipt, scenarios: file.qaScenarios, spec }),
+  );
+});
+
+test("a storage write without matching restoration evidence stays partial", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { react: "19.0.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(
+    root,
+    "src/pages/filter.tsx",
+    "export function FilterPage() { return <p>All records</p>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/filter-persistence");
+
+  await write(
+    root,
+    "src/pages/filter.tsx",
+    [
+      "import { useState } from 'react';",
+      "",
+      "export function FilterPage() {",
+      "  const [filter, setFilter] = useState('all');",
+      "  const restoredFilter = window.localStorage.getItem('different-filter-key');",
+      "",
+      "  function saveFilter() {",
+      "    window.localStorage.setItem('records-filter', filter);",
+      "  }",
+      "",
+      "  return <main>",
+      "    <input aria-label=\"Records filter\" value={filter} onChange={(event) => setFilter(event.target.value)} />",
+      "    <button data-testid=\"filter-save\" onClick={saveFilter}>Save filter</button>",
+      "    <p>{restoredFilter}</p>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: persist the records filter for re-entry");
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    output: ".generated-e2e",
+  });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  const primaryReceipt = file.scenarioAutomation.find((receipt) => receipt.kind === "primary");
+
+  assert.doesNotMatch(spec, /const persistedField|await page\.reload\(\)|toHaveValue\(persistedValue\)/);
+  assert.notEqual(
+    primaryReceipt?.status,
+    "compiled",
+    JSON.stringify({ primaryReceipt, scenarios: file.qaScenarios, spec }),
+  );
+  assert.match(primaryReceipt?.blockers.join("\n") ?? "", /assertion.*did not map/i);
 });
 
 test("one change intent produces separate QA flows for distinct user surfaces", async (t) => {
@@ -1849,6 +2121,316 @@ test("state setter evidence does not compile a second user interaction", async (
   assert.match(spec, /page\.getByText\("Pinned record appears first"\)/);
 });
 
+test("unrelated callback props do not become the representative action for broad changes", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/SharedPanel.tsx";
+  await write(
+    root,
+    file,
+    "export function SharedPanel() { return <section>Shared panel</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/shared-component-foundation");
+
+  await write(
+    root,
+    file,
+    [
+      "export function SharedPanel({ onClose }) {",
+      "  return <section>",
+      "    <button onClick={onClose}>Dismiss</button>",
+      "    <p>Shared panel</p>",
+      "  </section>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: adopt shared component foundation");
+
+  const analysis = await analyze(root, [file]);
+  const [intent] = analysis.intents;
+  const primary = intent.scenarios.find((scenario) => scenario.kind === "primary");
+  assert.ok(primary);
+  assert.equal(primary.steps.some((step) => /\bclose\b/i.test(step)), false);
+  assert.ok(primary.steps.some((step) => /shared component foundation/i.test(step)));
+  assert.equal(intent.lifecycle.some((stage) => /\bclose\b/i.test(stage.label)), false);
+  assert.equal(primary.evidence.some((item) => item.symbol === "onClose"), false);
+});
+
+test("callback props remain representative when the commit explicitly changes that action", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/NotificationPanel.tsx";
+  await write(
+    root,
+    file,
+    "export function NotificationPanel() { return <section>Notifications</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/notification-panel-close");
+
+  await write(
+    root,
+    file,
+    [
+      "export function NotificationPanel({ onClose }) {",
+      "  return <section>",
+      "    <button onClick={onClose}>Close notifications</button>",
+      "  </section>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: close notification panel");
+
+  const analysis = await analyze(root, [file]);
+  const primary = analysis.intents[0].scenarios.find((scenario) => scenario.kind === "primary");
+  assert.ok(primary);
+  assert.ok(primary.steps.some((step) => /\bclose\b/i.test(step)));
+});
+
+test("callback action synonyms retain behavior supported by the commit intent", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/ItemPreview.tsx";
+  await write(
+    root,
+    file,
+    "export function ItemPreview() { return <section>Item</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/item-preview");
+
+  await write(
+    root,
+    file,
+    [
+      "export function ItemPreview({ onView }) {",
+      "  return <section>",
+      "    <button onClick={onView}>Show item preview</button>",
+      "  </section>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: show item preview");
+
+  const analysis = await analyze(root, [file]);
+  const primary = analysis.intents[0].scenarios.find((scenario) => scenario.kind === "primary");
+  assert.ok(primary);
+  assert.ok(primary.steps.some((step) => /\bview\b/i.test(step)));
+});
+
+test("browser scheduling helpers do not become observable product proof", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/ReviewPanel.tsx";
+  await write(
+    root,
+    file,
+    "export function ReviewPanel() { return <section>Review</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/contextual-review");
+
+  await write(
+    root,
+    file,
+    [
+      "export function ReviewPanel() {",
+      "  function alignPanel() {",
+      "    requestAnimationFrame(() => setAligned(true));",
+      "  }",
+      "  return <button onClick={alignPanel}>Review layout</button>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: add contextual component review");
+
+  const analysis = await analyze(root, [file]);
+  const [intent] = analysis.intents;
+  const primary = intent.scenarios.find((scenario) => scenario.kind === "primary");
+  assert.ok(primary);
+  assert.equal(intent.lifecycle.some((stage) => /requestAnimationFrame/i.test(stage.label)), false);
+  assert.equal(primary.assertions.some((assertion) => /requestAnimationFrame/i.test(assertion)), false);
+});
+
+test("product request calls remain side-effect evidence", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/ReviewRequest.tsx";
+  await write(
+    root,
+    file,
+    "export function ReviewRequest() { return <section>Review</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/review-request");
+
+  await write(
+    root,
+    file,
+    [
+      "export function ReviewRequest() {",
+      "  function sendReviewRequest() {",
+      "    return requestReview();",
+      "  }",
+      "  return <button onClick={sendReviewRequest}>Request review</button>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: request component review");
+
+  const analysis = await analyze(root, [file]);
+  assert.ok(
+    analysis.intents[0].lifecycle.some((stage) =>
+      stage.kind === "side-effect" &&
+      stage.evidence.some((item) => item.symbol === "requestReview" && item.startLine)
+    ),
+  );
+});
+
+test("visible outcomes survive browser scheduling implementation details", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/AlignedPanel.tsx";
+  await write(
+    root,
+    file,
+    "export function AlignedPanel() { return <section>Panel</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/aligned-panel");
+
+  await write(
+    root,
+    file,
+    [
+      "export function AlignedPanel() {",
+      "  const [isAligned, setAligned] = useState(false);",
+      "  function alignPanel() {",
+      "    requestAnimationFrame(() => setAligned(true));",
+      "  }",
+      "  return <section>",
+      "    <button onClick={alignPanel}>Align panel</button>",
+      "    {isAligned && <p>Panel aligned</p>}",
+      "  </section>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: show aligned panel result");
+
+  const analysis = await analyze(root, [file]);
+  const primary = analysis.intents[0].scenarios.find((scenario) => scenario.kind === "primary");
+  assert.ok(primary);
+  assert.ok(primary.assertions.some((assertion) => /aligned panel|panel aligned/i.test(assertion)));
+  assert.equal(primary.assertions.some((assertion) => /requestAnimationFrame/i.test(assertion)), false);
+  assert.equal(
+    analysis.intents[0].lifecycle.some((stage) => /requestAnimationFrame/i.test(stage.label)),
+    false,
+  );
+});
+
+test("built-in type predicates do not become QA lifecycle conditions", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/CatalogBanner.tsx";
+  await write(
+    root,
+    file,
+    "export function CatalogBanner() { return <section>Catalog</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/catalog-banner");
+
+  await write(
+    root,
+    file,
+    [
+      "export function CatalogBanner({ rawEntries }) {",
+      "  const entries = Array.isArray(rawEntries) ? rawEntries : [];",
+      "  function openCatalog() { return navigate('/catalog'); }",
+      "  return <button onClick={openCatalog}>Open catalog ({entries.length})</button>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: add catalog entry banner");
+
+  const analysis = await analyze(root, [file]);
+  const primary = analysis.intents[0].scenarios.find((scenario) => scenario.kind === "primary");
+  assert.ok(primary);
+  assert.equal(
+    analysis.intents[0].lifecycle.some((stage) =>
+      stage.evidence.some((item) => /^(?:Array\.)?isArray$/i.test(item.symbol ?? ""))
+    ),
+    false,
+  );
+  assert.equal(primary.steps.some((step) => /\bis array\b/i.test(step)), false);
+});
+
+test("visible product outcomes survive built-in type predicate filtering", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/CatalogResults.tsx";
+  await write(
+    root,
+    file,
+    "export function CatalogResults() { return <section>Catalog</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/catalog-results");
+
+  await write(
+    root,
+    file,
+    [
+      "export function CatalogResults({ entries }) {",
+      "  if (Array.isArray(entries)) {",
+      "    showCatalogResults();",
+      "  }",
+      "  return <section>Catalog results</section>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: show catalog results");
+
+  const analysis = await analyze(root, [file]);
+  assert.ok(
+    analysis.intents[0].lifecycle.some((stage) =>
+      stage.kind === "observable-outcome" &&
+      stage.evidence.some((item) => item.symbol === "showCatalogResults")
+    ),
+  );
+  assert.equal(
+    analysis.intents[0].lifecycle.some((stage) => /\bis array\b/i.test(stage.label)),
+    false,
+  );
+});
+
+test("product-defined readiness predicates remain lifecycle evidence", async (t) => {
+  const root = await makeRepo(t);
+  const file = "src/components/WorkspacePanel.tsx";
+  await write(
+    root,
+    file,
+    "export function WorkspacePanel() { return <section>Workspace</section>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/workspace-ready");
+
+  await write(
+    root,
+    file,
+    [
+      "export function WorkspacePanel({ workspace }) {",
+      "  if (isWorkspaceReady(workspace)) {",
+      "    showWorkspacePanel();",
+      "  }",
+      "  return <section>Workspace ready</section>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: show ready workspace");
+
+  const analysis = await analyze(root, [file]);
+  assert.ok(
+    analysis.intents[0].lifecycle.some((stage) =>
+      stage.kind === "condition" &&
+      stage.evidence.some((item) => item.symbol === "isWorkspaceReady")
+    ),
+  );
+});
+
 test("evidence-routed failure QA does not reuse an unrelated action selector", async (t) => {
   const root = await makeRepo(t);
   await write(
@@ -1985,6 +2567,10 @@ test("Vue conditional actions retain changed UI evidence without unrelated payme
   const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".generated-e2e" });
   const file = draft.files.find((candidate) => candidate.source === "change-intent");
   assert.ok(file);
+  const stateReceipt = file.scenarioAutomation.find((receipt) =>
+    receipt.kind === "state-transition" && /conditional state and fallback/i.test(receipt.title)
+  );
+  assert.equal(stateReceipt?.status, "not-compiled");
   const spec = await readFile(path.join(root, file.path), "utf8");
   assert.match(spec, /page\.getByRole\("button", \{ name: "Import document" \}\)\.click\(\)/);
   assert.match(spec, /page\.getByText\("Document imported"\)/);
@@ -2035,9 +2621,122 @@ test("React conditional UI produces state QA from changed behavior evidence", as
   const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".generated-e2e" });
   const file = draft.files.find((candidate) => candidate.source === "change-intent");
   assert.ok(file);
+  const stateReceipt = file.scenarioAutomation.find((receipt) =>
+    receipt.kind === "state-transition" && /conditional state and fallback/i.test(receipt.title)
+  );
+  assert.equal(stateReceipt?.status, "compiled");
+  assert.equal(stateReceipt?.mappedSteps, 2);
+  assert.equal(stateReceipt?.mappedAssertions, 2);
   const spec = await readFile(path.join(root, file.path), "utf8");
   assert.match(spec, /page\.getByRole\("button", \{ name: "Send notification" \}\)\.click\(\)/);
   assert.match(spec, /page\.getByText\("Notification queued"\)/);
+  assert.match(spec, /expect\(page\.getByText\("Notification queued"\)\)\.not\.toBeVisible\(\)/);
+  assert.match(spec, /await page\.reload\(\)/);
+});
+
+test("Vue local state transitions compile visible outcome and re-entry proof", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { vue: "3.5.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(root, "playwright.config.ts", "export default { use: { baseURL: 'http://127.0.0.1:4173' } };\n");
+  await write(
+    root,
+    "src/pages/workspaces.vue",
+    "<template><main><h1>Workspaces</h1></main></template>\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/workspace-ready-state");
+
+  await write(
+    root,
+    "src/pages/workspaces.vue",
+    [
+      "<script setup lang=\"ts\">",
+      "import { ref } from 'vue';",
+      "const isWorkspaceReady = ref(false);",
+      "function revealWorkspace() { isWorkspaceReady.value = true; }",
+      "</script>",
+      "<template>",
+      "  <main>",
+      "    <h1>Workspaces</h1>",
+      "    <button type=\"button\" @click=\"revealWorkspace\">Reveal workspace</button>",
+      "    <p v-if=\"isWorkspaceReady\">Workspace ready</p>",
+      "  </main>",
+      "</template>",
+    ].join("\n"),
+  );
+  commit(root, "feat: reveal workspace ready state");
+
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".generated-e2e" });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const stateReceipt = file.scenarioAutomation.find((receipt) =>
+    receipt.kind === "state-transition" && /conditional state and fallback/i.test(receipt.title)
+  );
+  assert.equal(stateReceipt?.status, "compiled");
+  assert.equal(stateReceipt?.mappedSteps, 2);
+  assert.equal(stateReceipt?.mappedAssertions, 2);
+
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  assert.match(spec, /page\.getByRole\("button", \{ name: "Reveal workspace" \}\)\.click\(\)/);
+  assert.match(spec, /expect\(page\.getByText\("Workspace ready"\)\)\.not\.toBeVisible\(\)/);
+  assert.match(spec, /expect\(page\.getByText\("Workspace ready"\)\)\.toBeVisible\(\)/);
+  assert.match(spec, /await page\.reload\(\)/);
+});
+
+test("state changes outside a user handler do not borrow a nearby action", async (t) => {
+  const root = await makeRepo(t);
+  await write(
+    root,
+    "package.json",
+    JSON.stringify({
+      scripts: { dev: "vite", "test:e2e": "playwright test" },
+      dependencies: { react: "19.0.0", vite: "7.0.0", "@playwright/test": "1.56.0" },
+    }),
+  );
+  await write(root, "playwright.config.ts", "export default { use: { baseURL: 'http://127.0.0.1:4173' } };\n");
+  await write(
+    root,
+    "src/pages/status.tsx",
+    "export function StatusPage() { return <main><h1>Status</h1></main>; }\n",
+  );
+  commit(root, "benchmark baseline");
+  branch(root, "feat/automatic-status");
+
+  await write(
+    root,
+    "src/pages/status.tsx",
+    [
+      "export function StatusPage() {",
+      "  const [isStatusReady, setStatusReady] = useState(false);",
+      "  function inspectStatus() { console.info('status inspected'); }",
+      "  useEffect(() => { setStatusReady(true); }, []);",
+      "  return <main>",
+      "    <h1>Status</h1>",
+      "    <button onClick={inspectStatus}>Inspect status</button>",
+      "    {isStatusReady && <p>Status ready</p>}",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  commit(root, "feat: show automatic readiness state");
+
+  const draft = await generateE2eDraft(root, { base: "main", head: "HEAD", output: ".generated-e2e" });
+  const file = draft.files.find((candidate) => candidate.source === "change-intent");
+  assert.ok(file);
+  const stateReceipt = file.scenarioAutomation.find((receipt) =>
+    receipt.kind === "state-transition" && /conditional state and fallback/i.test(receipt.title)
+  );
+  assert.equal(stateReceipt?.status, "not-compiled");
+
+  const spec = await readFile(path.join(root, file.path), "utf8");
+  assert.doesNotMatch(spec, /Routed QA scenario:.*conditional state and fallback/is);
 });
 
 test("URL-backed UI modes become restoration QA with representative controls", async (t) => {
@@ -2304,6 +3003,12 @@ test("form validation mode changes produce edit-trigger-correction QA across unr
   assert.equal(scenario.priority, "critical");
   assert.ok(scenario.evidence.some((item) => item.file === file && item.side === "head"));
   assert.ok(scenario.assertions.some((assertion) => /correcting the value clears stale feedback/i.test(assertion)));
+  assert.ok(
+    analysis.intents[0].lifecycle.some((stage) =>
+      stage.kind === "condition" &&
+      stage.evidence.some((item) => item.symbol === "form-validation-mode" && item.startLine)
+    ),
+  );
 });
 
 test("non-form interaction mode changes do not fabricate validation timing QA", async (t) => {

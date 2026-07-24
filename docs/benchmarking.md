@@ -21,6 +21,7 @@ The command fails when any target violates its declared expectations. The corpus
 - a React change spanning two user surfaces that must produce two independent primary scenario receipts, actions, assertions, and compiled drafts;
 - a presentation-only React condition that must not create behavioral state-transition QA;
 - a web preferences change that must execute the submit action once, map the immediate visible outcome, and keep unproven persistence, request-failure, and re-entry QA explicit instead of manufacturing passing coverage;
+- a repository-backed web persistence change that must connect one changed storage write to the matching read key, editable field, save action, route, and reload assertion before its primary draft can be fully mapped;
 - a mobile reminder change that must become scheduling, calendar, duplicate, resynchronization, and entry-routing QA;
 - a CLI plus static-analysis-rule change that must verify command I/O and positive/negative controls without turning rule vocabulary into product scheduling, routing, API, or fixture QA;
 - an Expo app with Maestro;
@@ -58,6 +59,8 @@ Each target can declare:
 | `mustIncludeLifecycle` | Trigger, condition, action, state, effect, or outcome terms that must survive in the ordered lifecycle. |
 | `mustIncludeQaScenarios` | Failure, boundary, state-transition, or primary QA terms that must be proposed before runner compilation. |
 | `mustNotIncludeQaScenarios` | QA scenario terms that would be false positives for the fixture and must not be proposed. |
+| `mustCompileQaScenarios` | QA scenario terms that must be fully mapped into generated test commands and assertions. |
+| `mustNotCompileQaScenarios` | QA scenario terms that must remain uncompiled when the repository does not prove a safe automation path. |
 | `mustFindIntentEvidence` | Commit or diff terms that must remain attached to intent provenance. |
 | `mustTraceScenarioFiles` | Changed files that must appear in at least one scenario's exact direct/supporting base- or head-side diff source. |
 | `maxUntracedCriticalScenarios` | Maximum critical scenarios without a direct/supporting diff source carrying a file and line number. Contextual commit evidence cannot satisfy this contract; lifecycle fixtures keep it at zero. |
@@ -65,6 +68,8 @@ Each target can declare:
 | `maxMissingReasoningTraces` | Maximum routed scenarios with no corresponding QA reasoning trace. Public trace fixtures keep this at zero. |
 | `maxUntraceableRequiredScenarios` | Maximum required scenarios whose diff evidence cannot be joined to an evidence-linked lifecycle stage. Public trace fixtures keep this at zero. |
 | `minScenarioReceipts` | Minimum routed scenario receipts emitted by the E2E adapter. |
+| `minCompiledScenarioReceipts` | Minimum scenarios fully mapped into generated test commands and assertions. |
+| `maxCompiledScenarioReceipts` | Maximum scenarios allowed to be fully mapped, useful for false-positive controls. |
 | `maxMissingScenarioReceipts` | Maximum selected QA scenarios with no corresponding automation receipt. Public lifecycle fixtures keep this at zero. |
 | `minPrimaryFlowReceipts` | Minimum affected flows with their own primary scenario automation receipt. Unlike intent-level receipt counts, this cannot be satisfied twice by one strong flow. |
 | `maxMissingPrimaryFlowReceipts` | Maximum affected flows whose primary scenario has no automation receipt. |
@@ -133,5 +138,11 @@ Any new production heuristic must be exercised by at least two unrelated positiv
 The nested-action rule follows that contract. Independent note and record fixtures provide positive same-entity evidence for `input -> create -> changed action -> observable result`, while an unrelated member-creation control is a negative control and must not be borrowed as setup. The rule is based on source ownership, selector role, and shared entity terms rather than any product domain name.
 
 Cross-framework fixtures are semantic controls, not a claim that QAMap has separate product logic for each UI library. The same user-visible change is expressed through different syntax so a shared inference rule must survive both, while the negative control proves that merely seeing a condition is not enough to invent QA. Because every fixture is small, public, and deterministic, a regression can be reproduced without private source, network services, or a working application environment.
+
+The persistence compiler follows the same rule. React and Vue controls prove that one shared storage-to-field relationship can produce save, stored-value, reload, and restored-value commands. A mismatched read/write-key control must remain partial. Framework names and product vocabulary do not authorize the proof; the connected repository evidence does.
+
+Agent-focus regressions use the same evidence standard. Independent nested-action and persistence fixtures must preserve the changed action and observable proof under the 4KB handoff limit. A flow whose title and success signal are replaced with unrelated language must not receive a `focus` capsule, even when its old ordered steps remain present.
+
+Repository-boundary regressions use nested working copies containing deliberately stale tests and fixtures. Those files must not change suite detection, existing-evidence paths, fixture guidance, or the PR checklist. The directory name is not the trust signal: any nested `.git` root is excluded, with common worktree directories skipped early for bounded scans.
 
 Private repository names, proprietary code, file paths, credentials, production data, and raw smoke output must never enter a public fixture. For a public PR regression, first confirm a compatible license, record the canonical URL and exact base/head commits in `PROVENANCE.md`, and keep only a behavior-preserving minimum. The shared inference rule must remain domain-neutral and pass unrelated positive and negative controls.

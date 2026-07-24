@@ -80,6 +80,26 @@ PR checklist
 
 The counts above describe static draft mapping, not execution. The compatible machine value `compiled` means the selected steps and assertions were mapped to concrete runner code. Only a separate, explicit validation command can turn that draft into pass or fail evidence.
 
+The preferences example remains partial intentionally because its source never reads or writes the selected timezone. In a stronger repository-backed case, QAMap can map persistence without inventing a fixture:
+
+```ts
+const persistedField = page.getByLabel("Workspace density");
+const persistedValue = "QAMap sample value";
+
+await persistedField.fill(persistedValue);
+await page.getByTestId("density-save").click();
+
+const storedValue = await page.evaluate(
+  () => window.localStorage.getItem("workspace-density"),
+);
+await expect(storedValue).toBe(persistedValue);
+
+await page.reload();
+await expect(persistedField).toHaveValue(persistedValue);
+```
+
+This code is emitted only when the changed write, matching read, bound field, save handler, action locator, and route can be joined from repository evidence. A missing or mismatched link leaves the scenario partially mapped instead of creating a confident-looking reload test.
+
 The same stable trace ID is included in generated Playwright, Maestro, and manual artifacts together with the strongest diff source. This lets a reviewer move from generated code back to the exact behavior and risk that caused it to exist.
 
 If this recommendation is useful but slightly wrong, the next step is not another long AI prompt. Generate and correct repo-local QA memory:

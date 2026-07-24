@@ -10,6 +10,7 @@ import {
   analyzeVerificationManifestContext,
   buildDoctorResult,
   collectAddedDiffEvidence,
+  evaluateFlowCoverageEvidence,
   explainVerificationManifest,
   evaluateChangeReadiness,
   formatVerificationManifestContextResult,
@@ -2645,7 +2646,7 @@ test("generateE2ePlan evaluates existing test suite coverage evidence", async ()
   assert.match(markdown, /covered Loading, empty, error, and success states/);
 });
 
-test("generateE2ePlan keeps generic test filenames from overmatching unrelated services", async () => {
+test("generateE2ePlan does not promote same-domain generic tests without a direct relation", async () => {
   const root = await makeTempRepo();
   await initGitRepo(root);
   await mkdir(path.join(root, "in_app_purchases/services"), { recursive: true });
@@ -2680,7 +2681,7 @@ test("generateE2ePlan keeps generic test filenames from overmatching unrelated s
 
   assert.ok(flow);
   assert.ok(plan.testSuite.frameworkSignals.includes("pytest"));
-  assert.ok(evidenceFiles.includes("in_app_purchases/tests/test_views.py"));
+  assert.equal(evidenceFiles.includes("in_app_purchases/tests/test_views.py"), false);
   assert.equal(evidenceFiles.includes("listings/tests/test_services.py"), false);
 });
 
@@ -2731,6 +2732,127 @@ test("generateE2ePlan does not treat generic index tests in another package as f
   );
 
   assert.equal(evidenceFiles.includes("packages/correlation/src/index.test.ts"), false);
+});
+
+test("generateE2ePlan excludes a neighboring feature test without an import or exact path relation", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/features/orders/components"), { recursive: true });
+  await mkdir(path.join(root, "src/features/orders/__tests__"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: { test: "vitest run" },
+      dependencies: { vite: "^7.0.0", react: "^19.0.0" },
+      devDependencies: { vitest: "^3.0.0" },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/features/orders/components/OrderTimeline.tsx"),
+    "export function OrderTimeline() { return <main>Order timeline</main>; }\n",
+  );
+  await writeFile(
+    path.join(root, "src/features/orders/components/OrderList.tsx"),
+    "export function OrderList() { return <main>Order list</main>; }\n",
+  );
+  await writeFile(
+    path.join(root, "src/features/orders/__tests__/OrderTimeline.test.tsx"),
+    [
+      "import { OrderTimeline } from '../components/OrderTimeline';",
+      "it('renders the order timeline success state', () => expect(OrderTimeline).toBeDefined());",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(root, "src/features/orders/__tests__/OrderList.test.tsx"),
+    [
+      "import { OrderList } from '../components/OrderList';",
+      "it('renders the order list success state', () => expect(OrderList).toBeDefined());",
+      "",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/order-timeline"]);
+  await writeFile(
+    path.join(root, "src/features/orders/components/OrderTimeline.tsx"),
+    "export function OrderTimeline() { return <main data-testid=\"order-timeline\">Order timeline</main>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: expose order timeline"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD" });
+  const evidenceFiles = plan.flows.flatMap((flow) =>
+    flow.coverageEvidence.flatMap((evidence) => evidence.files),
+  );
+
+  assert.ok(evidenceFiles.includes("src/features/orders/__tests__/OrderTimeline.test.tsx"));
+  assert.equal(
+    evidenceFiles.includes("src/features/orders/__tests__/OrderList.test.tsx"),
+    false,
+    JSON.stringify(plan.flows.map((flow) => ({
+      title: flow.title,
+      files: flow.files,
+      evidence: flow.coverageEvidence.flatMap((item) => item.files),
+    }))),
+  );
+});
+
+test("coverage evidence does not promote arbitrary tests for package configuration files", () => {
+  const evidence = evaluateFlowCoverageEvidence(
+    {
+      title: "Runtime / Portal configuration verification checklist",
+      files: ["packages/runtime/package.json", "services/portal/package.json"],
+      coverage: [{ title: "Primary success path", checks: [] }],
+      changedFiles: ["packages/runtime/package.json"],
+    },
+    {
+      hasTestSuite: true,
+      testFileCount: 1,
+      frameworkSignals: ["vitest"],
+      files: [
+        {
+          path: "services/portal/src/features/catalog/utils/catalogCache.test.ts",
+          testNames: ["restores the catalog cache success state"],
+          imports: ["./catalogCache"],
+          signals: ["success", "state transition"],
+        },
+      ],
+    },
+  );
+
+  assert.deepEqual(evidence[0].files, []);
+  assert.equal(evidence[0].status, "missing");
+  assert.equal(evidence[0].reason, "No related test files were found for the changed flow.");
+});
+
+test("coverage evidence ignores generic view terminology across neighboring surfaces", () => {
+  const evidence = evaluateFlowCoverageEvidence(
+    {
+      title: "Catalog presentation flow",
+      files: ["apps/store/src/features/catalog/fragments/OfficialCatalogView/index.tsx"],
+      coverage: [{ title: "Primary success path", checks: [] }],
+      changedFiles: ["apps/store/src/features/catalog/fragments/OfficialCatalogView/index.tsx"],
+    },
+    {
+      hasTestSuite: true,
+      testFileCount: 1,
+      frameworkSignals: ["vitest"],
+      files: [
+        {
+          path: "apps/admin/src/features/catalog/utils/catalogPrefillError.test.ts",
+          testNames: ["get catalog prefill error view"],
+          imports: ["./catalogPrefillError"],
+          signals: ["error"],
+        },
+      ],
+    },
+  );
+
+  assert.deepEqual(evidence[0].files, []);
+  assert.equal(evidence[0].status, "missing");
 });
 
 test("generateE2ePlan prefers a Python test that imports the changed module", async () => {
@@ -3018,6 +3140,76 @@ test("qa command points API-dependent flows at existing repo mock and seed files
   assert.doesNotMatch(fixtureGap.detail, /ios\/Pods/);
   assert.match(markdown, /src\/services\/sampleSeed\.ts/);
   assert.doesNotMatch(markdown, /ios\/Pods/);
+});
+
+test("QA evidence discovery ignores nested Git working copies", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/pages/status"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({
+      scripts: { dev: "vite" },
+      dependencies: { react: "^19.0.0", vite: "^7.0.0" },
+    }),
+  );
+  await writeFile(
+    path.join(root, "src/pages/status/StatusPage.tsx"),
+    "export function StatusPage() { return <button>Load status</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/status-refresh"]);
+  await writeFile(
+    path.join(root, "src/pages/status/StatusPage.tsx"),
+    [
+      "export async function loadStatus() {",
+      "  const response = await fetch('/api/status');",
+      "  return response.json();",
+      "}",
+      "export function StatusPage() {",
+      "  return <button data-testid=\"status-load\">Load status</button>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: refresh workspace status"]);
+
+  const nestedCopies = [
+    { directory: path.join(root, ".worktrees/stale-copy"), gitFile: true },
+    { directory: path.join(root, "scratch-checkout"), gitFile: false },
+  ];
+  for (const nested of nestedCopies) {
+    await mkdir(path.join(nested.directory, "tests/fixtures"), { recursive: true });
+    if (nested.gitFile) {
+      await writeFile(path.join(nested.directory, ".git"), "gitdir: /tmp/unrelated-worktree\n");
+    } else {
+      await mkdir(path.join(nested.directory, ".git"), { recursive: true });
+    }
+    await writeFile(
+      path.join(nested.directory, "tests/status.test.ts"),
+      "test('stale status', () => expect(true).toBe(true));\n",
+    );
+    await writeFile(path.join(nested.directory, "tests/fixtures/status.json"), '{"status":"stale"}\n');
+  }
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const qa = await generateQaDraft(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const discoveredPaths = [
+    ...plan.flows.flatMap((flow) => [
+      ...flow.files,
+      ...flow.fixtureReadiness.mockSignals,
+      ...(flow.fixtureReadiness.mockInsights ?? []).map((insight) => insight.file),
+    ]),
+    ...qa.flows.flatMap((flow) => flow.existingEvidencePaths),
+    ...qa.missingEvidence.map((item) => item.detail),
+    ...qa.prChecklist,
+  ];
+
+  assert.equal(plan.testSuite.hasTestSuite, false);
+  assert.equal(discoveredPaths.some((value) => /(?:^|\/)(?:\.worktrees|scratch-checkout)\//.test(value)), false);
 });
 
 test("analyzeFixtureSource extracts exports, handled routes, and sample keys", async () => {
@@ -6307,6 +6499,8 @@ test("qa command emits a PR comment draft without requiring a manifest", async (
   assert.equal(agentSummary.route.basis, "optional-automation");
   assert.match(agentSummary.route.status, /^draft-/);
   assert.equal(agentSummary.scenarioCoverage.automationApplicable, true);
+  assert.deepEqual(agentSummary.evidenceSummary, qa.evidenceSummary);
+  assert.equal(agentSummary.evidenceSummary.totalTraces, agentSummary.traceCount);
   assert.equal(Array.isArray(agentSummary.requiredEvidence), true);
   assert.equal(Array.isArray(agentSummary.prChecklist), true);
   assert.equal(agentSummary.firstDraftCommand, undefined);
@@ -6757,8 +6951,310 @@ test("diff-added selectors rank first and name the changed behavior", async () =
 
   const qa = await generateQaDraft(root, { base: "main", head: "HEAD", runner: "playwright" });
   const qaMarkdown = formatMarkdownQaDraft(qa);
+  const agentOutput = formatAgentQaDraft(qa);
+  const agent = JSON.parse(agentOutput);
+  const agentPinFlow = agent.flows.find((item) => /pin/i.test(item.title));
   assert.match(qaMarkdown, /Behavior lifecycle: action: Pin notes to the top\./);
   assert.match(qaMarkdown, /Expected proof: Verify visible text "📌" appears\./);
+  assert.ok(agent.compaction, "expected the 4KB handoff path to be exercised");
+  assert.ok(agentPinFlow);
+  assert.match(agentPinFlow.focus.action, /pin notes to the top/i);
+  assert.match(agentPinFlow.focus.assertion, /visible text "📌" appears/i);
+  assert.ok(Buffer.byteLength(agentOutput) <= 4 * 1024);
+
+  const unmatchedQa = structuredClone(qa);
+  const unmatchedFlow = unmatchedQa.flows.find((item) => /pin/i.test(item.title));
+  assert.ok(unmatchedFlow);
+  unmatchedFlow.title = "Archive workspace";
+  unmatchedFlow.userJourney = {
+    ...unmatchedFlow.userJourney,
+    trigger: "Archive workspace.",
+    successSignal: "workspace archive completes",
+  };
+  const unmatchedAgent = JSON.parse(formatAgentQaDraft(unmatchedQa));
+  const unmatchedAgentFlow = unmatchedAgent.flows.find((item) => item.title === "Archive workspace");
+  assert.equal(unmatchedAgentFlow?.focus, undefined);
+
+  const partialQa = structuredClone(qa);
+  const partialFlow = partialQa.flows.find((item) => /pin/i.test(item.title));
+  assert.ok(partialFlow);
+  partialFlow.scenarioAutomation = partialFlow.scenarioAutomation.map((receipt) => ({
+    ...receipt,
+    status: "partial",
+  }));
+  const partialAgent = JSON.parse(formatAgentQaDraft(partialQa));
+  assert.equal(partialAgent.flows.find((item) => /pin/i.test(item.title))?.focus, undefined);
+
+  const genericQa = structuredClone(qa);
+  const genericFlow = genericQa.flows.find((item) => /pin/i.test(item.title));
+  assert.ok(genericFlow);
+  const genericAssertion = "Verify the externally observable result matches the commit intent.";
+  genericFlow.userJourney.successSignal = "the externally observable result matches the commit intent";
+  genericFlow.draftSteps = genericFlow.draftSteps.map((step) =>
+    /^(?:verify|assert|expect|confirm|check)\b/i.test(step) ? genericAssertion : step
+  );
+  const scenarioIds = new Set(genericFlow.scenarioAutomation.map((receipt) => receipt.scenarioId));
+  for (const intent of genericQa.changeAnalysis.intents) {
+    for (const scenario of intent.scenarios) {
+      if (scenarioIds.has(scenario.id)) {
+        scenario.assertions = [genericAssertion];
+      }
+    }
+  }
+  const genericAgent = JSON.parse(formatAgentQaDraft(genericQa));
+  assert.equal(genericAgent.flows.find((item) => /pin/i.test(item.title))?.focus, undefined);
+});
+
+test("interactive selectors use rendered labels without leaking nested attributes", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/workspaces"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    "export default function WorkspacesPage() { return <main><h1>Workspaces</h1></main>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/workspace-actions"]);
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    [
+      "export default function WorkspacesPage({ isReady, onExplore }) {",
+      "  return <main>",
+      "    <h1>Workspaces</h1>",
+      "    <ActionButton onClick={onExplore}>",
+      "      <span>Browse offers</span>",
+      "      <Icon aria-hidden=\"true\" size={16} />",
+      "    </ActionButton>",
+      "    <button>{isReady ? \"Continue\" : \"Wait\"}</button>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: add workspace actions"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const selectors = plan.flows.flatMap((flow) => flow.selectors);
+  const buttonLabels = selectors
+    .filter((selector) => selector.kind === "role-button")
+    .map((selector) => selector.value);
+
+  assert.ok(buttonLabels.includes("Browse offers"), JSON.stringify(buttonLabels));
+  assert.ok(buttonLabels.includes("Continue"), JSON.stringify(buttonLabels));
+  assert.ok(buttonLabels.includes("Wait"), JSON.stringify(buttonLabels));
+  assert.equal(buttonLabels.includes("true"), false, JSON.stringify(buttonLabels));
+});
+
+test("a single diff-added action grounds the primary scenario without inventing an outcome", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/workspaces"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    "export default function WorkspacesPage() { return <main><h1>Workspaces</h1></main>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/workspace-promotion"]);
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    [
+      "export default function WorkspacesPage({ variation, navigate }) {",
+      "  const isPromotionVariant = variation === \"B\";",
+      "  const title = isPromotionVariant ? \"Try a workspace plan\" : \"Workspaces\";",
+      "  function handleExplore() { navigate(\"/offers\"); }",
+      "  return <main>",
+      "    <h1>{title}</h1>",
+      "    {isPromotionVariant ? <section>",
+      "      <ActionButton onClick={handleExplore}>",
+      "        <span>Browse offers</span>",
+      "        <Icon aria-hidden=\"true\" size={16} />",
+      "      </ActionButton>",
+      "    </section> : null}",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: add workspace promotion banner"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    runner: "playwright",
+    output: "tests/e2e",
+  });
+  const promotionDraft = draft.files.find((file) => /workspace promotion/i.test(file.flowTitle));
+  assert.ok(promotionDraft, JSON.stringify(draft.files));
+  const spec = await readFile(path.join(root, promotionDraft.path), "utf8");
+  const selectorValues = draft.plan.flows.flatMap((flow) => flow.selectors.map((selector) => selector.value));
+  assert.ok(selectorValues.includes("Try a workspace plan"), JSON.stringify(selectorValues));
+  assert.equal(selectorValues.includes("/offers"), false, JSON.stringify(selectorValues));
+  assert.equal(selectorValues.includes("true"), false, JSON.stringify(selectorValues));
+  assert.match(spec, /page\.getByRole\("button", \{ name: "Browse offers" \}\)\.click\(\)/);
+  assert.doesNotMatch(spec, /expect\(page\.getByText\("Browse offers"\)\)\.toBeVisible\(\)/);
+  assert.doesNotMatch(spec, /page\.getByRole\("button", \{ name: "true" \}\)/);
+  assert.doesNotMatch(spec, /visible-text: (?:\/offers|true) /);
+
+  const primaryScenario = promotionDraft.qaScenarios?.find((scenario) => scenario.kind === "primary");
+  assert.match(primaryScenario?.steps[0] ?? "", /Browse Offers/);
+  assert.match(primaryScenario?.steps[0] ?? "", /workspace promotion banner/i);
+  const primaryReceipt = promotionDraft.scenarioAutomation?.find((receipt) => receipt.kind === "primary");
+  assert.equal(primaryReceipt?.mappedSteps, 1);
+  assert.equal(primaryReceipt?.mappedAssertions, 0);
+  assert.equal(primaryReceipt?.status, "partial");
+});
+
+test("rendered Vue computed copy stays visible evidence without leaking script literals", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "src/pages"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { vue: "^3.5.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "src/pages/workspaces.vue"),
+    "<template><main><h1>Workspaces</h1></main></template>\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/workspace-readiness"]);
+  await writeFile(
+    path.join(root, "src/pages/workspaces.vue"),
+    [
+      "<script setup lang=\"ts\">",
+      "import { computed, ref } from \"vue\";",
+      "const isReady = ref(false);",
+      "const statusCopy = computed(() => isReady.value ? \"Workspace ready\" : \"Preparing workspace\");",
+      "const openWorkspace = () => { window.location.href = \"/workspace\"; };",
+      "const internalConfig = { enabled: true };",
+      "</script>",
+      "<template>",
+      "  <main>",
+      "    <h1>Workspaces</h1>",
+      "    <p>{{ statusCopy }}</p>",
+      "    <button @click=\"openWorkspace\">Open workspace</button>",
+      "  </main>",
+      "</template>",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: show workspace readiness"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: "HEAD", runner: "playwright" });
+  const selectorValues = plan.flows.flatMap((flow) => flow.selectors.map((selector) => selector.value));
+
+  assert.ok(selectorValues.includes("Workspace ready"), JSON.stringify(selectorValues));
+  assert.ok(selectorValues.includes("Preparing workspace"), JSON.stringify(selectorValues));
+  assert.equal(selectorValues.includes("/workspace"), false, JSON.stringify(selectorValues));
+  assert.equal(selectorValues.includes("true"), false, JSON.stringify(selectorValues));
+});
+
+test("multiple diff-added actions remain ungrounded when the primary scenario is ambiguous", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/workspaces"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    "export default function WorkspacesPage() { return <main><h1>Workspaces</h1></main>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/workspace-choices"]);
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    [
+      "export default function WorkspacesPage({ navigate }) {",
+      "  function handleBrowse() { navigate(\"/offers\"); }",
+      "  function handleCompare() { navigate(\"/plans\"); }",
+      "  return <main>",
+      "    <h1>Workspaces</h1>",
+      "    <section>",
+      "      <h2>Choose a workspace path</h2>",
+      "      <button onClick={handleBrowse}>Browse offers</button>",
+      "      <button onClick={handleCompare}>Compare plans</button>",
+      "    </section>",
+      "  </main>;",
+      "}",
+    ].join("\n"),
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: add workspace choice banner"]);
+
+  const draft = await generateE2eDraft(root, {
+    base: "main",
+    head: "HEAD",
+    runner: "playwright",
+    output: "tests/e2e",
+  });
+  const choiceDraft = draft.files.find((file) => /workspace choice/i.test(file.flowTitle));
+  assert.ok(choiceDraft, JSON.stringify(draft.files));
+  const spec = await readFile(path.join(root, choiceDraft.path), "utf8");
+
+  assert.doesNotMatch(spec, /getByRole\("button", \{ name: "(?:Browse offers|Compare plans)" \}\)\.click\(\)/);
+  const primaryScenario = choiceDraft.qaScenarios?.find((scenario) => scenario.kind === "primary");
+  assert.deepEqual(primaryScenario?.steps, ["Add workspace choice banner."]);
+  const primaryReceipt = choiceDraft.scenarioAutomation?.find((receipt) => receipt.kind === "primary");
+  assert.equal(primaryReceipt?.mappedSteps, 0);
+  assert.equal(primaryReceipt?.status, "not-compiled");
+});
+
+test("explicit head analysis reads selectors from the target revision instead of the checkout", async () => {
+  const root = await makeTempRepo();
+  await initGitRepo(root);
+  await mkdir(path.join(root, "app/workspaces"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ scripts: { test: "playwright test" }, dependencies: { next: "^15.0.0", "@playwright/test": "^1.56.0" } }),
+  );
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    "export default function WorkspacesPage() { return <button>Legacy action</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "base"]);
+  await git(root, ["branch", "-M", "main"]);
+
+  await git(root, ["switch", "-c", "feature/publish-workspace"]);
+  await writeFile(
+    path.join(root, "app/workspaces/page.tsx"),
+    "export default function WorkspacesPage() { return <button>Publish workspace</button>; }\n",
+  );
+  await git(root, ["add", "."]);
+  await git(root, ["commit", "-m", "feat: publish workspace"]);
+  const featureHead = (await git(root, ["rev-parse", "HEAD"])).stdout.trim();
+  await git(root, ["switch", "main"]);
+
+  const plan = await generateE2ePlan(root, { base: "main", head: featureHead, runner: "playwright" });
+  const buttonLabels = plan.flows
+    .flatMap((flow) => flow.selectors)
+    .filter((selector) => selector.kind === "role-button")
+    .map((selector) => selector.value);
+
+  assert.ok(buttonLabels.includes("Publish workspace"), JSON.stringify(buttonLabels));
+  assert.equal(buttonLabels.includes("Legacy action"), false, JSON.stringify(buttonLabels));
 });
 
 test("nested actions do not borrow unrelated creation controls as prerequisites", async () => {

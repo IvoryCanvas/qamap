@@ -24,6 +24,8 @@ const ignoredDirectories = new Set([
   ".turbo",
   ".cache",
   ".expo",
+  ".worktree",
+  ".worktrees",
   "vendor",
 ]);
 
@@ -209,6 +211,12 @@ async function collectSourceFiles(root: string): Promise<{ sourceFiles: string[]
     try {
       entries = await fs.readdir(path.join(root, relativeDir), { withFileTypes: true });
     } catch {
+      continue;
+    }
+    if (
+      relativeDir &&
+      entries.some((entry) => entry.name === ".git" && (entry.isFile() || entry.isDirectory()))
+    ) {
       continue;
     }
     for (const entry of entries) {

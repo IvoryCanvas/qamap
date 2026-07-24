@@ -10,6 +10,7 @@ import { defaultDomainManifestPath, loadDomainManifest, matchDomains } from "./d
 import { analyzeFixtureSource, insightCoversEndpoint } from "./fixture-insight.js";
 import type { FixtureFileInsight } from "./fixture-insight.js";
 import { collectProjectFiles } from "./fs.js";
+import { readFileAtRef } from "./git-context.js";
 import { buildReverseImportIndex, expandChangedFilesWithImporters, findImportingSurfaces } from "./import-graph.js";
 import type { ImportImpact } from "./import-graph.js";
 import { loadCoreFlowManifest, matchCoreFlows } from "./flows.js";
@@ -507,6 +508,11 @@ interface PackageJson {
   workspaces?: string[] | { packages?: string[] };
 }
 
+interface AnalysisRevision {
+  head: string;
+  includeWorkingTree: boolean;
+}
+
 const maxFilesPerFlow = 8;
 const workspacePackageSearchLimit = 200;
 const workspacePackageIgnoredDirectories = new Set([
@@ -521,6 +527,8 @@ const workspacePackageIgnoredDirectories = new Set([
   ".nuxt",
   ".turbo",
   ".cache",
+  ".worktree",
+  ".worktrees",
   "vendor",
 ]);
 
@@ -569,6 +577,10 @@ export async function generateE2ePlan(rootInput: string, options: E2ePlanOptions
     testSuiteInventory,
     domainLanguage,
     addedDiffText,
+    {
+      head: testPlan.head,
+      includeWorkingTree: testPlan.includeWorkingTree,
+    },
     changeAnalysis,
   );
   refineChangeIntentAssertions(changeAnalysis, flows);
@@ -675,7 +687,11 @@ function refineChangeIntentAssertions(changeAnalysis: ChangeIntentAnalysis, flow
     }
   }
   for (const flow of flows) {
-    if (!flow.intentId || !/^visible text ".+" appears$/u.test(flow.languageBrief.successSignal)) {
+    if (!flow.intentId) {
+      continue;
+    }
+    flow.steps = flow.steps.filter((step) => !isUncompiledPersistenceAssertion(flow, step));
+    if (!/^visible text ".+" appears$/u.test(flow.languageBrief.successSignal)) {
       continue;
     }
     const intent = changeAnalysis.intents.find((candidate) => candidate.id === flow.intentId);
@@ -4808,6 +4824,12 @@ async function discoverWorkspacePackageDirectories(root: string): Promise<string
     }
 
     entries.sort((left, right) => left.name.localeCompare(right.name));
+    if (
+      directory !== root &&
+      entries.some((entry) => entry.name === ".git" && (entry.isFile() || entry.isDirectory()))
+    ) {
+      return;
+    }
     if (directory !== root && entries.some((entry) => entry.isFile() && entry.name === "package.json")) {
       directories.push(toPosixPath(path.relative(root, directory)));
       if (directories.length >= workspacePackageSearchLimit) {
@@ -4917,8 +4939,24 @@ type DraftE2eFlow = E2eFlow & {
   coreFlow?: MatchedCoreFlow;
   manifestMatch?: VerificationManifestMatch;
   manifestCheckMatches?: VerificationManifestMatch[];
+  persistenceProbe?: PlaywrightPersistenceProbe;
+  conditionalStateProbe?: PlaywrightConditionalStateProbe;
 };
 type AnalyzedChangeIntent = ChangeIntentAnalysis["intents"][number];
+
+interface PlaywrightPersistenceProbe {
+  storage: "localStorage" | "sessionStorage";
+  key: string;
+  assertions: string[];
+  inputSelector: E2eSelector;
+  actionSelector: E2eSelector;
+  sampleValue: string;
+}
+
+interface PlaywrightConditionalStateProbe {
+  actionSelector: E2eSelector;
+  outcomeSelector: E2eSelector;
+}
 
 interface IntentFlowScope {
   label?: string;
@@ -4935,14 +4973,15 @@ async function buildFlows(
   testSuiteInventory: TestSuiteInventory,
   domainLanguage: DomainLanguageSummary,
   addedDiffText: Record<string, string> = {},
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
   changeAnalysis?: ChangeIntentAnalysis,
 ): Promise<E2eFlow[]> {
   const files = changedFiles.map((file) => file.path);
   const importImpacts = await collectImportImpacts(root, files);
-  const fixtureContext = await collectFixtureReadinessContext(root, files);
+  const fixtureContext = await collectFixtureReadinessContext(root, files, analysisRevision);
   const flowResults = await Promise.all(
     buildFlowCandidates(files, runner, projectType, domainLanguage, importImpacts, changeAnalysis, addedDiffText).map((candidate) =>
-      buildFlow(root, runner, candidate, testSuiteInventory, fixtureContext, addedDiffText, files),
+      buildFlow(root, runner, candidate, testSuiteInventory, fixtureContext, addedDiffText, files, analysisRevision),
     ),
   );
   const flows = flowResults.filter((flow): flow is E2eFlow => Boolean(flow));
@@ -5801,6 +5840,7 @@ async function buildFlow(
   fixtureContext: FixtureReadinessContext,
   addedDiffText: Record<string, string> = {},
   changedFiles: string[] = [],
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<E2eFlow | undefined> {
   const files = uniqueStrings(candidate.files).slice(0, 20);
   if (files.length === 0) {
@@ -5810,23 +5850,28 @@ async function buildFlow(
   const coverage = candidate.coverage ?? buildCoverageTargets(candidate.kind, files, runner);
   const setupHints = analysisRuleFocused
     ? []
-    : await inferFlowSetupHints(root, files, candidate.kind, addedDiffText);
+    : await inferFlowSetupHints(root, files, candidate.kind, addedDiffText, analysisRevision);
   const interactionEvidenceApplies = !analysisRuleFocused && !isVerificationOnlyKind(candidate.kind);
   const selectors = interactionEvidenceApplies
-    ? await inferFlowSelectors(root, files, runner, addedDiffText)
+    ? await inferFlowSelectors(root, files, runner, addedDiffText, analysisRevision)
     : [];
+  const groundedScenario = groundSingleDiffActionInPrimaryScenario(
+    candidate.steps,
+    candidate.qaScenarios,
+    selectors,
+  );
   const flow: Omit<E2eFlow, "languageBrief"> = {
     kind: candidate.kind,
     title: candidate.title,
     reason: candidate.reason,
     files,
-    steps: refineStepsForInferredSelectors(candidate.steps, selectors),
+    steps: refineStepsForInferredSelectors(groundedScenario.steps, selectors),
     coverage,
     coverageEvidence: evaluateFlowCoverageEvidence(
       { title: candidate.title, files, coverage, changedFiles },
       testSuiteInventory,
     ),
-    entrypoints: interactionEvidenceApplies ? await inferFlowEntrypoints(root, files, runner) : [],
+    entrypoints: interactionEvidenceApplies ? await inferFlowEntrypoints(root, files, runner, analysisRevision) : [],
     setupHints,
     fixtureReadiness: await inferFlowFixtureReadiness(
       root,
@@ -5836,14 +5881,17 @@ async function buildFlow(
       fixtureContext,
       addedDiffText,
       analysisRuleFocused,
+      analysisRevision,
     ),
     selectors,
-    missingTestability: interactionEvidenceApplies ? await findFlowTestabilityGaps(root, files, runner, selectors) : [],
+    missingTestability: interactionEvidenceApplies
+      ? await findFlowTestabilityGaps(root, files, runner, selectors, analysisRevision)
+      : [],
     intentId: candidate.intentId,
     intentConfidence: candidate.intentConfidence,
     intentEvidence: candidate.intentEvidence,
     lifecycle: candidate.lifecycle,
-    qaScenarios: candidate.qaScenarios,
+    qaScenarios: groundedScenario.qaScenarios,
   };
   return {
     ...flow,
@@ -5853,6 +5901,51 @@ async function buildFlow(
 
 function isVerificationOnlyKind(kind: E2eFlowKind): boolean {
   return kind === "config" || kind === "test-evidence" || kind === "documentation" || kind === "generated-artifact";
+}
+
+function groundSingleDiffActionInPrimaryScenario(
+  steps: string[],
+  scenarios: IntentQaScenario[] | undefined,
+  selectors: E2eSelector[],
+): { steps: string[]; qaScenarios: IntentQaScenario[] | undefined } {
+  if (!scenarios) {
+    return { steps, qaScenarios: scenarios };
+  }
+  const primary = scenarios.find((scenario) => scenario.kind === "primary");
+  if (!primary || primary.steps.length !== 1) {
+    return { steps, qaScenarios: scenarios };
+  }
+
+  const actionSelectors = selectors.filter(
+    (selector) =>
+      Boolean(selector.addedInDiff) &&
+      !isInputSelector(selector) &&
+      selectorCanDriveInteraction(selector),
+  );
+  if (actionSelectors.length !== 1) {
+    return { steps, qaScenarios: scenarios };
+  }
+
+  const originalStep = primary.steps[0];
+  const actionSelector = actionSelectors[0];
+  if (
+    isAssertionStep(originalStep) ||
+    isInputStep(originalStep) ||
+    isEntrypointPreparationStep(originalStep) ||
+    selectorMatchesStep(actionSelector, originalStep)
+  ) {
+    return { steps, qaScenarios: scenarios };
+  }
+
+  const groundedStep = `${actionVerbForSelector(actionSelector)} using ${selectorStepLabel(actionSelector)} to exercise ${lowercaseFirst(stripTerminalPunctuation(originalStep))}.`;
+  return {
+    steps: steps.map((step) => step === originalStep ? groundedStep : step),
+    qaScenarios: scenarios.map((scenario) =>
+      scenario.id === primary.id
+        ? { ...scenario, steps: scenario.steps.map((step) => step === originalStep ? groundedStep : step) }
+        : scenario
+    ),
+  };
 }
 
 function preferDiffAdded(
@@ -6039,11 +6132,16 @@ function actionVerbForSelector(selector: E2eSelector): string {
   return "Activate";
 }
 
-async function inferFlowEntrypoints(root: string, files: string[], runner: E2eRunnerName): Promise<E2eEntrypoint[]> {
+async function inferFlowEntrypoints(
+  root: string,
+  files: string[],
+  runner: E2eRunnerName,
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
+): Promise<E2eEntrypoint[]> {
   const entrypoints: E2eEntrypoint[] = [];
   for (const file of files.slice(0, 10)) {
     entrypoints.push(...entrypointsFromPath(file, runner));
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (text) {
       entrypoints.push(...entrypointsFromText(file, text, runner));
     }
@@ -6056,6 +6154,7 @@ async function inferFlowSetupHints(
   files: string[],
   kind: E2eFlowKind,
   addedDiffText: Record<string, string> = {},
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<E2eSetupHint[]> {
   if (
     kind === "artifact" ||
@@ -6074,7 +6173,7 @@ async function inferFlowSetupHints(
   });
   const fileTexts: Array<{ file: string; text: string }> = [];
   for (const file of setupEvidenceFiles.slice(0, 12)) {
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (text) {
       fileTexts.push({ file, text });
     }
@@ -6216,7 +6315,11 @@ interface FixtureReadinessContext {
 
 const maxAnalyzedMockFiles = 24;
 
-async function collectFixtureReadinessContext(root: string, changedFiles: string[]): Promise<FixtureReadinessContext> {
+async function collectFixtureReadinessContext(
+  root: string,
+  changedFiles: string[],
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
+): Promise<FixtureReadinessContext> {
   const projectFiles = await collectProjectFiles(root, 12000);
   const changedMockFiles = changedFiles.filter(isMockOrFixtureFile).slice(0, maxFilesPerFlow);
   const projectMockEntries = projectFiles.filter((file) => isMockOrFixtureFile(file.path));
@@ -6227,10 +6330,9 @@ async function collectFixtureReadinessContext(root: string, changedFiles: string
   const walkTexts = new Map(projectFiles.map((file) => [file.path, file.text]));
   const mockFileInsights = new Map<string, FixtureFileInsight>();
   for (const file of changedMockFiles) {
-    let text = walkTexts.get(file);
-    if (text === undefined && fixtureEvidenceSourceExtensions.has(path.extname(file).toLowerCase())) {
-      text = await readTextIfExists(path.join(root, file));
-    }
+    const text = fixtureEvidenceSourceExtensions.has(path.extname(file).toLowerCase())
+      ? await readAnalyzedText(root, file, analysisRevision)
+      : walkTexts.get(file);
     if (text !== undefined) {
       mockFileInsights.set(file, analyzeFixtureSource(file, text));
     }
@@ -6260,6 +6362,7 @@ async function inferFlowFixtureReadiness(
   context: FixtureReadinessContext,
   addedDiffText: Record<string, string> = {},
   analysisRuleFocused = false,
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<E2eFixtureReadiness> {
   if (analysisRuleFocused) {
     return {
@@ -6320,7 +6423,7 @@ async function inferFlowFixtureReadiness(
     };
   }
 
-  const apiSignals = await findApiDependencySignals(root, files, kind, setupHints);
+  const apiSignals = await findApiDependencySignals(root, files, kind, setupHints, analysisRevision);
   const changedApiSignals = files.filter((file) => {
     const changedText = addedDiffText[file] ?? "";
     return isApiDependencyPath(file) || (changedText.length > 0 && hasApiDependencyText(changedText));
@@ -6333,7 +6436,7 @@ async function inferFlowFixtureReadiness(
       ...files,
       ...apiSignals,
       ...relatedChangedBackendFiles,
-    ]))),
+    ]), analysisRevision)),
     ...relatedChangedBackendFiles.flatMap(apiEndpointFromBackendFile),
   ]).slice(0, maxFilesPerFlow);
   const requiresMock = apiSignals.length > 0 || setupHints.some((hint) => hint.kind === "network" || hint.kind === "payment");
@@ -6510,6 +6613,7 @@ async function findApiDependencySignals(
   files: string[],
   kind: E2eFlowKind,
   setupHints: E2eSetupHint[],
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<string[]> {
   const signals = new Set<string>();
   if (kind === "api") {
@@ -6529,7 +6633,7 @@ async function findApiDependencySignals(
       signals.add(file);
       continue;
     }
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (text && hasApiDependencyText(text)) {
       signals.add(file);
     }
@@ -6547,10 +6651,14 @@ function hasApiDependencyText(text: string): boolean {
     /\b(?:api|http|network)(?:Request|Response)\b|\b(?:request|response)\.(?:headers|json|ok|status)\b/.test(text);
 }
 
-async function findApiEndpointHints(root: string, files: string[]): Promise<string[]> {
+async function findApiEndpointHints(
+  root: string,
+  files: string[],
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
+): Promise<string[]> {
   const endpoints: string[] = [];
   for (const file of files.slice(0, 12)) {
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (text) {
       endpoints.push(...extractApiEndpointHints(text));
     }
@@ -6674,7 +6782,7 @@ const mockEvidenceNameTokens = new Set([
 ]);
 
 function isFixtureEvidenceIgnoredPath(file: string): boolean {
-  return /(?:^|\/)(?:node_modules|vendor|vendors|Pods|build|dist|coverage|\.next|\.nuxt|\.expo|\.turbo|\.yarn\/cache)\//i.test(file);
+  return /(?:^|\/)(?:node_modules|vendor|vendors|Pods|build|dist|coverage|\.next|\.nuxt|\.expo|\.turbo|\.worktrees?|\.yarn\/cache)\//i.test(file);
 }
 
 const fixtureEvidenceSourceExtensions = new Set([
@@ -6781,13 +6889,14 @@ async function inferFlowSelectors(
   files: string[],
   runner: E2eRunnerName,
   addedDiffText: Record<string, string> = {},
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<E2eSelector[]> {
   const selectors: E2eSelector[] = [];
   for (const file of files.slice(0, 8)) {
     if (!isUiImplementationFile(file)) {
       continue;
     }
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (!text) {
       continue;
     }
@@ -7133,6 +7242,7 @@ async function findFlowTestabilityGaps(
   files: string[],
   runner: E2eRunnerName,
   selectors: E2eSelector[] = [],
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
 ): Promise<string[]> {
   const gaps: string[] = [];
   const selectorFiles = new Set(
@@ -7142,7 +7252,7 @@ async function findFlowTestabilityGaps(
     if (!isUiImplementationFile(file)) {
       continue;
     }
-    const text = await readTextIfExists(path.join(root, file));
+    const text = await readAnalyzedText(root, file, analysisRevision);
     if (!text) {
       continue;
     }
@@ -7766,21 +7876,45 @@ async function buildDraftFlows(
       .map((scenario) => buildDomainScenarioDraftFlow(plan, scenario, baseFlows, addedDiffText)),
   );
 
+  let draftFlows: DraftE2eFlow[];
   if (manifestFlows.length === 0 && scenarioFlows.length === 0) {
-    return baseFlows.map((flow) => ({
+    draftFlows = baseFlows.map((flow) => ({
       ...flow,
       draftSource: flow.intentId ? "change-intent" : "heuristic",
     }));
+  } else {
+    const combined = prioritizeImportantBaseDraftFlow(dedupeDraftFlowsByOutputPath(
+      dedupeFlows([...manifestFlows, ...scenarioFlows, ...baseFlows]),
+      plan.recommendedRunner.name,
+    ), baseFlows).slice(0, 4);
+    draftFlows = combined.map((flow) => ({
+      ...flow,
+      draftSource: draftFlowSource(flow),
+    }));
   }
 
-  const combined = prioritizeImportantBaseDraftFlow(dedupeDraftFlowsByOutputPath(
-    dedupeFlows([...manifestFlows, ...scenarioFlows, ...baseFlows]),
-    plan.recommendedRunner.name,
-  ), baseFlows).slice(0, 4);
-  return combined.map((flow) => ({
-    ...flow,
-    draftSource: draftFlowSource(flow),
+  if (plan.recommendedRunner.name !== "playwright") {
+    return draftFlows;
+  }
+  return Promise.all(draftFlows.map(async (flow) => {
+    const revision = analysisRevisionForPlan(plan);
+    const [persistenceProbe, conditionalStateProbe] = await Promise.all([
+      inferPlaywrightPersistenceProbe(plan.root, flow, addedDiffText, revision),
+      inferPlaywrightConditionalStateProbe(plan.root, flow, addedDiffText, revision),
+    ]);
+    return {
+      ...flow,
+      persistenceProbe,
+      conditionalStateProbe,
+    };
   }));
+}
+
+function analysisRevisionForPlan(plan: E2ePlanResult): AnalysisRevision {
+  return {
+    head: plan.head,
+    includeWorkingTree: plan.includeWorkingTree,
+  };
 }
 
 function prioritizeImportantBaseDraftFlow(flows: DraftE2eFlow[], baseFlows: E2eFlow[]): DraftE2eFlow[] {
@@ -7937,17 +8071,24 @@ async function buildManifestDomainDraftFlow(
   // provenance on the best overlapping flow without claiming every matched
   // domain file belongs to that single draft.
   const files = baseFlow.files;
+  const analysisRevision = analysisRevisionForPlan(plan);
   const flow: Omit<DraftE2eFlow, "languageBrief"> = {
     ...baseFlow,
     reason: `${match.reason} ${baseFlow.reason}`,
     files,
     entrypoints: uniqueEntrypoints([
       ...baseFlow.entrypoints,
-      ...(await inferFlowEntrypoints(plan.root, files, plan.recommendedRunner.name)),
+      ...(await inferFlowEntrypoints(plan.root, files, plan.recommendedRunner.name, analysisRevision)),
     ]),
     selectors: uniqueSelectors([
       ...baseFlow.selectors,
-      ...(await inferFlowSelectors(plan.root, files, plan.recommendedRunner.name, addedDiffText)),
+      ...(await inferFlowSelectors(
+        plan.root,
+        files,
+        plan.recommendedRunner.name,
+        addedDiffText,
+        analysisRevision,
+      )),
     ]),
     draftSource: "verification-manifest",
     manifestMatch: match,
@@ -7970,17 +8111,18 @@ async function buildManifestDraftFlow(
   const baseFlow = bestBaseFlowForManifestMatch(manifestFiles, baseFlows);
   const files = uniqueStrings(manifestFiles.length > 0 ? manifestFiles : (baseFlow?.files ?? [])).slice(0, 20);
   const runner = plan.recommendedRunner.name;
+  const analysisRevision = analysisRevisionForPlan(plan);
   const manifestSteps = manifestStepsForMatch(match, relatedChecks);
   const baseCoverage = baseFlow?.coverage ?? buildCoverageTargets("domain", files, runner);
   const coverage = uniqueCoverageTargets([...manifestCoverageTargets(match, relatedChecks), ...baseCoverage]).slice(0, 7);
   const entrypoints = uniqueEntrypoints([
     ...manifestEntrypoints(plan, match, runner),
     ...filterEntrypointsForFiles(baseFlows.flatMap((flow) => flow.entrypoints), files),
-    ...(await inferFlowEntrypoints(plan.root, files, runner)),
+    ...(await inferFlowEntrypoints(plan.root, files, runner, analysisRevision)),
   ]);
   const selectors = uniqueSelectors([
     ...filterSelectorsForFiles(baseFlows.flatMap((flow) => flow.selectors), files),
-    ...(await inferFlowSelectors(plan.root, files, runner, addedDiffText)),
+    ...(await inferFlowSelectors(plan.root, files, runner, addedDiffText, analysisRevision)),
   ]);
   const refinedSteps = refineManifestStepsForInferredSelectors(
     refineStepsForInferredSelectors(manifestSteps.length > 0 ? manifestSteps : (baseFlow?.steps ?? []), selectors),
@@ -7989,7 +8131,7 @@ async function buildManifestDraftFlow(
   const executableSteps = refinedSteps.filter((step) => !isCoverageOnlyScenarioStep(step));
   const setupHints = uniqueSetupHints([
     ...filterSetupHintsForFiles(baseFlows.flatMap((flow) => flow.setupHints), files),
-    ...(await inferFlowSetupHints(plan.root, files, "domain", addedDiffText)),
+    ...(await inferFlowSetupHints(plan.root, files, "domain", addedDiffText, analysisRevision)),
   ]);
   const flow: Omit<DraftE2eFlow, "languageBrief"> = {
     kind: baseFlow?.kind ?? "domain",
@@ -8003,7 +8145,7 @@ async function buildManifestDraftFlow(
     setupHints,
     fixtureReadiness: scenarioFixtureReadiness(baseFlow, setupHints),
     selectors,
-    missingTestability: await findFlowTestabilityGaps(plan.root, files, runner, selectors),
+    missingTestability: await findFlowTestabilityGaps(plan.root, files, runner, selectors, analysisRevision),
     draftSource: "verification-manifest",
     manifestMatch: match,
     manifestCheckMatches: relatedChecks,
@@ -8139,22 +8281,23 @@ async function buildDomainScenarioDraftFlow(
   const matchedIntent = matchingChangeIntentForFiles(plan.changeAnalysis, files);
   const coverage = baseFlow?.coverage ?? buildCoverageTargets("domain", files, plan.recommendedRunner.name);
   const runner = plan.recommendedRunner.name;
+  const analysisRevision = analysisRevisionForPlan(plan);
   const entrypoints = uniqueEntrypoints([
     ...domainScenarioEntrypoints(plan, scenario, runner),
     ...coreFlowEntrypoints(plan, coreFlow, runner),
     ...filterEntrypointsForFiles(baseFlows.flatMap((flow) => flow.entrypoints), files),
-    ...(await inferFlowEntrypoints(plan.root, files, runner)),
+    ...(await inferFlowEntrypoints(plan.root, files, runner, analysisRevision)),
   ]);
   const selectors = uniqueSelectors([
     ...filterSelectorsForFiles(baseFlows.flatMap((flow) => flow.selectors), files),
-    ...(await inferFlowSelectors(plan.root, files, runner, addedDiffText)),
+    ...(await inferFlowSelectors(plan.root, files, runner, addedDiffText, analysisRevision)),
   ]);
   const refinedSteps = refineStepsForInferredSelectors(steps, selectors);
   const executableSteps = refinedSteps.filter((step) => !isCoverageOnlyScenarioStep(step));
   const setupHints = uniqueSetupHints([
     ...filterSetupHintsForFiles(baseFlows.flatMap((flow) => flow.setupHints), files),
     ...(shouldInferDomainScenarioSetupHints(baseFlow)
-      ? await inferFlowSetupHints(plan.root, files, "domain", addedDiffText)
+      ? await inferFlowSetupHints(plan.root, files, "domain", addedDiffText, analysisRevision)
       : []),
   ]);
   const draftScenario = {
@@ -8175,7 +8318,7 @@ async function buildDomainScenarioDraftFlow(
     setupHints,
     fixtureReadiness: scenarioFixtureReadiness(baseFlow, setupHints),
     selectors,
-    missingTestability: await findFlowTestabilityGaps(plan.root, files, runner, selectors),
+    missingTestability: await findFlowTestabilityGaps(plan.root, files, runner, selectors, analysisRevision),
     intentId: baseFlow?.intentId ?? matchedIntent?.id,
     intentConfidence: baseFlow?.intentConfidence ?? matchedIntent?.confidence,
     intentEvidence: baseFlow?.intentEvidence ?? matchedIntent?.evidence,
@@ -8424,6 +8567,489 @@ function draftFlowSource(flow: E2eFlow): DraftFlowSource {
 
 function domainScenarioForFlow(flow: E2eFlow): DomainScenarioSuggestion | undefined {
   return (flow as DraftE2eFlow).domainScenario;
+}
+
+interface SourceFileText {
+  file: string;
+  text: string;
+}
+
+interface WebStorageWrite {
+  storage: "localStorage" | "sessionStorage";
+  key: string;
+  valueIdentifier: string;
+  file: string;
+  offset: number;
+}
+
+async function inferPlaywrightPersistenceProbe(
+  root: string,
+  flow: DraftE2eFlow,
+  addedDiffText: Record<string, string>,
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
+): Promise<PlaywrightPersistenceProbe | undefined> {
+  if (!primaryRouteEntrypoint(flow)) {
+    return undefined;
+  }
+  const assertions = primaryPersistenceAssertions(flow);
+  if (assertions.length === 0) {
+    return undefined;
+  }
+
+  const sourceFiles = (
+    await Promise.all(flow.files.slice(0, maxFilesPerFlow).map(async (file): Promise<SourceFileText | undefined> => {
+      const text = await readAnalyzedText(root, file, analysisRevision);
+      return text ? { file, text } : undefined;
+    }))
+  ).filter((source): source is SourceFileText => Boolean(source));
+
+  for (const source of sourceFiles) {
+    const changedWrites = extractWebStorageWrites(addedDiffText[source.file] ?? "", source.file);
+    if (changedWrites.length === 0) {
+      continue;
+    }
+    const sourceWrites = extractWebStorageWrites(source.text, source.file);
+    for (const write of sourceWrites) {
+      if (!changedWrites.some((candidate) => sameWebStorageWrite(candidate, write))) {
+        continue;
+      }
+      if (!hasConnectedWebStorageRead(sourceFiles, write)) {
+        continue;
+      }
+      const input = boundPersistenceInput(flow.selectors, sourceFiles, write);
+      if (!input) {
+        continue;
+      }
+      const handler = enclosingNamedHandler(source.text, write.offset);
+      if (!handler) {
+        continue;
+      }
+      const actionSelector = persistenceActionSelector(flow.selectors, source, handler);
+      if (!actionSelector) {
+        continue;
+      }
+      return {
+        storage: write.storage,
+        key: write.key,
+        assertions,
+        inputSelector: input.selector,
+        actionSelector,
+        sampleValue: persistenceSampleValue(input.type, input.selector.value),
+      };
+    }
+  }
+  return undefined;
+}
+
+function primaryPersistenceAssertions(flow: E2eFlow): string[] {
+  return flow.qaScenarios
+    ?.find((scenario) => scenario.kind === "primary")
+    ?.assertions.filter((assertion) =>
+      /\b(?:cache|persist|re-?entry|reload|resync|retain|store|survive|sync)\b/i.test(assertion)
+    ) ?? [];
+}
+
+function extractWebStorageWrites(text: string, file: string): WebStorageWrite[] {
+  const writes: WebStorageWrite[] = [];
+  const matcher =
+    /\b(?:(?:window|globalThis)\s*\.\s*)?(localStorage|sessionStorage)\s*\.\s*setItem\s*\(\s*(["'`])([^"'`]+)\2\s*,\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*){0,2})\s*\)/g;
+  for (const match of text.matchAll(matcher)) {
+    const storage = match[1] as WebStorageWrite["storage"];
+    const valueExpression = match[4];
+    const valueIdentifier = normalizePersistedValueIdentifier(valueExpression);
+    if (!valueIdentifier) {
+      continue;
+    }
+    writes.push({
+      storage,
+      key: match[3],
+      valueIdentifier,
+      file,
+      offset: match.index ?? 0,
+    });
+  }
+  return writes;
+}
+
+function normalizePersistedValueIdentifier(value: string): string | undefined {
+  const normalized = value.replace(/\.value$/i, "");
+  return /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*){0,2}$/.test(normalized)
+    ? normalized
+    : undefined;
+}
+
+function sameWebStorageWrite(left: WebStorageWrite, right: WebStorageWrite): boolean {
+  return left.storage === right.storage &&
+    left.key === right.key &&
+    left.valueIdentifier === right.valueIdentifier;
+}
+
+function hasConnectedWebStorageRead(sourceFiles: SourceFileText[], write: WebStorageWrite): boolean {
+  const readMatcher =
+    /\b(?:(?:window|globalThis)\s*\.\s*)?(localStorage|sessionStorage)\s*\.\s*getItem\s*\(\s*(["'`])([^"'`]+)\2\s*\)/g;
+  const identifierRoot = write.valueIdentifier.split(".")[0];
+  const identifierPattern = new RegExp(`\\b${escapeRegExp(identifierRoot)}\\b`);
+  for (const source of sourceFiles) {
+    for (const read of source.text.matchAll(readMatcher)) {
+      if (read[1] !== write.storage || read[3] !== write.key) {
+        continue;
+      }
+      const start = Math.max(0, (read.index ?? 0) - 240);
+      const end = Math.min(source.text.length, (read.index ?? 0) + read[0].length + 240);
+      if (identifierPattern.test(source.text.slice(start, end))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function boundPersistenceInput(
+  selectors: E2eSelector[],
+  sourceFiles: SourceFileText[],
+  write: WebStorageWrite,
+): { selector: E2eSelector; type?: string } | undefined {
+  const candidates = selectors
+    .filter((selector) => isInputSelector(selector))
+    .sort((left, right) =>
+      Number(right.file === write.file) - Number(left.file === write.file) ||
+      selectorEvidenceScore(right) - selectorEvidenceScore(left)
+    );
+  for (const selector of candidates) {
+    const source = sourceFiles.find((candidate) => candidate.file === selector.file);
+    if (!source) {
+      continue;
+    }
+    for (const element of source.text.matchAll(/<(?:input|textarea)\b[^>]*>/gi)) {
+      if (!element[0].includes(selector.value) || !elementBindsPersistedValue(element[0], write.valueIdentifier)) {
+        continue;
+      }
+      const type = element[0].match(/\btype\s*=\s*(?:"([^"]+)"|'([^']+)'|\{\s*["']([^"']+)["']\s*\})/i);
+      const inputType = (type?.[1] ?? type?.[2] ?? type?.[3])?.toLowerCase();
+      if (inputType && !playwrightFillableInputTypes.has(inputType)) {
+        continue;
+      }
+      return { selector, type: inputType };
+    }
+  }
+  return undefined;
+}
+
+const playwrightFillableInputTypes = new Set([
+  "email",
+  "number",
+  "search",
+  "tel",
+  "text",
+  "url",
+]);
+
+function elementBindsPersistedValue(element: string, valueIdentifier: string): boolean {
+  const expression = escapeRegExp(valueIdentifier);
+  return [
+    new RegExp(`\\b(?:value|defaultValue)\\s*=\\s*\\{\\s*${expression}\\s*\\}`),
+    new RegExp(`\\bv-model(?:\\.\\w+)*\\s*=\\s*["']${expression}["']`),
+    new RegExp(`\\b:value\\s*=\\s*["']${expression}["']`),
+    new RegExp(`\\bbind:value\\s*=\\s*\\{\\s*${expression}\\s*\\}`),
+  ].some((pattern) => pattern.test(element));
+}
+
+function enclosingNamedHandler(text: string, offset: number): string | undefined {
+  const prefix = text.slice(Math.max(0, offset - 2400), offset);
+  const matcher =
+    /(?:\bfunction\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{|\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{)/g;
+  let handler: string | undefined;
+  for (const match of prefix.matchAll(matcher)) {
+    handler = match[1] ?? match[2];
+  }
+  return handler;
+}
+
+function persistenceActionSelector(
+  selectors: E2eSelector[],
+  source: SourceFileText,
+  handler: string,
+): E2eSelector | undefined {
+  const handlerPattern = new RegExp(
+    `(?:onClick|@click(?:\\.\\w+)*|v-on:click(?:\\.\\w+)*|on:click)\\s*=\\s*(?:\\{\\s*)?["']?${escapeRegExp(handler)}\\b`,
+    "g",
+  );
+  const elements: string[] = [];
+  for (const match of source.text.matchAll(handlerPattern)) {
+    const element = sourceElementAroundOffset(source.text, match.index ?? 0);
+    if (element) {
+      elements.push(element);
+    }
+  }
+  return selectors
+    .filter((selector) =>
+      selector.file === source.file &&
+      !isInputSelector(selector) &&
+      selectorCanDriveInteraction(selector) &&
+      elements.some((element) => element.includes(selector.value))
+    )
+    .sort((left, right) =>
+      selectorEvidenceScore(right) - selectorEvidenceScore(left) ||
+      Number(/\b(?:save|submit|update|confirm|apply)\b/i.test(right.value)) -
+        Number(/\b(?:save|submit|update|confirm|apply)\b/i.test(left.value))
+    )[0];
+}
+
+function sourceElementAroundOffset(text: string, offset: number): string | undefined {
+  const start = text.lastIndexOf("<", offset);
+  const openingEnd = text.indexOf(">", offset);
+  if (start < 0 || openingEnd < 0) {
+    return undefined;
+  }
+  const opening = text.slice(start, openingEnd + 1);
+  const tag = opening.match(/^<([A-Za-z][\w.-]*)\b/)?.[1];
+  if (!tag || opening.endsWith("/>")) {
+    return opening;
+  }
+  const closing = new RegExp(`</${escapeRegExp(tag)}\\s*>`, "i").exec(
+    text.slice(openingEnd + 1, Math.min(text.length, openingEnd + 601)),
+  );
+  return closing
+    ? text.slice(start, openingEnd + 1 + closing.index + closing[0].length)
+    : opening;
+}
+
+function persistenceSampleValue(type: string | undefined, selector: string): string {
+  return type === "number" ? "42" : playwrightSampleInput(selector);
+}
+
+interface ConditionalStateMutation {
+  state: string;
+  handler: string;
+  offset: number;
+}
+
+interface ConditionalRenderedOutcome {
+  state: string;
+  value: string;
+}
+
+async function inferPlaywrightConditionalStateProbe(
+  root: string,
+  flow: DraftE2eFlow,
+  addedDiffText: Record<string, string>,
+  analysisRevision: AnalysisRevision = { head: "HEAD", includeWorkingTree: false },
+): Promise<PlaywrightConditionalStateProbe | undefined> {
+  if (
+    !primaryRouteEntrypoint(flow) ||
+    !flow.qaScenarios?.some((scenario) =>
+      scenario.kind === "state-transition" && /changed conditional state and fallback/i.test(scenario.title)
+    )
+  ) {
+    return undefined;
+  }
+
+  for (const file of flow.files.slice(0, maxFilesPerFlow)) {
+    if (!isUiImplementationFile(file)) {
+      continue;
+    }
+    const text = await readAnalyzedText(root, file, analysisRevision);
+    const addedText = addedDiffText[file] ?? "";
+    if (!text || !addedText) {
+      continue;
+    }
+    const mutations = extractConditionalStateMutations(text, addedText);
+    if (mutations.length === 0) {
+      continue;
+    }
+    const outcomes = extractConditionalRenderedOutcomes(text, new Set(mutations.map((mutation) => mutation.state)));
+    for (const mutation of mutations) {
+      const handlerBody = namedHandlerBodyAtOffset(text, mutation.handler, mutation.offset);
+      if (!handlerBody || handlerLeavesCurrentSurface(handlerBody)) {
+        continue;
+      }
+      const actionSelector = persistenceActionSelector(flow.selectors, { file, text }, mutation.handler);
+      if (!actionSelector) {
+        continue;
+      }
+      const outcomeSelector = outcomes
+        .filter((outcome) => outcome.state === mutation.state)
+        .map((outcome) => flow.selectors.find((selector) =>
+          selector.file === file &&
+          selector.kind === "visible-text" &&
+          selector.addedInDiff &&
+          selector.value === outcome.value
+        ))
+        .find((selector): selector is E2eSelector =>
+          selector !== undefined &&
+          selector.value.trim().toLowerCase() !== actionSelector.value.trim().toLowerCase()
+        );
+      if (!outcomeSelector) {
+        continue;
+      }
+      return { actionSelector, outcomeSelector };
+    }
+  }
+  return undefined;
+}
+
+function extractConditionalStateMutations(text: string, addedText: string): ConditionalStateMutation[] {
+  const mutations: ConditionalStateMutation[] = [];
+  const reactStateMatcher =
+    /\bconst\s*\[\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$]*)\s*\]\s*=\s*useState(?:<[^>\n]{1,120}>)?\s*\(\s*false\s*\)/g;
+  for (const state of text.matchAll(reactStateMatcher)) {
+    const stateName = state[1];
+    const setterName = state[2];
+    const setterMatcher = new RegExp(`\\b${escapeRegExp(setterName)}\\s*\\(\\s*true\\s*\\)`, "g");
+    if (!setterMatcher.test(addedText)) {
+      continue;
+    }
+    setterMatcher.lastIndex = 0;
+    for (const call of text.matchAll(setterMatcher)) {
+      const offset = call.index ?? 0;
+      const handler = enclosingNamedHandler(text, offset);
+      if (handler) {
+        mutations.push({ state: stateName, handler, offset });
+      }
+    }
+  }
+
+  const vueStateMatcher =
+    /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*ref(?:<[^>\n]{1,120}>)?\s*\(\s*false\s*\)/g;
+  for (const state of text.matchAll(vueStateMatcher)) {
+    const stateName = state[1];
+    const assignmentMatcher = new RegExp(`\\b${escapeRegExp(stateName)}\\.value\\s*=\\s*true\\b`, "g");
+    if (!assignmentMatcher.test(addedText)) {
+      continue;
+    }
+    assignmentMatcher.lastIndex = 0;
+    for (const assignment of text.matchAll(assignmentMatcher)) {
+      const offset = assignment.index ?? 0;
+      const handler = enclosingNamedHandler(text, offset);
+      if (handler) {
+        mutations.push({ state: stateName, handler, offset });
+      }
+    }
+  }
+  return mutations;
+}
+
+function extractConditionalRenderedOutcomes(
+  text: string,
+  stateNames: Set<string>,
+): ConditionalRenderedOutcome[] {
+  const outcomes: ConditionalRenderedOutcome[] = [];
+  for (const stateName of stateNames) {
+    const escapedState = escapeRegExp(stateName);
+    const matchers = [
+      new RegExp(
+        `\\{\\s*${escapedState}\\s*&&\\s*<([A-Za-z][\\w.-]*)\\b[^>]*>([\\s\\S]{0,400}?)<\\/\\1>\\s*\\}`,
+        "g",
+      ),
+      new RegExp(
+        `\\{\\s*${escapedState}\\s*\\?\\s*<([A-Za-z][\\w.-]*)\\b[^>]*>([\\s\\S]{0,400}?)<\\/\\1>\\s*:\\s*(?:null|false)\\s*\\}`,
+        "g",
+      ),
+      new RegExp(
+        `<([A-Za-z][\\w.-]*)\\b(?=[^>]*\\bv-if\\s*=\\s*["']${escapedState}(?:\\.value)?["'])[^>]*>([\\s\\S]{0,400}?)<\\/\\1>`,
+        "g",
+      ),
+    ];
+    for (const matcher of matchers) {
+      for (const match of text.matchAll(matcher)) {
+        const value = normalizeRenderedText(match[2]);
+        if (value && isUsefulSelector(value) && isUsefulVisibleText(value)) {
+          outcomes.push({ state: stateName, value });
+        }
+      }
+    }
+  }
+  return uniqueConditionalRenderedOutcomes(outcomes);
+}
+
+function uniqueConditionalRenderedOutcomes(outcomes: ConditionalRenderedOutcome[]): ConditionalRenderedOutcome[] {
+  const seen = new Set<string>();
+  return outcomes.filter((outcome) => {
+    const key = `${outcome.state}\u0000${outcome.value}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function namedHandlerBodyAtOffset(text: string, handler: string, offset: number): string | undefined {
+  const prefix = text.slice(0, offset);
+  const matcher = new RegExp(
+    `(?:\\bfunction\\s+${escapeRegExp(handler)}\\s*\\([^)]*\\)|\\b(?:const|let)\\s+${escapeRegExp(handler)}\\s*=\\s*(?:async\\s*)?(?:\\([^)]*\\)|[A-Za-z_$][\\w$]*)\\s*=>)\\s*\\{`,
+    "g",
+  );
+  let openingBrace = -1;
+  for (const match of prefix.matchAll(matcher)) {
+    openingBrace = (match.index ?? 0) + match[0].lastIndexOf("{");
+  }
+  if (openingBrace < 0) {
+    return undefined;
+  }
+  const closingBrace = matchingClosingBrace(text, openingBrace);
+  return closingBrace > offset
+    ? text.slice(openingBrace + 1, closingBrace)
+    : undefined;
+}
+
+function matchingClosingBrace(text: string, openingBrace: number): number {
+  let depth = 0;
+  let quote: "'" | "\"" | "`" | undefined;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (let index = openingBrace; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "/" && next === "/") {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function handlerLeavesCurrentSurface(body: string): boolean {
+  return /\b(?:router\.(?:push|replace)|navigate)\s*\(|\b(?:window\.)?location(?:\.href|\.(?:assign|replace))\s*(?:=|\()|\bwindow\.open\s*\(/i.test(
+    body,
+  );
 }
 
 function buildScenarioAutomationReceipts(
@@ -9126,7 +9752,13 @@ function maestroCommandForStep(
 
 function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText: Record<string, string> = {}): string {
   const testName = flow.title.replaceAll('"', "'");
-  const selectorQueue = [...flow.selectors];
+  const persistenceProbe = playwrightPersistenceProbeForFlow(flow);
+  const selectorQueue = persistenceProbe
+    ? [
+        persistenceProbe.actionSelector,
+        ...flow.selectors.filter((selector) => selector !== persistenceProbe.actionSelector),
+      ]
+    : [...flow.selectors];
   const scenario = domainScenarioForFlow(flow);
   const lines: string[] = [];
   lines.push(`// Generated by QAMap ${VERSION}`);
@@ -9171,6 +9803,7 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText:
   appendPlaywrightTestStep(lines, flow.languageBrief.trigger, [
     `await page.goto(${routeDraft.expression});`,
   ]);
+  appendPlaywrightPersistencePreparation(lines, persistenceProbe);
   for (const step of draftExecutableSteps(flow, "playwright")) {
     const manifestCheck = manifestCheckForDraftStep(flow, step);
     const manifestBody = manifestCheck ? playwrightActionForManifestCheck(manifestCheck, step) : undefined;
@@ -9183,6 +9816,7 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText:
         : playwrightFallbackActionForStep(step));
     appendPlaywrightTestStep(lines, step, body);
   }
+  appendPlaywrightPersistenceAssertion(lines, persistenceProbe);
   appendObservedResponseAssertion(lines, flow, addedDiffText);
   appendDomainScenarioComments(lines, flow, "  //");
   appendPlaywrightCoverageComments(lines, flow);
@@ -9218,6 +9852,65 @@ function buildPlaywrightDraft(plan: E2ePlanResult, flow: E2eFlow, addedDiffText:
   return lines.join("\n");
 }
 
+function playwrightPersistenceProbeForFlow(flow: E2eFlow): PlaywrightPersistenceProbe | undefined {
+  return (flow as DraftE2eFlow).persistenceProbe;
+}
+
+function playwrightConditionalStateProbeForFlow(flow: E2eFlow): PlaywrightConditionalStateProbe | undefined {
+  return (flow as DraftE2eFlow).conditionalStateProbe;
+}
+
+function appendPlaywrightPersistencePreparation(
+  lines: string[],
+  probe: PlaywrightPersistenceProbe | undefined,
+): void {
+  if (!probe) {
+    return;
+  }
+  lines.push("");
+  lines.push(`  const persistedField = ${playwrightLocator(probe.inputSelector)};`);
+  lines.push(`  const persistedValue = "${quoteJs(probe.sampleValue)}";`);
+  appendPlaywrightTestStep(lines, "Prepare a changed value for persistence proof", [
+    `// Repository evidence links ${probe.storage} key "${quoteJs(probe.key)}" to this field and the changed save action.`,
+    "await persistedField.fill(persistedValue);",
+  ]);
+}
+
+function appendPlaywrightPersistenceAssertion(
+  lines: string[],
+  probe: PlaywrightPersistenceProbe | undefined,
+): void {
+  if (!probe) {
+    return;
+  }
+  const [storedAssertion, restoredAssertion] = probe.assertions;
+  if (!storedAssertion) {
+    return;
+  }
+  const storageExpectation = [
+    `const storedValue = await page.evaluate(() => window.${probe.storage}.getItem("${quoteJs(probe.key)}"));`,
+    "await expect(storedValue).toBe(persistedValue);",
+  ];
+  if (!restoredAssertion) {
+    appendPlaywrightTestStep(lines, storedAssertion, [
+      `// Step intent: ${storedAssertion}`,
+      ...storageExpectation,
+      "await page.reload();",
+      "await expect(persistedField).toHaveValue(persistedValue);",
+    ]);
+    return;
+  }
+  appendPlaywrightTestStep(lines, storedAssertion, [
+    `// Step intent: ${storedAssertion}`,
+    ...storageExpectation,
+  ]);
+  appendPlaywrightTestStep(lines, restoredAssertion, [
+    `// Step intent: ${restoredAssertion}`,
+    "await page.reload();",
+    "await expect(persistedField).toHaveValue(persistedValue);",
+  ]);
+}
+
 interface PlaywrightRoutedScenarioDraft {
   scenarioId: string;
   mappedSteps: number;
@@ -9239,6 +9932,11 @@ function playwrightRoutedScenarioDrafts(flow: E2eFlow): PlaywrightRoutedScenario
   for (const scenario of flow.qaScenarios ?? []) {
     const selection = routeQaScenario(scenario);
     if (selection.decision === "review-only") {
+      continue;
+    }
+    const conditionalStateDraft = playwrightConditionalStateScenarioDraft(flow, scenario, routeDraft);
+    if (conditionalStateDraft) {
+      drafts.push(conditionalStateDraft);
       continue;
     }
     const shareDraft = playwrightShareScenarioDraft(flow, scenario, routeDraft);
@@ -9300,6 +9998,41 @@ function playwrightRoutedScenarioDrafts(flow: E2eFlow): PlaywrightRoutedScenario
     });
   }
   return drafts;
+}
+
+function playwrightConditionalStateScenarioDraft(
+  flow: E2eFlow,
+  scenario: IntentQaScenario,
+  routeDraft: PlaywrightRouteDraft,
+): PlaywrightRoutedScenarioDraft | undefined {
+  if (
+    scenario.kind !== "state-transition" ||
+    !/changed conditional state and fallback/i.test(scenario.title)
+  ) {
+    return undefined;
+  }
+  const probe = playwrightConditionalStateProbeForFlow(flow);
+  if (!probe) {
+    return undefined;
+  }
+  const testName = `${flow.title}: ${scenario.title}`.replaceAll('"', "'");
+  const actionLocator = playwrightLocator(probe.actionSelector);
+  const outcomeLocator = playwrightLocator(probe.outcomeSelector);
+  return {
+    scenarioId: scenario.id,
+    mappedSteps: scenario.steps.length,
+    mappedAssertions: scenario.assertions.length,
+    lines: [
+      `test("${testName}", async ({ page }) => {`,
+      `  await page.goto(${routeDraft.expression});`,
+      `  await expect(${outcomeLocator}).not.toBeVisible();`,
+      `  await ${actionLocator}.click();`,
+      `  await expect(${outcomeLocator}).toBeVisible();`,
+      "  await page.reload();",
+      `  await expect(${outcomeLocator}).not.toBeVisible();`,
+      "});",
+    ],
+  };
 }
 
 function preferredPublicRouteEntrypoint(flow: E2eFlow): E2eEntrypoint | undefined {
@@ -10701,14 +11434,14 @@ function takeSelectorForStep(selectors: E2eSelector[], step: string): E2eSelecto
       (selector) => isInputSelector(selector) && selectorMatchesStep(selector, step),
     );
     if (matched) {
-      return matched;
+      return consumeSelectorAliasesAfterAction(selectors, matched, step);
     }
     const fallbackInput = takePreferredSelector(
       selectors,
       (selector) => Boolean(selector.addedInDiff) && isInputSelector(selector),
     );
     if (fallbackInput) {
-      return fallbackInput;
+      return consumeSelectorAliasesAfterAction(selectors, fallbackInput, step);
     }
   }
   if (!isInteractionStep(step) && !isVerificationStep(step) && !canUsePrimarySelector(step)) {
@@ -10722,7 +11455,7 @@ function takeSelectorForStep(selectors: E2eSelector[], step: string): E2eSelecto
         selectorMatchesStep(selector, step),
     );
     if (changedAction) {
-      return changedAction;
+      return consumeSelectorAliasesAfterAction(selectors, changedAction, step);
     }
     return undefined;
   }
@@ -10738,7 +11471,7 @@ function takeSelectorForStep(selectors: E2eSelector[], step: string): E2eSelecto
       diffGateForStep(selector),
   );
   if (matched) {
-    return matched;
+    return consumeSelectorAliasesAfterAction(selectors, matched, step);
   }
   if (isAssertionStep(step)) {
     const assertionCandidates = selectors.filter(
@@ -10758,10 +11491,32 @@ function takeSelectorForStep(selectors: E2eSelector[], step: string): E2eSelecto
       (selector) => Boolean(selector.addedInDiff) && selectorCanDriveInteraction(selector),
     );
     if (fallback) {
-      return fallback;
+      return consumeSelectorAliasesAfterAction(selectors, fallback, step);
     }
   }
   return undefined;
+}
+
+function consumeSelectorAliasesAfterAction(
+  selectors: E2eSelector[],
+  selected: E2eSelector,
+  step: string,
+): E2eSelector {
+  if (isAssertionStep(step) || (!selectorCanDriveInteraction(selected) && !isInputSelector(selected))) {
+    return selected;
+  }
+  const selectedValue = selected.value.trim().toLowerCase();
+  for (let index = selectors.length - 1; index >= 0; index -= 1) {
+    const candidate = selectors[index];
+    if (
+      candidate.file === selected.file &&
+      candidate.value.trim().toLowerCase() === selectedValue &&
+      selectorCanSupportAssertion(candidate)
+    ) {
+      selectors.splice(index, 1);
+    }
+  }
+  return selected;
 }
 
 function selectorMatchesStep(selector: E2eSelector, step: string): boolean {
@@ -11314,10 +12069,20 @@ function extractRenderedStateSelectors(file: string, text: string): E2eSelector[
       }
     }
   }
-  const renderedNames = new Set(
-    [...text.matchAll(/>\s*\{\s*([A-Za-z_$][\w$]*)\s*\}\s*</g)].map((match) => match[1]),
-  );
+  const renderedNames = new Set<string>();
+  for (const segment of text.matchAll(/>([^<>]{0,500})</g)) {
+    for (const interpolation of segment[1].matchAll(
+      /\{\{\s*([A-Za-z_$][\w$]*)\s*\}\}|\{\s*([A-Za-z_$][\w$]*)\s*\}/g,
+    )) {
+      renderedNames.add(interpolation[1] ?? interpolation[2]);
+    }
+  }
   for (const stateName of renderedNames) {
+    for (const value of renderedLiteralValues(text, stateName)) {
+      if (isUsefulVisibleText(value)) {
+        selectors.push({ kind: "visible-text", value, file });
+      }
+    }
     const stateDeclaration = new RegExp(
       `\\bconst\\s*\\[\\s*${escapeRegExp(stateName)}\\s*,\\s*([A-Za-z_$][\\w$]*)\\s*\\]\\s*=\\s*useState\\b`,
     ).exec(text);
@@ -11333,14 +12098,6 @@ function extractRenderedStateSelectors(file: string, text: string): E2eSelector[
           selectors.push({ kind: "visible-text", value, file });
         }
       }
-    }
-  }
-  const interpolatedNames = new Set(
-    [...text.matchAll(/\{\{?\s*([A-Za-z_$][\w$]*)\s*\}?\}/g)].map((match) => match[1]),
-  );
-  for (const name of interpolatedNames) {
-    for (const value of renderedLiteralValues(text, name)) {
-      selectors.push({ kind: "visible-text", value, file });
     }
   }
   return selectors;
@@ -11363,12 +12120,17 @@ function extractInteractiveTextSelectors(file: string, text: string): E2eSelecto
       continue;
     }
 
+    const renderedBody = body.replace(/<[^>]*>/g, " ");
+    const staticRenderedBody = renderedBody.replace(/\{[^{}]*\}/g, " ");
     const values = uniqueStrings([
-      normalizeRenderedText(body) ?? "",
-      ...[...body.matchAll(/\{\{?\s*([A-Za-z_$][\w$]*)\s*\}?\}/g)]
+      normalizeRenderedText(staticRenderedBody) ?? "",
+      ...[...renderedBody.matchAll(/\{\{?\s*([A-Za-z_$][\w$]*)\s*\}?\}/g)]
         .flatMap((identifier) => renderedLiteralValues(text, identifier[1])),
-      ...[...body.matchAll(/["'`]([^"'`\n]{2,80})["'`]/g)]
-        .map((literal) => normalizeSelectorValue(literal[1]) ?? ""),
+      ...[...renderedBody.matchAll(/\{([^{}]{1,300})\}/g)]
+        .flatMap((expression) =>
+          [...expression[1].matchAll(/["'`]([^"'`\n]{2,80})["'`]/g)]
+            .map((literal) => normalizeSelectorValue(literal[1]) ?? "")
+        ),
     ]).filter(isUsefulSelector);
     const kind: E2eSelectorKind = isButton ? "role-button" : isLink ? "role-link" : "click-text";
     for (const value of values) {
@@ -11579,6 +12341,17 @@ async function readTextIfExists(filePath: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+async function readAnalyzedText(
+  root: string,
+  file: string,
+  analysisRevision: AnalysisRevision,
+): Promise<string | undefined> {
+  if (analysisRevision.includeWorkingTree) {
+    return readTextIfExists(path.join(root, file));
+  }
+  return readFileAtRef(root, analysisRevision.head, file);
 }
 
 async function hasAnyFile(root: string, fileNames: string[]): Promise<boolean> {

@@ -14,6 +14,8 @@ const ignoredDirectories = new Set([
   ".nuxt",
   ".turbo",
   ".cache",
+  ".worktree",
+  ".worktrees",
   "vendor",
   // Mobile vendor/derived trees: on React Native and Expo repos these hold
   // tens of thousands of files and, because the walk is alphabetical and
@@ -98,6 +100,12 @@ export async function collectProjectFiles(root: string, maxFiles: number): Promi
 
     const entries = await fs.readdir(directory, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name));
+    if (
+      directory !== normalizedRoot &&
+      entries.some((entry) => entry.name === ".git" && (entry.isFile() || entry.isDirectory()))
+    ) {
+      return;
+    }
 
     for (const entry of entries) {
       if (files.length >= maxFiles) {

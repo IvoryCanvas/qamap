@@ -50,6 +50,8 @@ Product sources can contribute user actions, state, effects, and outcomes. Comma
 
 The same boundary applies downstream. E2E setup and fixture discovery only inspect runtime-relevant product, command, and configuration evidence. Analyzer rules and benchmark vocabulary may explain why a QA scenario exists, but `/api`, `fixture`, payment, scheduling, or routing words inside those files cannot create product setup requirements by themselves.
 
+Repository boundaries are evidence boundaries too. A nested directory containing its own `.git` file or directory is a separate working copy, even when it lives under the analyzed root. Project, import-graph, workspace-package, test, mock, and fixture discovery must not borrow evidence from that nested repository. This prevents an abandoned worktree or local clone from making the current change appear tested or fixture-ready.
+
 ## Scenario Routing and Compilation Receipts
 
 Scenario generation and test generation are separate decisions. QAMap first routes every proposed scenario from its evidence:
@@ -67,13 +69,15 @@ Runner adapters then emit a second receipt for each routed scenario:
 - `not-compiled`: the scenario was selected but no deterministic compiler had enough entrypoint, action, fixture, and outcome evidence;
 - `review-only`: the scenario or repository has no executable adapter contract.
 
-Lifecycle stages are not copied blindly into runner steps. Trigger and action stages may become interactions. State changes and side effects remain reasoning and proof requirements unless the repository exposes concrete observation evidence. For example, clicking Save and seeing a success message can map the immediate outcome, but it cannot prove persistence after reload or re-entry. That draft stays `partial` until a deterministic adapter can express the missing proof.
+Lifecycle stages are not copied blindly into runner steps. Trigger and action stages may become interactions. State changes and side effects remain reasoning and proof requirements unless the repository exposes concrete observation evidence. For example, clicking Save and seeing a success message can map the immediate outcome, but it cannot by itself prove persistence after reload or re-entry. The Playwright adapter only compiles that proof when the changed source connects the same web-storage write and read key, the persisted value to an editable field, the write to a named save handler, and that handler to a real action locator on a recoverable route. It then generates `change value -> save -> inspect stored value -> reload -> assert restored field`. If any link is absent, the requirement remains explicit and the draft stays `partial`.
 
 A compilation receipt is static evidence, not a test result. Human output therefore calls these states `fully mapped`, `partially mapped`, and `not mapped`; the machine values remain stable for compatibility. Every `qa` result also carries an invocation-level `execution` receipt with `status: not-run` and `scope: static-analysis-and-draft-mapping`. Only explicit execution may produce pass or fail evidence. A required scenario that is partial or not compiled remains an execution blocker and prevents the draft from being described as runnable.
 
 Human output groups the same decision into three layers: the complete QA and risk map, executable evidence available now, and manual or agent contracts for the remaining scenarios. Runner absence affects only the latter two layers; it never deletes a risk-backed QA scenario. A draft may be called `static-runnable` only when its structural self-check finds an entrypoint, observable assertion, and no skipped placeholder. The label always includes `not executed` until a separate execution boundary returns evidence.
 
 The additive `route` object is the canonical machine decision above those compatibility values. It separates optional draft preparation from repository validation and names the next action directly: complete or review a draft, run an existing command, or define a missing command. Agent payload compaction preserves this object before lower-priority detail, so a repository-verification result cannot be misread as blocked product E2E work.
+
+Compact agent output also keeps an optional per-flow `focus` capsule. It is emitted only when a same-title scenario receipt proves every selected step and assertion was compiled. Its action must match an actual draft step to the flow trigger, title, or scenario, and its assertion cannot be the generic fallback used when no observable result was found. This lets an agent retain the PR-specific action and proof when setup-first ordering or the 4KB budget truncates the full sequence, without promoting partial or unrelated scenario language into executable evidence.
 
 ## QA Reasoning Trace
 

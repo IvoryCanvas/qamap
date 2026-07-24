@@ -169,6 +169,23 @@ export async function resolveMergeBase(root: string, base: string, head: string)
   return mergeBase;
 }
 
+export async function readFileAtRef(
+  root: string,
+  ref: string,
+  filePath: string,
+): Promise<string | undefined> {
+  const normalizedPath = filePath.replaceAll("\\", "/").replace(/^\.\/+/, "");
+  if (!normalizedPath || normalizedPath.startsWith("../") || normalizedPath.includes("\0")) {
+    return undefined;
+  }
+  try {
+    const { stdout } = await git(root, ["show", `${ref}:./${normalizedPath}`]);
+    return stdout;
+  } catch {
+    return undefined;
+  }
+}
+
 async function collectBaseCandidates(root: string, remotes: string[]): Promise<string[]> {
   const candidates: string[] = [];
   for (const remote of remotes) {

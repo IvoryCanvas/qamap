@@ -172,6 +172,28 @@ const ignoredCallNames = new Set([
   "test",
   "while",
 ]);
+const implementationSchedulingCalls = new Set([
+  "cancelanimationframe",
+  "cancelidlecallback",
+  "clearimmediate",
+  "clearinterval",
+  "cleartimeout",
+  "queuemicrotask",
+  "requestanimationframe",
+  "requestidlecallback",
+  "setimmediate",
+  "setinterval",
+  "settimeout",
+]);
+const implementationPredicateCalls = new Set([
+  "array.isarray",
+  "arraybuffer.isview",
+  "number.isfinite",
+  "number.isinteger",
+  "number.isnan",
+  "number.issafeinteger",
+  "object.hasown",
+]);
 
 export async function analyzeChangeIntents(
   rootInput: string,
@@ -421,7 +443,7 @@ function buildCommitIntent(
   const relevantSignals = rankCodeSignalsForIntent(
     codeSignals.filter((signal) => files.includes(signal.file)),
     keywords,
-  );
+  ).filter((signal) => !isUnalignedGenericCallbackSignal(signal, keywords));
   const relevantRiskEvidence = riskEvidence.filter((item) => item.file && files.includes(item.file));
   const lifecycle = buildLifecycle(commits, relevantSignals, relevantRiskEvidence);
   const confidence = confidenceForIntent(commits, lifecycle, relevantSignals);
@@ -600,6 +622,7 @@ function buildLifecycle(
     stages.push(createLifecycleStage(signal.kind, signal.label, "medium", [signal.evidence], [signal.file]));
   }
 
+  stages.push(...lifecycleFromDetectedRiskEvidence(roleEvidence));
   stages.push(...lifecycleFromSourceRoles(roleEvidence));
 
   return limitLifecycleStages(removeRedundantOutcomeTimingTriggers(stages));
@@ -615,6 +638,9 @@ function removeRedundantOutcomeTimingTriggers(
     if (!isCommitOnlyCausalTrigger(stage)) {
       return true;
     }
+    if (isVerificationTimingTrigger(stage.label)) {
+      return false;
+    }
     if (/\b(?:clicked|pressed|selected|submitted|tapped)\b/i.test(stage.label)) {
       return true;
     }
@@ -623,11 +649,38 @@ function removeRedundantOutcomeTimingTriggers(
   });
 }
 
+function isVerificationTimingTrigger(label: string): boolean {
+  return /^(?:after|once|upon|when)\s+(?:an?\s+)?(?:app\s+)?(?:back navigation|re-?entry|refresh|reload|restart|resume)\b/i.test(
+    stripTerminalPunctuation(label),
+  );
+}
+
 function lifecycleFromCodeSignals(signals: CodeBehaviorSignal[]): BehaviorLifecycleStage[] {
   const stages = signals
     .filter((signal) => !isImplementationOnlyLifecycleStep(`${signal.label} ${signal.symbol}`))
     .map((signal) => createLifecycleStage(signal.kind, signal.label, "low", [signal.evidence], [signal.file]));
   return limitLifecycleStages(stages);
+}
+
+function lifecycleFromDetectedRiskEvidence(
+  evidence: ChangeIntentEvidence[],
+): BehaviorLifecycleStage[] {
+  const validationTimingEvidence = evidence.filter((item) =>
+    item.sourceRole === "product" && item.symbol === "form-validation-mode"
+  );
+  if (validationTimingEvidence.length === 0) {
+    return [];
+  }
+  const files = uniqueStrings(validationTimingEvidence.map((item) => item.file ?? "").filter(Boolean));
+  return [
+    createLifecycleStage(
+      "condition",
+      "Apply the changed form validation timing boundary.",
+      "medium",
+      validationTimingEvidence,
+      files,
+    ),
+  ];
 }
 
 function lifecycleFromSourceRoles(evidence: ChangeIntentEvidence[]): BehaviorLifecycleStage[] {
@@ -748,7 +801,7 @@ function buildIntentQaScenarios(
   confidence: ChangeIntentConfidence,
 ): IntentQaScenario[] {
   const conditions = lifecycle.filter((stage) => stage.kind === "condition").map((stage) => stage.label);
-  const actions = selectPrimaryLifecycleSteps(lifecycle);
+  const actions = selectPrimaryLifecycleSteps(lifecycle, keywords);
   const outcomeStages = lifecycle.filter((stage) => stage.kind === "observable-outcome");
   const locatedOutcomeStages = outcomeStages.filter((stage) => hasActionableLocatedDiffEvidence(stage.evidence));
   const outcomes = (locatedOutcomeStages.length > 0 ? locatedOutcomeStages : outcomeStages)
@@ -1219,7 +1272,10 @@ function isConfigurationGuardEvidence(evidence: ChangeIntentEvidence): boolean {
     /release|build|environment|\benv\b|config/i.test(`${evidence.symbol ?? ""} ${evidence.value}`);
 }
 
-function selectPrimaryLifecycleSteps(lifecycle: BehaviorLifecycleStage[]): string[] {
+function selectPrimaryLifecycleSteps(
+  lifecycle: BehaviorLifecycleStage[],
+  intentKeywords: string[],
+): string[] {
   const hasCommitBackedAction = lifecycle.some((stage) =>
     stage.kind === "action" && stage.evidence.some((item) => item.kind === "commit"),
   );
@@ -1237,7 +1293,7 @@ function selectPrimaryLifecycleSteps(lifecycle: BehaviorLifecycleStage[]): strin
     ) {
       continue;
     }
-    if (hasCommitBackedAction && isImplementationShapedTriggerStage(stage)) {
+    if (hasCommitBackedAction && isImplementationShapedTriggerStage(stage, intentKeywords)) {
       continue;
     }
     const limit = limits[stage.kind] ?? 0;
@@ -1265,11 +1321,64 @@ function isCommitOnlyCausalTrigger(stage: BehaviorLifecycleStage): boolean {
     /^(?:after|before|if|once|when|while)\b/i.test(stage.label);
 }
 
-function isImplementationShapedTriggerStage(stage: BehaviorLifecycleStage): boolean {
+function isImplementationShapedTriggerStage(
+  stage: BehaviorLifecycleStage,
+  intentKeywords: string[],
+): boolean {
   if (stage.kind !== "trigger" || stage.evidence.some((item) => item.kind === "commit")) {
     return false;
   }
-  return /^Trigger\s+(?:set|handle|use|update|dispatch|emit|mutate|invoke|call)\b/i.test(stage.label);
+  if (/^Trigger\s+(?:set|handle|use|update|dispatch|emit|mutate|invoke|call)\b/i.test(stage.label)) {
+    return true;
+  }
+  const callbackShaped = /^Handle\b/i.test(stage.label) ||
+    stage.evidence.some((item) => item.kind === "diff" && /^on[A-Z]/.test(item.symbol ?? ""));
+  return callbackShaped && !callbackTriggerMatchesIntent(stage, intentKeywords);
+}
+
+function callbackTriggerMatchesIntent(
+  stage: BehaviorLifecycleStage,
+  intentKeywords: string[],
+): boolean {
+  return callbackWordsMatchIntent(
+    stage.label,
+    stage.evidence.map((item) => item.symbol ?? ""),
+    intentKeywords,
+  );
+}
+
+function isUnalignedGenericCallbackSignal(
+  signal: CodeBehaviorSignal,
+  intentKeywords: string[],
+): boolean {
+  if (signal.kind !== "trigger") {
+    return false;
+  }
+  const callbackShaped = /^Handle\b/i.test(signal.label) || /^on[A-Z]/.test(signal.symbol);
+  return callbackShaped && !callbackWordsMatchIntent(signal.label, [signal.symbol], intentKeywords);
+}
+
+function callbackWordsMatchIntent(
+  label: string,
+  symbols: string[],
+  intentKeywords: string[],
+): boolean {
+  const genericWords = new Set(["handle", "trigger"]);
+  const triggerTokens = new Set(
+    [...normalizedWords(label), ...symbols.flatMap(normalizedWords)]
+      .map(normalizeLifecycleAlignmentToken)
+      .filter((word) => word.length >= 3 && !genericWords.has(word)),
+  );
+  const intentTokens = new Set(intentKeywords.map(normalizeLifecycleAlignmentToken));
+  return [...triggerTokens].some((word) => intentTokens.has(word));
+}
+
+function normalizeLifecycleAlignmentToken(value: string): string {
+  const token = normalizeToken(value);
+  if (/^(?:close|dismiss|hide)$/.test(token)) return "close";
+  if (/^(?:display|open|preview|render|reveal|show|view)$/.test(token)) return "view";
+  if (/^(?:choose|pick|select)$/.test(token)) return "select";
+  return token;
 }
 
 function isImplementationShapedStateChangeStage(stage: BehaviorLifecycleStage): boolean {
@@ -1795,9 +1904,13 @@ function collectCodeBehaviorSignalsFromText(
     });
   }
   for (const match of text.matchAll(
-    /\b(?:onClick|onPress|onSubmit|onChange|onEnded)\s*=\s*\{\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)?\s*=>\s*(?:\{[^}\n]*?)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g,
+    /\b(onClick|onPress|onSubmit|onChange|onEnded)\s*=\s*\{\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)?\s*=>\s*(?:\{[^}\n]*?)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\(/g,
   )) {
-    const symbol = match[1];
+    const eventName = match[1];
+    const symbol = match[2];
+    if (eventName === "onChange" && /^(?:set|update)[A-Z_]/.test(symbol.split(".").at(-1) ?? symbol)) {
+      continue;
+    }
     const label = `Trigger ${humanizeEventHandler(symbol.split(".").at(-1) ?? symbol)}.`;
     signals.push({
       kind: "trigger",
@@ -1816,6 +1929,9 @@ function collectCodeBehaviorSignalsFromText(
   for (const expression of conditionExpressions) {
     const identifiers = expression.match(/\b(?:is|has|can|should|show|hide)[A-Z_][A-Za-z0-9_$]*/g) ?? [];
     for (const symbol of identifiers) {
+      if (isImplementationPredicateCall(symbol, expression)) {
+        continue;
+      }
       const label = `Check ${humanizeIdentifier(symbol)}.`;
       signals.push({
         kind: "condition",
@@ -1906,6 +2022,9 @@ function lifecycleKindForIdentifier(identifier: string): BehaviorLifecycleStageK
   const value = identifier.toLowerCase();
   const leaf = identifier.split(".").at(-1) ?? identifier;
   const leafValue = leaf.toLowerCase();
+  if (implementationSchedulingCalls.has(leafValue) || isImplementationPredicateCall(identifier)) {
+    return undefined;
+  }
   if (/^(?:on|handle)(?:press|click|submit|change|complete|open|response|message|select|toggle)/.test(leafValue)) {
     return "trigger";
   }
@@ -1926,6 +2045,13 @@ function lifecycleKindForIdentifier(identifier: string): BehaviorLifecycleStageK
     return "condition";
   }
   return undefined;
+}
+
+function isImplementationPredicateCall(identifier: string, expression = identifier): boolean {
+  const names = expression.match(/\b[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*/g) ?? [
+    identifier,
+  ];
+  return names.some((name) => implementationPredicateCalls.has(name.toLowerCase()));
 }
 
 function codeSignalLabel(kind: BehaviorLifecycleStageKind, symbol: string): string {
@@ -1968,7 +2094,7 @@ function extractTriggerPhrases(statement: string): string[] {
 function splitIntentClauses(statement: string): string[] {
   const stripped = stripTerminalPunctuation(statement.trim());
   const lifecycleVerb =
-    "(?:cache|cancel|clear|click|complete|delete|display|emit|fetch|fire|invalidate|navigate|notify|open|persist|post|publish|redirect|remove|render|request|resync|reset|save|schedule|select|send|show|store|submit|surface|sync|tap|toggle|track|update|upload)";
+    "(?:cache|cancel|clear|click|complete|delete|display|emit|fetch|fire|invalidate|navigate|notify|open|persist|post|publish|redirect|remove|render|request|resync|reset|restore|save|schedule|select|send|show|store|submit|surface|sync|tap|toggle|track|update|upload)";
   const clauses = stripped
     .split(new RegExp(`(?:,\\s*(?=${lifecycleVerb}\\b)|,?\\s+(?:and then|then|and)\\s+)`, "i"))
     .map((clause) => clause.trim())
@@ -1981,7 +2107,7 @@ function classifyLifecycleClause(clause: string): BehaviorLifecycleStageKind {
   if (/^(?:show|display|render|preview|tease|open|navigate|redirect|surface|return)\b/.test(value)) {
     return "observable-outcome";
   }
-  if (/^(?:save|persist|store|update|sync|resync|cache|set|cancel|remove|delete|invalidate|toggle)\b/.test(value)) {
+  if (/^(?:save|persist|restore|store|update|sync|resync|cache|set|cancel|remove|delete|invalidate|toggle)\b/.test(value)) {
     return "state-change";
   }
   if (/^(?:schedule|fire|send|notify|request|fetch|post|emit|track|publish|export|upload)\b/.test(value)) {
@@ -1996,7 +2122,7 @@ function classifyLifecycleClause(clause: string): BehaviorLifecycleStageKind {
   if (/\b(?:show|display|render|preview|tease|open|navigate|redirect|surface|return)\b/.test(value)) {
     return "observable-outcome";
   }
-  if (/\b(?:save|persist|store|update|sync|resync|cache|set|cancel|remove|delete|invalidate|toggle)\b/.test(value)) {
+  if (/\b(?:save|persist|restore|store|update|sync|resync|cache|set|cancel|remove|delete|invalidate|toggle)\b/.test(value)) {
     return "state-change";
   }
   if (/\b(?:schedule|fire|send|notify|request|fetch|post|emit|track|publish|export|upload)\b/.test(value)) {
